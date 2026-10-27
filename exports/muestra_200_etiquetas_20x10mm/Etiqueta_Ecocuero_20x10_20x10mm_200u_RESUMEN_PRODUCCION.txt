@@ -1,0 +1,61 @@
+===============================================================================
+  LASERHOUSE STUDIO — HOJA TÉCNICA DE PRODUCCIÓN LÁSER
+===============================================================================
+Fecha generación    : 2026-10-27T14:26:40.491Z
+Proyecto / Pedido   : Muestra Reproducible 200 Etiquetas Ecocuero 20×10 mm
+Cliente             : LaserHouse Producción
+Observaciones       : Generado y auditado automáticamente por LaserHouse Studio.
+
+1. EQUIPAMIENTO OBJETIVO
+-------------------------------------------------------------------------------
+Máquina Láser       : Vank 9060 CO₂ (Área útil máx: 900 × 600 mm)
+Controladora        : Ruida RDC8445S
+Software compatible : LightBurn Pro (SVG 1:1 mm) / RDWorks V8 (DXF AC1009 mm)
+
+2. ESPECIFICACIÓN DE ETIQUETA (MODELO GEOMÉTRICO EN MILÍMETROS)
+-------------------------------------------------------------------------------
+Nombre de diseño    : Etiqueta_Ecocuero_20x10
+Geometría / Forma   : rounded_rect
+Medida nominal      : 20 × 10 mm
+Radio de esquina    : 1.5 mm
+Compensación Kerf   : 0 mm (Corte efectivo: 20 × 10 mm)
+Agujeros costura    : Preset "two_horizontal" (2 por etiqueta, Ø 1.6 mm, margen borde 2.2 mm)
+Elementos grabado   : 2 elemento(s) activo(s)
+
+3. MATERIAL Y SEGURIDAD
+-------------------------------------------------------------------------------
+Material            : Ecocuero Suela / Caramelo (PU Apto Láser) (ECOCUERO_SUELA)
+Espesor             : 1.2 mm
+Confirmación apto   : PENDIENTE CONFIRMACIÓN FÍSICA (Verificar libre de PVC antes de cortar)
+Advertencia         : ADVERTENCIA CRÍTICA DE SEGURIDAD: Todo ecocuero o material sintético DEBE contar con ficha técnica y composición confirmada (Poliuretano PU apto para láser, 100% libre de PVC/cloro) antes de procesarse. Nunca cortar cuero sintético de PVC/vinilo en láser CO₂ (emite gas cloro corrosivo y tóxico).
+
+4. PARÁMETROS DE OPERACIÓN (INGRESADOS POR EL OPERADOR)
+-------------------------------------------------------------------------------
+Capa 00 GRABADO (#000000) : Vel = PENDIENTE VALIDAR EN MÁQUINA mm/s | Pot Máx = PENDIENTE VALIDAR EN MÁQUINA % | Intervalo = 0.1 mm
+Capa 01 AGUJEROS (#0000FF): Vel = PENDIENTE VALIDAR EN MÁQUINA mm/s | Pot Máx = PENDIENTE VALIDAR EN MÁQUINA % | Pasadas = 1
+Capa 02 CORTE (#FF0000)   : Vel = PENDIENTE VALIDAR EN MÁQUINA mm/s | Pot Máx = PENDIENTE VALIDAR EN MÁQUINA % | Pasadas = 1
+
+5. DISTRIBUCIÓN AUTOMÁTICA Y TANDAS
+-------------------------------------------------------------------------------
+Plancha / Recorte   : 900 × 600 mm
+Márgenes (S/D/I/Iz) : 5 / 5 / 5 / 5 mm
+Separación X / Y    : 2 mm / 2 mm
+Rotación aplicada   : 0°
+Capacidad por placa : 1960 u. (40 col × 49 filas)
+Cantidad solicitada : 200 unidades
+Cantidad exportada  : 200 unidades
+Total de tandas     : 1
+Tanda actual        : 1 de 1 (200 u. | 40 col × 5 filas)
+Área ocupada tanda  : 878 × 58 mm (X: 5..883 mm, Y: 5..63 mm)
+Aprovechamiento     : 7.41% del recorte (78.55% eficiencia dentro de envolvente)
+
+6. VERIFICACIÓN GEOMÉTRICA AUTOMATIZADA
+-------------------------------------------------------------------------------
+Estado general      : APROBADO (GEOMETRÍA EXACTA)
+Contornos cerrados  : SÍ (100% cerrados)
+Líneas duplicadas   : 0 (Requisito: 0)
+Piezas superpuestas : 0 (Requisito: 0)
+Fuera de área útil  : 0 (Requisito: 0)
+Contornos de corte  : 200
+Contornos agujeros  : 400
+===============================================================================

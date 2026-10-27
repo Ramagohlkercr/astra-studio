@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  =============================================================================
+  LASERHOUSE STUDIO — ARCHIVO DE PRODUCCIÓN VECTORIAL (ESCALA REAL 1:1 EN MM)
+  =============================================================================
+  Máquina destino : Vank 9060 CO2 (Área útil máx: 900 x 600 mm | Controladora Ruida RDC8445S)
+  Software destino: LightBurn Pro / RDWorks
+  Diseño etiqueta : Etiqueta_20x10mm (20 x 10 mm | Forma: rounded_rect)
+  Compensación Kerf: 0 mm
+  Material        : Ecocuero Suela / Caramelo (PU Apto Láser) (ECOCUERO_SUELA, Espesor: 1.2 mm)
+  Tanda           : 1 de 1
+  Cantidad en archivo: 1 unidades (Total pedido: 1 u.)
+  Dimensiones lienzo : 50 mm x 30 mm (1 unidad SVG = 1.0000 mm)
+  Mapeo de Capas LightBurn:
+    - Capa 00 (#000000 Negro) : GRABADO (1 elementos)
+    - Capa 01 (#0000FF Azul)  : AGUJEROS INTERNOS (0 contornos cerrados)
+    - Capa 02 (#FF0000 Rojo)  : CORTE EXTERIOR (1 contornos cerrados)
+  =============================================================================
+-->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+  width="50mm"
+  height="30mm"
+  viewBox="0 0 50 30"
+  version="1.1"
+  data-generator="LaserHouse Studio v0.2.0"
+  data-units="mm"
+  data-label-width-mm="20"
+  data-label-height-mm="10"
+  data-batch="1/1"
+  data-quantity="1"
+>
+  <g id="CAPA_00_GRABADO" inkscape:groupmode="layer" inkscape:label="00_GRABADO" data-layer="ENGRAVE" data-lightburn-layer="00">
+    <path id="pieza_1-el-text-1793111200539" d="M 11 6.761 L 9 6.761 L 9 7.8218 M 9 8.403 L 11 9.015 L 9 9.627 M 9.7 8.6342 L 9.7 9.3958 M 10.64 11.2418 L 11 10.997 L 11 10.4258 L 10.68 10.181 L 10.32 10.181 L 10.04 10.4258 L 9.96 11.0242 L 9.64 11.269 L 9.3 11.269 L 9 10.997 L 9 10.4258 L 9.36 10.181 M 11 12.9518 L 11 11.891 L 9 11.891 L 9 12.9518 M 10.04 11.891 L 10.04 12.7342 M 9 13.601 L 11 13.601 L 11 14.3898 L 10.7 14.689 L 10.28 14.689 L 10 14.3898 L 10 13.601 M 10 14.1722 L 9 14.689 M 11 15.311 L 9 15.311 M 11 16.399 L 9 16.399 M 10.04 15.311 L 10.04 16.399 M 11 17.293 L 11 17.837 L 10.56 18.109 L 9.44 18.109 L 9 17.837 L 9 17.293 L 9.44 17.021 L 10.56 17.021 L 11 17.293 M 11 18.731 L 9.44 18.731 L 9 19.003 L 9 19.547 L 9.44 19.819 L 11 19.819 M 10.64 21.5018 L 11 21.257 L 11 20.6858 L 10.68 20.441 L 10.32 20.441 L 10.04 20.6858 L 9.96 21.2842 L 9.64 21.529 L 9.3 21.529 L 9 21.257 L 9 20.6858 L 9.36 20.441 M 11 23.2118 L 11 22.151 L 9 22.151 L 9 23.2118 M 10.04 22.151 L 10.04 22.9942" fill="none" stroke="#000000" stroke-width="0.3" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+  <g id="CAPA_02_CORTE" inkscape:groupmode="layer" inkscape:label="02_CORTE" data-layer="CUT" data-lightburn-layer="02">
+    <path id="pieza_1-cut" d="M 6.5 5 L 13.5 5 A 1.5 1.5 0 0 1 15 6.5 L 15 23.5 A 1.5 1.5 0 0 1 13.5 25 L 6.5 25 A 1.5 1.5 0 0 1 5 23.5 L 5 6.5 A 1.5 1.5 0 0 1 6.5 5 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+  </g>
+</svg>

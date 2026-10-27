@@ -1,0 +1,94 @@
+{
+  "validation200": {
+    "isValid": true,
+    "timestamp": "2026-10-27T14:26:40.505Z",
+    "labelDimensionsMm": {
+      "width": 20,
+      "height": 10
+    },
+    "effectiveCutDimensionsMm": {
+      "width": 20,
+      "height": 10
+    },
+    "sheetDimensionsMm": {
+      "width": 900,
+      "height": 600
+    },
+    "machineLimitMm": {
+      "width": 900,
+      "height": 600
+    },
+    "allContoursClosed": true,
+    "duplicateCutSegmentsCount": 0,
+    "overlappingPiecesCount": 0,
+    "outOfBoundsPiecesCount": 0,
+    "invalidHolesCount": 0,
+    "engraveInvasionCount": 0,
+    "engraveSafetyWarningCount": 0,
+    "totalProductiveCutContours": 200,
+    "totalProductiveHoleContours": 400,
+    "totalProductiveEngraveItems": 400,
+    "issues": []
+  },
+  "svgAudit200": {
+    "isValid": true,
+    "hasExplicitMmWidth": true,
+    "hasExplicitMmHeight": true,
+    "widthMm": 900,
+    "heightMm": 600,
+    "viewBoxMatchesMm1To1": true,
+    "hasInvalidNumbersOrNaN": false,
+    "hasNonProductiveGuides": false,
+    "engraveLayerCount": 400,
+    "holesLayerCount": 400,
+    "cutLayerCount": 200,
+    "allCutAndHolePathsClosed": true,
+    "measuredCutBoundsMm": {
+      "minX": 5,
+      "minY": 5,
+      "maxX": 883,
+      "maxY": 63,
+      "width": 878,
+      "height": 58
+    },
+    "errors": []
+  },
+  "dxfAudit200": {
+    "isValid": true,
+    "acadVer": "AC1009",
+    "insUnits": 4,
+    "extMin": {
+      "x": 0,
+      "y": 0
+    },
+    "extMax": {
+      "x": 900,
+      "y": 600
+    },
+    "layersDefined": [
+      "GRABADO",
+      "AGUJEROS",
+      "CORTE"
+    ],
+    "totalPolylines": 4200,
+    "engravePolylinesCount": 3600,
+    "holePolylinesCount": 400,
+    "cutPolylinesCount": 200,
+    "allCutAndHolesClosedFlag": true,
+    "allCutAndHolesZeroGapLoop": true,
+    "hasInvalidNumbersOrNaN": false,
+    "firstCutPieceSizeMm": {
+      "width": 20,
+      "height": 10
+    },
+    "measuredCutBoundsDxfMm": {
+      "minX": 5,
+      "minY": 537,
+      "maxX": 883,
+      "maxY": 595,
+      "width": 878,
+      "height": 58
+    },
+    "errors": []
+  }
+}

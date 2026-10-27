@@ -1,0 +1,35 @@
+{
+  "name": "laserhouse-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "LaserHouse Studio — Software CAD/CAM de creación, distribución automática y preparación de etiquetas láser (Vank 9060 CO2 / LightBurn / RDWorks)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "generate:sample200": "npx tsx scripts/generate-sample-200.ts"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.19.2",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  }
+}
