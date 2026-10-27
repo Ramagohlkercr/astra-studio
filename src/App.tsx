@@ -183,6 +183,8 @@ export function App() {
   >('realistic_material');
 
   const [showOrdersModal, setShowOrdersModal] = useState<boolean>(false);
+  const [showValidationBlockModal, setShowValidationBlockModal] = useState<boolean>(false);
+  const [orderSearchQuery, setOrderSearchQuery] = useState<string>('');
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const projectJsonInputRef = useRef<HTMLInputElement | null>(null);
@@ -221,6 +223,30 @@ export function App() {
       setStatusBanner((curr) => (curr === msg ? null : curr));
     }, 4500);
   };
+
+  const handleAutoFixCriticalErrors = () => {
+    const nextElements = labelDesign.elements.map((el) =>
+      fitElementIntoSafeZone(el, labelDesign, 0.82)
+    );
+    pushStateWithHistory({
+      ...labelDesign,
+      elements: nextElements,
+    });
+    setShowValidationBlockModal(false);
+    notify('Elementos reajustados automáticamente a la zona segura. Errores críticos resueltos.');
+  };
+
+  const filteredOrders = useMemo(() => {
+    if (!orderSearchQuery.trim()) return orders;
+    const q = orderSearchQuery.toLowerCase();
+    return orders.filter(
+      (o) =>
+        o.projectName.toLowerCase().includes(q) ||
+        o.clientName.toLowerCase().includes(q) ||
+        o.materialId.toLowerCase().includes(q) ||
+        `${o.labelDesign.widthMm}x${o.labelDesign.heightMm}`.includes(q)
+    );
+  }, [orders, orderSearchQuery]);
 
   // Crear nueva etiqueta limpia SIN agujeros automáticos (Sprint 2 Punto 3)
   const handleCreateNewBlankProject = () => {
@@ -582,6 +608,11 @@ export function App() {
   };
 
   const handleExportSvg = (mode: SvgExportMode) => {
+    const critical = validationReport.issues.filter((i) => i.severity === 'error');
+    if (critical.length > 0) {
+      setShowValidationBlockModal(true);
+      return;
+    }
     const artifact = exportProductionSvg(
       labelDesign,
       nestingResult,
@@ -602,6 +633,11 @@ export function App() {
   };
 
   const handleExportDxf = () => {
+    const critical = validationReport.issues.filter((i) => i.severity === 'error');
+    if (critical.length > 0) {
+      setShowValidationBlockModal(true);
+      return;
+    }
     const artifact = exportProductionDxf(
       labelDesign,
       nestingResult,
@@ -801,15 +837,15 @@ export function App() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-bold tracking-tight text-sm text-white">
+                <span className="font-bold tracking-tight text-sm text-white whitespace-nowrap">
                   LASERHOUSE STUDIO
                 </span>
-                <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                  CAD/CAM v0.2
+                <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 whitespace-nowrap">
+                  CAD/CAM v0.3
                 </span>
               </div>
-              <div className="text-[11px] text-slate-400 font-mono">
-                Vank 9060 CO₂ (900×600 mm) · Ruida RDC8445S · LightBurn / RDWorks
+              <div className="text-[11px] text-slate-400 font-mono whitespace-nowrap truncate max-w-[360px]">
+                Vank 9060 CO₂ (900×600 mm) · Ruida RDC8445S · LightBurn
               </div>
             </div>
           </div>
@@ -1771,6 +1807,42 @@ export function App() {
                           </span>
                         </div>
 
+                        {/* Comparación Visual: Original vs Procesado */}
+                        <div className="p-2.5 rounded-lg bg-[#080b10] border border-slate-800 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                              Comparación Original vs Procesado
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              {selectedElement.pixelWidth}×{selectedElement.pixelHeight} px
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-center">
+                            <div className="p-1 rounded bg-[#11161f] border border-slate-700">
+                              <div className="text-[9px] text-slate-400 mb-1">Archivo Original</div>
+                              <div className="h-16 flex items-center justify-center overflow-hidden bg-slate-900/80 rounded border border-slate-800">
+                                <img
+                                  src={selectedElement.originalDataUrl}
+                                  alt="Original"
+                                  className="max-h-full max-w-full object-contain"
+                                />
+                              </div>
+                            </div>
+                            <div className="p-1 rounded bg-[#11161f] border border-amber-500/40">
+                              <div className="text-[9px] text-amber-300 font-semibold mb-1">
+                                {selectedElement.processing.mode === 'vector' ? 'Vectorizado Láser' : 'Monocromático B/N'}
+                              </div>
+                              <div className="h-16 flex items-center justify-center overflow-hidden bg-white/95 rounded border border-slate-300">
+                                <img
+                                  src={selectedElement.processedDataUrl}
+                                  alt="Procesado"
+                                  className="max-h-full max-w-full object-contain"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
                         <div className="grid grid-cols-2 gap-1.5">
                           <button
                             type="button"
@@ -1805,6 +1877,35 @@ export function App() {
                             Grabado Raster B/N
                           </button>
                         </div>
+
+                        {/* Slider de Detalle Fino / Simplificación Vectorial turdSize cuando el modo es Vector */}
+                        {selectedElement.processing.mode === 'vector' && (
+                          <div className="p-2 rounded bg-[#0b0e14] border border-slate-800 space-y-1">
+                            <div className="flex justify-between text-[10px] text-slate-400">
+                              <span>Detalle Fino / Simplificación Vector</span>
+                              <span className="font-mono text-amber-300">
+                                {selectedElement.processing.turdSize} px
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min="0.2"
+                              max="2.5"
+                              step="0.05"
+                              value={selectedElement.processing.turdSize}
+                              onChange={(e) =>
+                                handleReprocessRasterElement(selectedElement, {
+                                  ...selectedElement.processing,
+                                  turdSize: Number(e.target.value),
+                                })
+                              }
+                              className="w-full accent-amber-500"
+                            />
+                            <div className="text-[9px] text-slate-500">
+                              Valores menores conservan letras pequeñas y detalles finos.
+                            </div>
+                          </div>
+                        )}
 
                         <div>
                           <div className="flex justify-between text-[10px] text-slate-400 mb-0.5">
@@ -2294,6 +2395,12 @@ export function App() {
                     if (id) setLeftSection('elements');
                   }}
                   onMoveElement={handleMoveElement}
+                  onResizeElement={(id, newW, newH) => {
+                    updateSelectedElement({ widthMm: newW, heightMm: newH });
+                  }}
+                  onRotateElement={(id, deg) => {
+                    updateSelectedElement({ rotationDeg: deg });
+                  }}
                   zoomLevel={zoomLevel}
                   onZoomChange={setZoomLevel}
                   showMillimeterGrid={showMillimeterGrid}
@@ -2478,7 +2585,7 @@ export function App() {
         </main>
 
         {/* PANEL DERECHO: DISTRIBUCIÓN DE MATERIAL, CANTIDADES Y EXPORTACIÓN */}
-        <aside className="w-84 bg-[#11161f] border-l border-slate-800/90 flex flex-col shrink-0 overflow-y-auto p-3.5 space-y-4 text-xs">
+        <aside className="w-80 bg-[#11161f] border-l border-slate-800/90 flex flex-col shrink-0 overflow-y-auto p-3.5 space-y-4 text-xs">
           {/* Bloque 1: Cantidad de Etiquetas */}
           <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-2.5">
             <div className="flex items-center justify-between">
@@ -2923,7 +3030,7 @@ export function App() {
                   Gestor de Pedidos y Repetición de Producción — LaserHouse Studio
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Abra un pedido anterior, importe un archivo .lhstudio.json o regenere una nueva cantidad sin reconstruir el diseño.
+                  Abra un pedido anterior, busque diseños o repita cantidades (200, 500, 1000 u.) sin rehacer el diseño.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -2944,76 +3051,172 @@ export function App() {
               </div>
             </div>
 
-            <div className="p-5 overflow-y-auto space-y-3">
-              {orders.map((ord) => (
-                <div
-                  key={ord.id}
-                  className="p-4 rounded-lg bg-[#0b0e14] border border-slate-800 flex flex-wrap items-center justify-between gap-4"
+            {/* Barra de búsqueda de pedidos y diseños */}
+            <div className="px-5 py-2.5 bg-[#0e131b] border-b border-slate-800 flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="Buscar pedidos por cliente, nombre de proyecto, material o medidas..."
+                value={orderSearchQuery}
+                onChange={(e) => setOrderSearchQuery(e.target.value)}
+                className="w-full px-3 py-1.5 rounded-lg bg-[#11161f] border border-slate-700 text-xs text-white placeholder-slate-500 font-sans"
+              />
+              {orderSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setOrderSearchQuery('')}
+                  className="text-xs text-slate-400 hover:text-white px-2 py-1 shrink-0"
                 >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm text-white">
-                        {ord.projectName}
-                      </span>
-                      <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                        {ord.nestingConfig.requestedQuantity} u.
-                      </span>
-                    </div>
-                    <div className="text-xs text-slate-400">
-                      Cliente:{' '}
-                      <strong className="text-slate-200">
-                        {ord.clientName}
-                      </strong>{' '}
-                      · Material:{' '}
-                      <span className="font-mono text-slate-300">
-                        {ord.materialId}
-                      </span>{' '}
-                      · Medida:{' '}
-                      <span className="font-mono text-sky-300">
-                        {ord.labelDesign.widthMm} × {ord.labelDesign.heightMm}{' '}
-                        mm
-                      </span>
-                    </div>
-                    {ord.notes && (
-                      <div className="text-[11px] text-slate-500">
-                        {ord.notes}
-                      </div>
-                    )}
-                  </div>
+                  Limpiar
+                </button>
+              )}
+            </div>
 
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleLoadOrder(ord)}
-                      className="px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs"
-                    >
-                      Abrir Pedido
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleDuplicateOrderWithNewQuantity(ord, 500)
-                      }
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-xs font-medium"
-                      title="Duplicar este diseño y organizar automáticamente 500 unidades"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>Repetir × 500 u.</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleDuplicateOrderWithNewQuantity(ord, 1000)
-                      }
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-medium"
-                      title="Duplicar este diseño y organizar automáticamente 1000 unidades"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>× 1000 u.</span>
-                    </button>
-                  </div>
+            <div className="p-5 overflow-y-auto space-y-3">
+              {filteredOrders.length === 0 ? (
+                <div className="text-center py-8 text-xs text-slate-500">
+                  No se encontraron pedidos con el término "{orderSearchQuery}".
                 </div>
-              ))}
+              ) : (
+                filteredOrders.map((ord) => (
+                  <div
+                    key={ord.id}
+                    className="p-4 rounded-lg bg-[#0b0e14] border border-slate-800 flex flex-wrap items-center justify-between gap-4"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-white">
+                          {ord.projectName}
+                        </span>
+                        <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                          {ord.nestingConfig.requestedQuantity} u.
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        Cliente:{' '}
+                        <strong className="text-slate-200">
+                          {ord.clientName}
+                        </strong>{' '}
+                        · Material:{' '}
+                        <span className="font-mono text-slate-300">
+                          {ord.materialId}
+                        </span>{' '}
+                        · Medida:{' '}
+                        <span className="font-mono text-sky-300">
+                          {ord.labelDesign.widthMm} × {ord.labelDesign.heightMm}{' '}
+                          mm
+                        </span>
+                      </div>
+                      {ord.notes && (
+                        <div className="text-[11px] text-slate-500">
+                          {ord.notes}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleLoadOrder(ord)}
+                        className="px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs"
+                      >
+                        Abrir Pedido
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleDuplicateOrderWithNewQuantity(ord, 200)
+                        }
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/35 text-xs font-medium"
+                        title="Duplicar este diseño y organizar automáticamente 200 unidades"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>× 200 u.</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleDuplicateOrderWithNewQuantity(ord, 500)
+                        }
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-xs font-medium"
+                        title="Duplicar este diseño y organizar automáticamente 500 unidades"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>× 500 u.</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleDuplicateOrderWithNewQuantity(ord, 1000)
+                        }
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-medium"
+                        title="Duplicar este diseño y organizar automáticamente 1000 unidades"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>× 1000 u.</span>
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE BLOQUEO POR ERRORES CRÍTICOS ANTES DE EXPORTAR */}
+      {showValidationBlockModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg rounded-xl bg-[#11161f] border border-red-500/70 shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-5 py-3.5 bg-red-950/80 border-b border-red-500/50 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-400" />
+                <h3 className="text-sm font-bold text-white">
+                  Exportación Bloqueada — Errores Críticos
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowValidationBlockModal(false)}
+                className="text-slate-400 hover:text-white text-xs px-2 py-1"
+              >
+                Cerrar
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-xs text-slate-300">
+                Para garantizar la integridad física de la producción en la máquina Vank 9060 CO₂ y evitar piezas defectuosas en LightBurn / RDWorks, se requiere corregir los siguientes errores críticos antes de exportar:
+              </p>
+              <div className="space-y-2">
+                {validationReport.issues
+                  .filter((i) => i.severity === 'error')
+                  .map((iss, idx) => (
+                    <div
+                      key={idx}
+                      className="p-3 rounded-lg bg-red-950/40 border border-red-500/40 text-xs text-red-200"
+                    >
+                      <strong className="block font-mono text-[11px] text-red-300 mb-0.5">
+                        [{iss.code}]
+                      </strong>
+                      {iss.message}
+                    </div>
+                  ))}
+              </div>
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowValidationBlockModal(false)}
+                  className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-300"
+                >
+                  Revisar en Editor
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAutoFixCriticalErrors}
+                  className="px-3.5 py-1.5 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow transition"
+                >
+                  Corregir Automáticamente en Zona Segura
+                </button>
+              </div>
             </div>
           </div>
         </div>

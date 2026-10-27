@@ -458,3 +458,286 @@ describe('LaserHouse Studio — Pruebas con Logos Reales, Huecos Internos y Prot
     expect(duplicated.labelDesign.widthMm).toBe(roundMm(24.65));
   });
 });
+
+describe('Sprint 3 — Pruebas con Diseños Difíciles y Suite de Regresión', () => {
+  const suelaMat = INITIAL_MATERIALS_CATALOG.find((m) => m.id === 'ECOCUERO_SUELA')!;
+  const acrilicoMat = INITIAL_MATERIALS_CATALOG.find((m) => m.id === 'ACRILICO_TRANSPARENTE')!;
+
+  // 1. Logo con letras pequeñas
+  it('1. Caso Difícil: Logo con letras pequeñas calcula DPI efectivo alto y conserva fidelidad', () => {
+    // Imagen de 1200 px de ancho colocada en 15 mm de ancho
+    const dpi = computeEffectiveDpi(1200, 15);
+    expect(dpi).toBeGreaterThan(1500); // Supera holgadamente los 300 DPI recomendados
+    const design = createBlankLabelDesign(25, 12, 'rounded_rect');
+    design.elements = [
+      {
+        id: 'el-fine-letters',
+        name: 'Logo Letras Finas',
+        type: 'logo_raster',
+        xMm: 12.5,
+        yMm: 6,
+        widthMm: 14,
+        heightMm: 7,
+        aspectRatio: 2,
+        lockAspectRatio: true,
+        rotationDeg: 0,
+        locked: false,
+        visible: true,
+        originalDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        processedDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        pixelWidth: 1200,
+        pixelHeight: 600,
+        processing: { ...DEFAULT_IMAGE_PROCESSING, mode: 'raster', turdSize: 0.35 },
+        vectorizedPathsNormalized: ['M 0.1 0.1 L 0.9 0.1 L 0.9 0.9 L 0.1 0.9 Z'],
+        effectiveDpi: dpi,
+      },
+    ];
+    const compiled = compileLabelGeometry(design);
+    expect(compiled.engravingItems).toHaveLength(1);
+    expect(compiled.engravingItems[0].kind).toBe('raster_image');
+  });
+
+  // 2. Logo con fondo blanco
+  it('2. Caso Difícil: Logo con fondo blanco elimina fondo claro en esquinas sin alterar centro oscuro', () => {
+    const width = 10;
+    const height = 10;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    // Llenar todo con fondo blanco (255, 255, 255, 255)
+    for (let i = 0; i < rgba.length; i += 4) {
+      rgba[i] = 255;
+      rgba[i + 1] = 255;
+      rgba[i + 2] = 255;
+      rgba[i + 3] = 255;
+    }
+    // Dibujar un cuadrado negro de 4x4 en el centro (x:3..6, y:3..6)
+    for (let y = 3; y <= 6; y++) {
+      for (let x = 3; x <= 6; x++) {
+        const idx = (y * width + x) * 4;
+        rgba[idx] = 10;
+        rgba[idx + 1] = 10;
+        rgba[idx + 2] = 10;
+        rgba[idx + 3] = 255;
+      }
+    }
+    const result = processRgbaBufferToBinaryMask(rgba, width, height, {
+      ...DEFAULT_IMAGE_PROCESSING,
+      removeBackground: true,
+      backgroundTolerance: 20,
+    });
+    // Debe haber exactamente 16 píxeles oscuros grabables
+    expect(result.darkPixelCount).toBe(16);
+    // La esquina (0,0) debe haber quedado con alfa 0 (fondo eliminado)
+    expect(result.processedRgba[3]).toBe(0);
+    // El centro (4,4) debe ser negro visible
+    const centerIdx = (4 * width + 4) * 4;
+    expect(result.processedRgba[centerIdx + 3]).toBe(255);
+  });
+
+  // 3. Logo transparente
+  it('3. Caso Difícil: Logo PNG con canal alfa transparente detecta transparencia y genera máscara exacta', () => {
+    const width = 8;
+    const height = 8;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    // Fondo transparente (alfa = 0)
+    rgba.fill(0);
+    // Un punto negro en (2,2)
+    const idx = (2 * width + 2) * 4;
+    rgba[idx] = 0;
+    rgba[idx + 1] = 0;
+    rgba[idx + 2] = 0;
+    rgba[idx + 3] = 255;
+
+    const res = processRgbaBufferToBinaryMask(rgba, width, height, DEFAULT_IMAGE_PROCESSING);
+    expect(res.hasTransparency).toBe(true);
+    expect(res.darkPixelCount).toBe(1);
+  });
+
+  // 4. Logo circular
+  it('4. Caso Difícil: Etiqueta circular de 25 mm con logo centrado respeta simetría radial', () => {
+    const circleLabel = createBlankLabelDesign(25, 25, 'circle');
+    const compiled = compileLabelGeometry(circleLabel);
+    expect(compiled.outerCutContour.primitive?.kind).toBe('circle');
+    expect(compiled.outerCutContour.boundingBox.width).toBeCloseTo(25, 2);
+    expect(compiled.outerCutContour.boundingBox.height).toBeCloseTo(25, 2);
+  });
+
+  // 5. Logo con huecos interiores
+  it('5. Caso Difícil: Logo con huecos interiores (anillo donut calado) conserva subcaminos cerrados con fill-rule evenodd', () => {
+    const hollowSvg = `<svg viewBox="0 0 100 100">
+      <path d="M 10 10 L 90 10 L 90 90 L 10 90 Z M 30 30 L 30 70 L 70 70 L 70 30 Z" />
+    </svg>`;
+    const parsed = parseSvgLogoString(hollowSvg);
+    expect(parsed.normalizedPaths).toHaveLength(1);
+    expect(parsed.normalizedPaths[0]).toContain('Z M');
+
+    const design = createBlankLabelDesign(30, 20, 'rectangle');
+    design.elements = [
+      {
+        id: 'el-hollow',
+        name: 'Donut Calado',
+        type: 'logo_svg',
+        xMm: 15,
+        yMm: 10,
+        widthMm: 12,
+        heightMm: 12,
+        aspectRatio: 1,
+        lockAspectRatio: true,
+        rotationDeg: 0,
+        locked: false,
+        visible: true,
+        rawSvgContent: hollowSvg,
+        normalizedPaths: parsed.normalizedPaths,
+        originalViewBox: parsed.originalViewBox,
+      },
+    ];
+    const nesting = computeNestingLayout(design, { ...DEFAULT_NESTING_CONFIG, requestedQuantity: 2 });
+    const exportedSvg = exportProductionSvg(design, nesting, suelaMat);
+    expect(exportedSvg.svgContent).toContain('fill-rule="evenodd"');
+  });
+
+  // 6. Diseño con múltiples elementos
+  it('6. Caso Difícil: Diseño con múltiples elementos (Logo SVG + Marco interior + Texto CNC) compila sin colisiones', () => {
+    const design = createBlankLabelDesign(40, 20, 'rounded_rect');
+    design.elements = [
+      {
+        id: 'border-1',
+        name: 'Marco',
+        type: 'decorative_border',
+        xMm: 20,
+        yMm: 10,
+        widthMm: 36,
+        heightMm: 16,
+        aspectRatio: 36 / 16,
+        lockAspectRatio: false,
+        rotationDeg: 0,
+        locked: false,
+        visible: true,
+        insetMm: 1.5,
+        strokeWidthMm: 0.25,
+        dashed: false,
+      },
+      {
+        id: 'text-1',
+        name: 'Texto CNC',
+        type: 'vector_text',
+        xMm: 20,
+        yMm: 10,
+        widthMm: 25,
+        heightMm: 3,
+        aspectRatio: 25 / 3,
+        lockAspectRatio: false,
+        rotationDeg: 0,
+        locked: false,
+        visible: true,
+        text: 'LASERHOUSE',
+        fontSizeMm: 2.5,
+        letterSpacingMm: 0.3,
+        fontStyle: 'sans_industrial',
+        strokeWidthMm: 0.3,
+      },
+    ];
+    const compiled = compileLabelGeometry(design);
+    expect(compiled.engravingItems).toHaveLength(2);
+    const nesting = computeNestingLayout(design, { ...DEFAULT_NESTING_CONFIG, requestedQuantity: 10 });
+    const validation = validateLabelAndBatchGeometry(design, nesting, 0);
+    expect(validation.isValid).toBe(true);
+    expect(validation.engraveInvasionCount).toBe(0);
+  });
+
+  // 7. Texto pequeño
+  it('7. Caso Difícil: Texto vectorial diminuto (1.2 mm) genera trazos válidos cerrados sin coordenadas nulas', () => {
+    const design = createBlankLabelDesign(20, 10, 'rounded_rect');
+    design.elements = [
+      {
+        id: 'text-micro',
+        name: 'Micro Texto',
+        type: 'vector_text',
+        xMm: 10,
+        yMm: 5,
+        widthMm: 12,
+        heightMm: 1.2,
+        aspectRatio: 10,
+        lockAspectRatio: false,
+        rotationDeg: 0,
+        locked: false,
+        visible: true,
+        text: 'HECHO EN ARGENTINA',
+        fontSizeMm: 1.2,
+        letterSpacingMm: 0.2,
+        fontStyle: 'sans_industrial',
+        strokeWidthMm: 0.15,
+      },
+    ];
+    const compiled = compileLabelGeometry(design);
+    expect(compiled.engravingItems[0].svgPathD).toBeDefined();
+    expect(compiled.engravingItems[0].svgPathD).not.toContain('NaN');
+  });
+
+  // 8. Etiqueta sin agujeros
+  it('8. Caso Difícil: Etiqueta sin agujeros genera exactamente 0 contornos en Capa 01 Agujeros', () => {
+    const design = createBlankLabelDesign(20, 10, 'rounded_rect');
+    design.holes = { preset: 'none', diameterMm: 1.6, edgeDistanceMm: 2.2, customHoles: [] };
+    const compiled = compileLabelGeometry(design);
+    expect(compiled.holeContours).toHaveLength(0);
+
+    const nesting = computeNestingLayout(design, { ...DEFAULT_NESTING_CONFIG, requestedQuantity: 20 });
+    const svgArt = exportProductionSvg(design, nesting, suelaMat);
+    const audit = parseAndAuditLightBurnSvg(svgArt.svgContent);
+    expect(audit.holesLayerCount).toBe(0);
+  });
+
+  // 9. Etiqueta con agujeros
+  it('9. Caso Difícil: Etiqueta con 4 esquinas + 1 agujero personalizado valida distancia y radio exactos', () => {
+    const design = createBlankLabelDesign(30, 20, 'rounded_rect');
+    design.holes = {
+      preset: 'custom',
+      diameterMm: 2.0,
+      edgeDistanceMm: 3.0,
+      customHoles: [
+        { id: 'h1', x: 3, y: 3, diameterMm: 2.0 },
+        { id: 'h2', x: 27, y: 3, diameterMm: 2.0 },
+        { id: 'h3', x: 27, y: 17, diameterMm: 2.0 },
+        { id: 'h4', x: 3, y: 17, diameterMm: 2.0 },
+        { id: 'center-hole', x: 15, y: 10, diameterMm: 3.5 },
+      ],
+    };
+    const compiled = compileLabelGeometry(design);
+    expect(compiled.holeContours).toHaveLength(5); // 4 esquinas + 1 central
+    expect(compiled.holeContours[4].boundingBox.width).toBeCloseTo(3.5, 2);
+  });
+
+  // 10. Lotes de 500 y 1.000 unidades
+  it('10. Caso Difícil: Organización de lotes industriales de 500 y 1.000 unidades en plancha de 600×400 mm', () => {
+    const design = createReference20x10LabelDesign(false);
+    const config500 = {
+      ...DEFAULT_NESTING_CONFIG,
+      sheetWidthMm: 600,
+      sheetHeightMm: 400,
+      requestedQuantity: 500,
+      gapXMm: 2.0,
+      gapYMm: 2.0,
+      marginLeftMm: 5,
+      marginTopMm: 5,
+      marginRightMm: 5,
+      marginBottomMm: 5,
+    };
+    const res500 = computeNestingLayout(design, config500);
+    expect(res500.totalExportedQuantity).toBe(500);
+    // Cada plancha 600x400 alberga aproximadamente 26 x 32 = 832 etiquetas de 20x10 mm
+    expect(res500.totalBatches).toBe(1);
+
+    const config1000 = {
+      ...config500,
+      sheetWidthMm: 400,
+      sheetHeightMm: 300,
+      requestedQuantity: 1000,
+    };
+    const res1000 = computeNestingLayout(design, config1000);
+    expect(res1000.totalExportedQuantity).toBe(1000);
+    // Plancha más pequeña genera múltiples tandas exactas
+    expect(res1000.totalBatches).toBeGreaterThanOrEqual(2);
+    const sumInstances = res1000.batches.reduce((acc, b) => acc + b.count, 0);
+    expect(sumInstances).toBe(1000);
+  });
+});
+

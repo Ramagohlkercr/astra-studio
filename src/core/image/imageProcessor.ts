@@ -2,7 +2,7 @@ import { roundMm } from '../geometry/geometryEngine';
 import { ImageProcessingOptions, Millimeters, Point2D } from '../types';
 
 export const DEFAULT_IMAGE_PROCESSING: ImageProcessingOptions = {
-  mode: 'vector',
+  mode: 'raster',
   threshold: 145,
   brightness: 0,
   contrast: 15,

@@ -100,4 +100,27 @@ describe('LaserHouse Studio — Pruebas End-to-End de Interfaz (UI)', () => {
 
     expect(createObjUrlMock).toHaveBeenCalledTimes(3);
   });
+
+  it('permite buscar pedidos en el catálogo, cambiar estilos de renderizado y previsualizar simulación de materiales', () => {
+    render(<App />);
+
+    // Abrir modal de pedidos
+    fireEvent.click(screen.getByRole('button', { name: /Pedidos/i }));
+    expect(screen.getByPlaceholderText(/Buscar pedidos por cliente/i)).toBeDefined();
+
+    // Filtrar por término existente
+    const searchInput = screen.getByPlaceholderText(/Buscar pedidos por cliente/i);
+    fireEvent.change(searchInput, { target: { value: 'Marroquinería' } });
+    expect(screen.getByText(/Marroquinería Sur/i)).toBeDefined();
+
+    // Limpiar búsqueda
+    fireEvent.click(screen.getByRole('button', { name: 'Limpiar' }));
+    expect(screen.getByText(/Cliente Textil/i)).toBeDefined();
+
+    // Cerrar modal
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
+
+    // Verificar badge de simulación orientativa
+    expect(screen.getByText(/Simulación orientativa/i)).toBeDefined();
+  });
 });

@@ -357,46 +357,46 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
             </g>
           )}
         </svg>
+      </div>
 
-        {/* Inspector flotante de pieza bajo el cursor y estado de validación */}
-        <div className="absolute bottom-5 left-5 right-5 flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 rounded-lg bg-[#11161f]/95 border border-slate-800 backdrop-blur text-xs">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1.5">
-              <span
-                className={`w-2.5 h-2.5 rounded-full ${
-                  validation.isValid ? 'bg-emerald-400' : 'bg-red-500'
-                }`}
-              />
-              <span className="font-semibold text-slate-200">
-                {validation.isValid
-                  ? 'Geometría Verificada 1:1 mm (Listo para LightBurn / RDWorks)'
-                  : 'Atención: Revisar advertencias geométricas'}
-              </span>
-            </div>
-            <span className="text-slate-400 font-mono">
-              Piezas en tanda: <strong className="text-amber-300">{batch?.count || 0}</strong> / Total pedido:{' '}
-              <strong className="text-slate-200">{nesting.totalRequestedQuantity}</strong>
-            </span>
-            <span className="text-slate-400 font-mono">
-              Cortes: <strong className="text-red-400">{validation.totalProductiveCutContours}</strong> | Agujeros:{' '}
-              <strong className="text-blue-400">{validation.totalProductiveHoleContours}</strong> | Líneas duplicadas:{' '}
-              <strong className="text-emerald-400">{validation.duplicateCutSegmentsCount}</strong>
+      {/* Inspector inferior de pieza bajo el cursor y estado de validación */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-[#11161f] border-t border-slate-800 text-xs shrink-0">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`w-2.5 h-2.5 rounded-full ${
+                validation.isValid ? 'bg-emerald-400' : 'bg-red-500'
+              }`}
+            />
+            <span className="font-semibold text-slate-200">
+              {validation.isValid
+                ? 'Geometría Verificada 1:1 mm (Listo para LightBurn / RDWorks)'
+                : 'Atención: Revisar advertencias geométricas'}
             </span>
           </div>
+          <span className="text-slate-400 font-mono">
+            Piezas en tanda: <strong className="text-amber-300">{batch?.count || 0}</strong> / Total pedido:{' '}
+            <strong className="text-slate-200">{nesting.totalRequestedQuantity}</strong>
+          </span>
+          <span className="text-slate-400 font-mono">
+            Cortes: <strong className="text-red-400">{validation.totalProductiveCutContours}</strong> | Agujeros:{' '}
+            <strong className="text-blue-400">{validation.totalProductiveHoleContours}</strong> | Líneas duplicadas:{' '}
+            <strong className="text-emerald-400">{validation.duplicateCutSegmentsCount}</strong>
+          </span>
+        </div>
 
-          <div className="font-mono text-slate-300">
-            {hoveredInst ? (
-              <span className="text-sky-300">
-                Etiqueta #{hoveredInst.instanceIndex} (Fila {hoveredInst.row + 1}, Col{' '}
-                {hoveredInst.col + 1}) → X: {hoveredInst.xMm} mm, Y: {hoveredInst.yMm} mm (
-                {hoveredInst.widthMm}×{hoveredInst.heightMm} mm)
-              </span>
-            ) : (
-              <span className="text-slate-500">
-                Pase el cursor sobre cualquier etiqueta para inspeccionar su coordenada exacta en mm
-              </span>
-            )}
-          </div>
+        <div className="font-mono text-slate-300">
+          {hoveredInst ? (
+            <span className="text-sky-300">
+              Etiqueta #{hoveredInst.instanceIndex} (Fila {hoveredInst.row + 1}, Col{' '}
+              {hoveredInst.col + 1}) → X: {hoveredInst.xMm} mm, Y: {hoveredInst.yMm} mm (
+              {hoveredInst.widthMm}×{hoveredInst.heightMm} mm)
+            </span>
+          ) : (
+            <span className="text-slate-500">
+              Pase el cursor sobre cualquier etiqueta para inspeccionar su coordenada exacta en mm
+            </span>
+          )}
         </div>
       </div>
     </div>
