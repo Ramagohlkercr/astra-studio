@@ -7,6 +7,7 @@ import {
   roundMm,
   validateLabelAndBatchGeometry,
 } from '../geometry/geometryEngine';
+import { generateKerfCalibrationPatternSvg } from '../geometry/kerfCalibrationGenerator';
 import {
   computeNestingLayout,
   DEFAULT_NESTING_CONFIG,
@@ -740,4 +741,96 @@ describe('Sprint 3 — Pruebas con Diseños Difíciles y Suite de Regresión', (
     expect(sumInstances).toBe(1000);
   });
 });
+
+describe('Sprint 4 — Validación de Pedidos Reales (50, 100, 200, 300, 500 u.) y Calibración de Kerf', () => {
+  const suelaMat = INITIAL_MATERIALS_CATALOG.find((m) => m.id === 'ECOCUERO_SUELA')!;
+  const standardDesign = createReference20x10LabelDesign(false);
+
+  it.each([50, 100, 200, 300, 500])(
+    'organiza pedido real de %i unidades en plancha de 600x400 mm sin superposiciones y con conteo exacto',
+    (quantity) => {
+      const nesting = computeNestingLayout(standardDesign, {
+        ...DEFAULT_NESTING_CONFIG,
+        requestedQuantity: quantity,
+        sheetWidthMm: 600,
+        sheetHeightMm: 400,
+        gapXMm: 2.0,
+        gapYMm: 2.0,
+        marginTopMm: 5.0,
+        marginRightMm: 5.0,
+        marginBottomMm: 5.0,
+        marginLeftMm: 5.0,
+        rotationMode: 'auto_optimize',
+      });
+
+      expect(nesting.totalExportedQuantity).toBe(quantity);
+      expect(nesting.batches.length).toBeGreaterThanOrEqual(1);
+
+      // Verificar que cada instancia tiene coordenadas válidas dentro del recorte
+      for (const batch of nesting.batches) {
+        expect(batch.count).toBeGreaterThan(0);
+        expect(batch.occupiedBounds.maxX).toBeLessThanOrEqual(600);
+        expect(batch.occupiedBounds.maxY).toBeLessThanOrEqual(400);
+
+        // Comprobar que no hay colisiones o superposiciones entre piezas consecutivas
+        for (let i = 0; i < batch.placedInstances.length; i++) {
+          const instA = batch.placedInstances[i];
+          expect(instA.widthMm).toBeGreaterThan(0);
+          expect(instA.heightMm).toBeGreaterThan(0);
+
+          for (let j = i + 1; j < batch.placedInstances.length; j++) {
+            const instB = batch.placedInstances[j];
+            const overlapX =
+              instA.xMm < instB.xMm + instB.widthMm && instA.xMm + instA.widthMm > instB.xMm;
+            const overlapY =
+              instA.yMm < instB.yMm + instB.heightMm && instA.yMm + instA.heightMm > instB.yMm;
+            expect(overlapX && overlapY).toBe(false);
+          }
+        }
+      }
+
+      // Validar geométricamente con el auditor técnico independiente
+      const validation = validateLabelAndBatchGeometry(standardDesign, nesting, 0);
+      expect(validation.isValid).toBe(true);
+      expect(validation.overlappingPiecesCount).toBe(0);
+      expect(validation.outOfBoundsPiecesCount).toBe(0);
+
+      // Exportar SVG y auditar estructura 1:1 mm
+      const svgArtifact = exportProductionSvg(standardDesign, nesting, suelaMat, {
+        mode: 'combined',
+        batchIndex: 0,
+      });
+      const svgAudit = parseAndAuditLightBurnSvg(svgArtifact.svgContent);
+      expect(svgAudit.isValid).toBe(true);
+      expect(svgAudit.viewBoxMatchesMm1To1).toBe(true);
+      expect(svgAudit.hasInvalidNumbersOrNaN).toBe(false);
+    }
+  );
+
+  it('genera patrón de calibración de Kerf (100x20 mm con 10 tablillas) para medición con calibre digital', () => {
+    const artifact = generateKerfCalibrationPatternSvg('Ecocuero Suela');
+
+    expect(artifact.widthMm).toBe(116); // 100 mm + 8 mm margen por lado
+    expect(artifact.heightMm).toBe(46);
+    expect(artifact.svgContent).toContain('CALIBRACION DE KERF');
+    expect(artifact.svgContent).toContain('CAPA_00_GRABADO');
+    expect(artifact.svgContent).toContain('CAPA_02_CORTE');
+    expect(artifact.svgContent).not.toContain('NaN');
+  });
+
+  it('calcula alineación fina dentro de la zona segura sin invadir márgenes ni agujeros', () => {
+    const design = createBlankLabelDesign(40, 20, 'rounded_rect');
+    design.safetyMarginMm = 2.0;
+    const safeZone = computeSafeEngravingZone(design);
+
+    // Margen seguro de 2 mm en 40x20 mm resulta en zona útil de [2..38, 2..18]
+    expect(safeZone.minX).toBeCloseTo(2.0, 2);
+    expect(safeZone.maxX).toBeCloseTo(38.0, 2);
+    expect(safeZone.minY).toBeCloseTo(2.0, 2);
+    expect(safeZone.maxY).toBeCloseTo(18.0, 2);
+    expect(safeZone.width).toBeCloseTo(36.0, 2);
+    expect(safeZone.height).toBeCloseTo(16.0, 2);
+  });
+});
+
 

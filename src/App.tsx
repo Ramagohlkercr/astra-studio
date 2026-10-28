@@ -40,10 +40,12 @@ import {
 import { generateProductionSummaryReport } from './core/exporters/productionSummaryExporter';
 import { exportProductionSvg, SvgExportMode } from './core/exporters/svgExporter';
 import {
+  computeSafeEngravingZone,
   fitElementIntoSafeZone,
   roundMm,
   validateLabelAndBatchGeometry,
 } from './core/geometry/geometryEngine';
+import { generateKerfCalibrationPatternSvg } from './core/geometry/kerfCalibrationGenerator';
 import { processImageDataUrlInBrowser } from './core/image/browserImageLoader';
 import {
   DEFAULT_IMAGE_PROCESSING,
@@ -340,6 +342,41 @@ export function App() {
     notify(
       `Elemento "${selectedElement.name}" centrado y ajustado a la zona segura (${fitted.widthMm}×${fitted.heightMm} mm).`
     );
+  };
+
+  // Alineación precisa del elemento seleccionado dentro de la etiqueta y la zona segura
+  const alignSelectedElement = (
+    mode: 'safe_left' | 'safe_right' | 'safe_top' | 'safe_bottom' | 'center_x' | 'center_y'
+  ) => {
+    if (!selectedElement) return;
+    const safe = computeSafeEngravingZone(labelDesign);
+    let nx = selectedElement.xMm;
+    let ny = selectedElement.yMm;
+
+    if (mode === 'safe_left') {
+      nx = roundMm(safe.minX + selectedElement.widthMm / 2, 2);
+    } else if (mode === 'safe_right') {
+      nx = roundMm(safe.maxX - selectedElement.widthMm / 2, 2);
+    } else if (mode === 'center_x') {
+      nx = roundMm(labelDesign.widthMm / 2, 2);
+    }
+
+    if (mode === 'safe_top') {
+      ny = roundMm(safe.minY + selectedElement.heightMm / 2, 2);
+    } else if (mode === 'safe_bottom') {
+      ny = roundMm(safe.maxY - selectedElement.heightMm / 2, 2);
+    } else if (mode === 'center_y') {
+      ny = roundMm(labelDesign.heightMm / 2, 2);
+    }
+
+    updateSelectedElement({ xMm: nx, yMm: ny });
+  };
+
+  // Descarga del patrón físico de calibración de Kerf (10 líneas de corte para medir con calibre)
+  const handleExportKerfPattern = () => {
+    const kerf = generateKerfCalibrationPatternSvg(activeMaterial.name);
+    triggerBrowserDownload(kerf.svgContent, kerf.filenameSuggested, 'image/svg+xml;charset=utf-8');
+    notify(`Patrón de calibración de Kerf generado: ${kerf.filenameSuggested}`);
   };
 
   // Reprocesar imagen raster cuando cambian sus controles de umbral/brillo/contraste/vectorización
@@ -1640,29 +1677,21 @@ export function App() {
                     <div className="grid grid-cols-3 gap-1">
                       <button
                         type="button"
-                        onClick={() =>
-                          updateSelectedElement({
-                            xMm: roundMm(labelDesign.widthMm / 2, 2),
-                          })
-                        }
-                        className="flex items-center justify-center gap-1 py-1.5 px-2 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px]"
+                        onClick={() => alignSelectedElement('center_x')}
+                        className="flex items-center justify-center gap-1 py-1.5 px-1.5 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px]"
                         title="Centrar horizontalmente en la etiqueta"
                       >
                         <MoveHorizontal className="w-3 h-3 text-sky-400" />
-                        <span>Centrar X</span>
+                        <span>Centro X</span>
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
-                          updateSelectedElement({
-                            yMm: roundMm(labelDesign.heightMm / 2, 2),
-                          })
-                        }
-                        className="flex items-center justify-center gap-1 py-1.5 px-2 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px]"
+                        onClick={() => alignSelectedElement('center_y')}
+                        className="flex items-center justify-center gap-1 py-1.5 px-1.5 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px]"
                         title="Centrar verticalmente en la etiqueta"
                       >
                         <MoveVertical className="w-3 h-3 text-sky-400" />
-                        <span>Centrar Y</span>
+                        <span>Centro Y</span>
                       </button>
                       <button
                         type="button"
@@ -1672,11 +1701,47 @@ export function App() {
                               (selectedElement.rotationDeg + 90) % 360,
                           })
                         }
-                        className="flex items-center justify-center gap-1 py-1.5 px-2 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px]"
+                        className="flex items-center justify-center gap-1 py-1.5 px-1.5 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px]"
                         title="Rotar 90 grados"
                       >
                         <RotateCw className="w-3 h-3 text-amber-400" />
                         <span>Rotar 90°</span>
+                      </button>
+                    </div>
+
+                    {/* Alineación rápida a bordes de zona segura */}
+                    <div className="grid grid-cols-4 gap-1 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => alignSelectedElement('safe_left')}
+                        className="py-1 px-1 rounded bg-[#0d1219] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300 text-center"
+                        title="Alinear al margen izquierdo seguro"
+                      >
+                        Izq. Segura
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => alignSelectedElement('safe_right')}
+                        className="py-1 px-1 rounded bg-[#0d1219] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300 text-center"
+                        title="Alinear al margen derecho seguro"
+                      >
+                        Der. Segura
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => alignSelectedElement('safe_top')}
+                        className="py-1 px-1 rounded bg-[#0d1219] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300 text-center"
+                        title="Alinear al margen superior seguro"
+                      >
+                        Arriba
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => alignSelectedElement('safe_bottom')}
+                        className="py-1 px-1 rounded bg-[#0d1219] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300 text-center"
+                        title="Alinear al margen inferior seguro"
+                      >
+                        Abajo
                       </button>
                     </div>
 
@@ -2429,34 +2494,57 @@ export function App() {
                 <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-[#11161f] border border-slate-800">
                   <div>
                     <h2 className="text-base font-bold text-white">
-                      Auditoría Independiente de Formatos SVG (LightBurn) y DXF R12 (RDWorks)
+                      Auditoría Técnica Independiente de Formatos SVG y DXF
                     </h2>
                     <p className="text-xs text-slate-400">
-                      Verificación de escala física 1:1 en milímetros, cierre de polilíneas y procedimiento de importación manual.
+                      Verificación matemática de escala 1:1 mm, contornos cerrados y colores de capas previa a la importación en LightBurn / RDWorks.
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
+                      onClick={handleExportKerfPattern}
+                      className="px-3 py-1.5 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 text-xs font-mono"
+                      title="Descargar patrón físico de 100x20 mm para medir el kerf del láser con calibre digital"
+                    >
+                      Calibración Kerf (100×20 mm)
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleExportSvg('engrave_only')}
                       className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 border border-slate-700"
                     >
-                      Exportar SVG Sólo Grabado
+                      SVG Sólo Grabado
                     </button>
                     <button
                       type="button"
                       onClick={() => handleExportSvg('cut_only')}
                       className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 border border-slate-700"
                     >
-                      Exportar SVG Sólo Corte
+                      SVG Sólo Corte
                     </button>
                     <button
                       type="button"
                       onClick={handleExportSummary}
                       className="px-3 py-1.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-xs font-mono text-emerald-300 border border-emerald-500/40"
                     >
-                      Descargar Hoja Técnica (.TXT)
+                      Hoja Técnica (.TXT)
                     </button>
+                  </div>
+                </div>
+
+                {/* Banner de estado de LightBurn */}
+                <div className="p-3.5 rounded-lg bg-sky-950/40 border border-sky-500/30 text-xs text-sky-200 flex items-start gap-2.5">
+                  <div className="w-5 h-5 rounded-full bg-sky-500/20 text-sky-300 flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
+                    i
+                  </div>
+                  <div className="space-y-1">
+                    <div className="font-semibold text-white">
+                      Validación Técnica Independiente (LightBurn pendiente de instalación)
+                    </div>
+                    <div className="text-[11px] text-slate-300 leading-relaxed">
+                      Dado que LightBurn aún no está instalado en este equipo, los archivos son auditados y verificados matemáticamente por el motor geométrico de LaserHouse Studio para garantizar escala física 1:1, contornos cerrados con terminación Z y separación estricta de capas por color (<strong className="text-white">#000000</strong> Grabado, <strong className="text-blue-400">#0000FF</strong> Agujeros, <strong className="text-red-400">#FF0000</strong> Corte). Cuando adquieras e instales LightBurn, abrí el archivo de calibración y corroborá las cotas en la barra de herramientas.
+                    </div>
                   </div>
                 </div>
 
@@ -2597,7 +2685,7 @@ export function App() {
               </span>
             </div>
 
-            <div className="grid grid-cols-4 gap-1.5">
+            <div className="grid grid-cols-5 gap-1">
               {STANDARD_QUANTITY_PRESETS.map((qty) => (
                 <button
                   key={qty}
@@ -3113,7 +3201,7 @@ export function App() {
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => handleLoadOrder(ord)}
@@ -3121,39 +3209,18 @@ export function App() {
                       >
                         Abrir Pedido
                       </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleDuplicateOrderWithNewQuantity(ord, 200)
-                        }
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/35 text-xs font-medium"
-                        title="Duplicar este diseño y organizar automáticamente 200 unidades"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>× 200 u.</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleDuplicateOrderWithNewQuantity(ord, 500)
-                        }
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-xs font-medium"
-                        title="Duplicar este diseño y organizar automáticamente 500 unidades"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>× 500 u.</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleDuplicateOrderWithNewQuantity(ord, 1000)
-                        }
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-medium"
-                        title="Duplicar este diseño y organizar automáticamente 1000 unidades"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>× 1000 u.</span>
-                      </button>
+                      <span className="text-[10px] text-slate-500 font-mono ml-1">Repetir:</span>
+                      {[50, 100, 200, 300, 500].map((qty) => (
+                        <button
+                          key={qty}
+                          type="button"
+                          onClick={() => handleDuplicateOrderWithNewQuantity(ord, qty)}
+                          className="px-2 py-1 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px] font-mono text-slate-300 hover:text-amber-300 hover:border-amber-500/40 transition"
+                          title={`Duplicar este diseño y organizar automáticamente ${qty} unidades`}
+                        >
+                          ×{qty}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 ))

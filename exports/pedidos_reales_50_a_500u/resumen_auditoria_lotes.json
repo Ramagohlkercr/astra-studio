@@ -1,0 +1,80 @@
+{
+  "lotes": [
+    {
+      "cantidad": 50,
+      "tandas": 1,
+      "piezasEnTanda1": 50,
+      "dimensionBloqueMm": "586 x 42",
+      "eficienciaBloquePct": 40.63,
+      "usoPlanchaPct": 4.17,
+      "validacionGeometrica": true,
+      "auditoriaSvgLightBurn": true,
+      "auditoriaDxfRDWorks": true,
+      "tamanoPrimeraPiezaDxf": {
+        "width": 10,
+        "height": 20
+      }
+    },
+    {
+      "cantidad": 100,
+      "tandas": 1,
+      "piezasEnTanda1": 100,
+      "dimensionBloqueMm": "586 x 64",
+      "eficienciaBloquePct": 53.33,
+      "usoPlanchaPct": 8.33,
+      "validacionGeometrica": true,
+      "auditoriaSvgLightBurn": true,
+      "auditoriaDxfRDWorks": true,
+      "tamanoPrimeraPiezaDxf": {
+        "width": 10,
+        "height": 20
+      }
+    },
+    {
+      "cantidad": 200,
+      "tandas": 1,
+      "piezasEnTanda1": 200,
+      "dimensionBloqueMm": "586 x 108",
+      "eficienciaBloquePct": 63.2,
+      "usoPlanchaPct": 16.67,
+      "validacionGeometrica": true,
+      "auditoriaSvgLightBurn": true,
+      "auditoriaDxfRDWorks": true,
+      "tamanoPrimeraPiezaDxf": {
+        "width": 10,
+        "height": 20
+      }
+    },
+    {
+      "cantidad": 300,
+      "tandas": 1,
+      "piezasEnTanda1": 300,
+      "dimensionBloqueMm": "586 x 152",
+      "eficienciaBloquePct": 67.36,
+      "usoPlanchaPct": 25,
+      "validacionGeometrica": true,
+      "auditoriaSvgLightBurn": true,
+      "auditoriaDxfRDWorks": true,
+      "tamanoPrimeraPiezaDxf": {
+        "width": 10,
+        "height": 20
+      }
+    },
+    {
+      "cantidad": 500,
+      "tandas": 1,
+      "piezasEnTanda1": 500,
+      "dimensionBloqueMm": "586 x 240",
+      "eficienciaBloquePct": 71.1,
+      "usoPlanchaPct": 41.67,
+      "validacionGeometrica": true,
+      "auditoriaSvgLightBurn": true,
+      "auditoriaDxfRDWorks": true,
+      "tamanoPrimeraPiezaDxf": {
+        "width": 10,
+        "height": 20
+      }
+    }
+  ],
+  "kerfInfo": "Cortar sobre recorte de prueba en la Vank 9060 CO₂. Empujar las 10 tablillas hacia la izquierda dentro del marco. Medir la luz restante a la derecha con un calibre digital en milímetros y dividir por 10. Ingresar el valor obtenido en el campo Kerf (mm) de LaserHouse Studio."
+}

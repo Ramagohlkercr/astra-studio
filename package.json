@@ -10,15 +10,20 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "generate:sample200": "npx tsx scripts/generate-sample-200.ts"
+    "generate:sample200": "npx tsx scripts/generate-sample-200.ts",
+    "tauri": "tauri",
+    "build:desktop": "tauri build",
+    "build:app": "npm run build && tauri build --bundles app"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2.12.4",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@types/node": "^22.10.2",
