@@ -1,0 +1,1 @@
+524d67ead58607a8f76b54f7ad4a7a768409d4875dc9f53136d991c41dc50807  dist_macos/LaserHouse Studio.app/Contents/MacOS/app

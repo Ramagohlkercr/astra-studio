@@ -100,6 +100,14 @@ export function computeNestingLayout(
   const deg0 = calcGridCapacity(usableW, usableH, baseW, baseH, config.gapXMm, config.gapYMm);
   const deg90 = calcGridCapacity(usableW, usableH, baseH, baseW, config.gapXMm, config.gapYMm);
 
+  if (config.layoutMode === 'blocks') {
+    const columns = requestedQty <= 25 ? 5 : 10;
+    for (const grid of [deg0, deg90]) {
+      grid.cols = Math.min(grid.cols, columns);
+      grid.capacity = grid.cols * grid.rows;
+    }
+  }
+
   let appliedRotationDeg: 0 | 90 = 0;
   if (config.rotationMode === '90') {
     appliedRotationDeg = 90;

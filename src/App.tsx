@@ -199,7 +199,7 @@ export function App() {
 
   const [labelDesign, setLabelDesign] = useState<LabelDesign>(initialOrder.labelDesign);
   const [nestingConfig, setNestingConfig] = useState<NestingConfig>(
-    initialOrder.nestingConfig
+    {...initialOrder.nestingConfig, layoutMode: initialOrder.nestingConfig.layoutMode ?? 'blocks'}
   );
 
   // Navegación principal del Asistente de 6 pasos
@@ -284,11 +284,16 @@ export function App() {
     }, 4500);
   };
 
+  const canvasInteraction = useRef(false);
   const pushStateWithHistory = (
     nextDesign: LabelDesign,
     nextNesting?: NestingConfig,
     nextMatId?: string
   ) => {
+    if (canvasInteraction.current) {
+      setLabelDesign(nextDesign);
+      return;
+    }
     const snap: HistorySnapshot = {
       labelDesign: structuredClone(nextDesign),
       nestingConfig: structuredClone(nextNesting || nestingConfig),
@@ -868,7 +873,7 @@ export function App() {
   };
 
   // 6. Cambio manual de tamaño en milímetros
-  const handleUpdateElementSizeMm = (newW: number, newH?: number) => {
+  const handleUpdateElementSizeMm = (newW: number, newH?: number, xMm?: number, yMm?: number) => {
     if (!selectedElement) return;
     const norm = getElementNormalizedContentBounds(selectedElement);
     const aspect =
@@ -903,6 +908,13 @@ export function App() {
       };
     }
 
+    if (xMm !== undefined && yMm !== undefined) updatedEl = {...updatedEl, xMm, yMm};
+    else {
+      const before = getElementVisibleBoundingBoxMm(selectedElement);
+      const after = getElementVisibleBoundingBoxMm(updatedEl);
+      updatedEl = {...updatedEl, xMm: updatedEl.xMm+(before.minX+before.maxX-after.minX-after.maxX)/2,
+        yMm: updatedEl.yMm+(before.minY+before.maxY-after.minY-after.maxY)/2};
+    }
     const updatedEls = labelDesign.elements.map((el) =>
       el.id === selectedElement.id ? updatedEl : el
     );
@@ -1005,7 +1017,7 @@ export function App() {
     setOrderNotes(ord.notes); setSelectedMaterialId(ord.materialId);
     if (ord.materialProfileSnapshot) setMaterials(prev => [...prev.filter(m => m.id !== ord.materialId), ord.materialProfileSnapshot]);
     setSelectedElementId(ord.labelDesign.elements[0]?.id ?? null);
-    setLabelDesign(structuredClone(ord.labelDesign)); setNestingConfig(structuredClone(ord.nestingConfig));
+    setLabelDesign(structuredClone(ord.labelDesign)); setNestingConfig({...structuredClone(ord.nestingConfig), layoutMode: ord.nestingConfig.layoutMode ?? 'blocks'});
     setActiveBatchIndex(0);
     setHistory([{labelDesign: structuredClone(ord.labelDesign), nestingConfig: structuredClone(ord.nestingConfig), materialId: ord.materialId}]);
     setHistoryIndex(0); setIsOrdersModalOpen(false); setCurrentStep('logo');
@@ -1054,6 +1066,7 @@ export function App() {
       labelDesign: blank,
       nestingConfig: {
         ...initialOrder.nestingConfig,
+        layoutMode: 'blocks',
         requestedQuantity: 200,
       },
       exportedFilesHistory: [],
@@ -1855,10 +1868,10 @@ export function App() {
                           max={labelDesign.widthMm}
                           value={roundMm(
                             selectedElement.widthMm *
-                              (selectedElement.contentBoundsNormalized?.width || 1),
+                              getElementNormalizedContentBounds(selectedElement).width,
                             2
                           )}
-                          onChange={(e) => handleUpdateElementSizeMm(Number(e.target.value))}
+                          onChange={(e) => handleUpdateElementSizeMm(Number(e.target.value) / getElementNormalizedContentBounds(selectedElement).width)}
                           className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
                         />
                       </div>
@@ -1871,12 +1884,12 @@ export function App() {
                           max={labelDesign.heightMm}
                           value={roundMm(
                             selectedElement.heightMm *
-                              (selectedElement.contentBoundsNormalized?.height || 1),
+                              getElementNormalizedContentBounds(selectedElement).height,
                             2
                           )}
                           onChange={(e) => {
-                            const newH = Number(e.target.value);
-                            const aspect = selectedElement.aspectRatio || 1;
+                            const newH = Number(e.target.value) / getElementNormalizedContentBounds(selectedElement).height;
+                            const aspect = selectedElement.widthMm / selectedElement.heightMm;
                             handleUpdateElementSizeMm(newH * aspect, newH);
                           }}
                           className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
@@ -2058,6 +2071,16 @@ export function App() {
                   </div>
                 </div>
 
+                <label className="block text-slate-300 space-y-2">
+                  <span>Distribución de etiquetas</span>
+                  <select aria-label="Distribución de etiquetas" value={nestingConfig.layoutMode ?? 'blocks'}
+                    onChange={e => pushStateWithHistory(labelDesign, {...nestingConfig, layoutMode: e.target.value as 'blocks'|'sheet'})}
+                    className="w-full bg-slate-900 border border-slate-700 p-2 rounded">
+                    <option value="blocks">Bloques: 5×5 / 10×5</option>
+                    <option value="sheet">Aprovechar ancho de plancha</option>
+                  </select>
+                  <p className="text-xs text-slate-400">Hasta 25: 5 columnas. Desde 26: 10 columnas, continuando hacia abajo en grupos de cinco filas. Se adapta al material disponible.</p>
+                </label>
                 {/* Cantidad requerida con botones de 1 clic */}
                 <div>
                   <span className="text-slate-400 font-semibold block mb-1.5">
@@ -2391,6 +2414,8 @@ export function App() {
                 material={activeMaterial}
                 selectedElementId={selectedElementId}
                 onSelectElement={(id) => setSelectedElementId(id)}
+                onInteractionStart={() => { canvasInteraction.current = true; }}
+                onInteractionEnd={() => { canvasInteraction.current = false; pushStateWithHistory(labelDesign); }}
                 onMoveElement={(id, nx, ny) => {
                   const updatedEls = labelDesign.elements.map((el) =>
                     el.id === id ? { ...el, xMm: roundMm(nx, 2), yMm: roundMm(ny, 2) } : el
@@ -2400,8 +2425,8 @@ export function App() {
                     elements: updatedEls,
                   });
                 }}
-                onResizeElement={(id, nw, nh) => {
-                  handleUpdateElementSizeMm(nw, nh);
+                onResizeElement={(id, nw, nh, x, y) => {
+                  handleUpdateElementSizeMm(nw, nh, x, y);
                 }}
                 onRotateElement={(id, rot) => {
                   const updatedEls = labelDesign.elements.map((el) =>

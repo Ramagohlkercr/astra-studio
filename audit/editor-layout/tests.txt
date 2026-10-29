@@ -1,0 +1,41 @@
+
+ RUN  v2.1.9 /Users/ramirogohlke/Documents/Astra Studio
+
+ ✓ src/core/__tests__/editorLayout.test.ts (23 tests) 3ms
+ ✓ src/core/__tests__/codexAudit.test.ts (26 tests) 24ms
+ ✓ src/core/__tests__/customDimensionsValidation.test.ts (12 tests) 42ms
+ ✓ src/core/__tests__/wizardMandatoryTests.test.ts (16 tests) 156ms
+ ✓ src/__tests__/EditorSizes.test.tsx (1 test) 128ms
+ ✓ src/__tests__/CodexUI.test.tsx (3 tests) 196ms
+ ✓ src/__tests__/AppUI.test.tsx (5 tests) 765ms
+stderr | src/__tests__/AppUI.test.tsx
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/Users/ramirogohlke/Documents/Astra Studio/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:81:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+ ✓ src/core/__tests__/laserhouseCore.test.ts (44 tests) 1072ms
+   ✓ Sprint 4 — Validación de Pedidos Reales (50, 100, 200, 300, 500 u.) y Calibración de Kerf > organiza pedido real de 500 unidades en plancha de 600x400 mm sin superposiciones y con conteo exacto 388ms
+
+ Test Files  8 passed (8)
+      Tests  130 passed (130)
+   Start at  17:31:49
+   Duration  1.46s (transform 291ms, setup 0ms, collect 1.04s, tests 2.39s, environment 1.12s, prepare 255ms)
+

@@ -1,11 +1,14 @@
+import { resizeArtwork } from '../core/geometry/editorResize';
 import React, { useRef, useState } from 'react';
 import {
   compileLabelGeometry,
   getElementVisibleBoundingBoxMm,
+  getElementNormalizedContentBounds,
   roundMm,
 } from '../core/geometry/geometryEngine';
 import {
   LabelDesign,
+  LabelElement,
   LIGHTBURN_LAYERS,
   MaterialProfile,
   Point2D,
@@ -17,7 +20,9 @@ interface LabelEditorCanvasProps {
   selectedElementId: string | null;
   onSelectElement: (id: string | null) => void;
   onMoveElement: (id: string, newXMm: number, newYMm: number) => void;
-  onResizeElement?: (id: string, newWidthMm: number, newHeightMm: number) => void;
+  onResizeElement?: (id: string, newWidthMm: number, newHeightMm: number, xMm?: number, yMm?: number) => void;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
   onRotateElement?: (id: string, newRotationDeg: number) => void;
   zoomLevel: number; // 1.0 = base scale (~18 px/mm)
   onZoomChange: (nextZoom: number) => void;
@@ -31,6 +36,7 @@ type InteractionMode = 'idle' | 'move' | 'resize' | 'rotate';
 type ResizeCorner = 'nw' | 'ne' | 'se' | 'sw';
 
 interface DragState {
+  element?: LabelElement;
   mode: InteractionMode;
   elementId: string;
   corner?: ResizeCorner;
@@ -52,6 +58,8 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
   onMoveElement,
   onResizeElement,
   onRotateElement,
+  onInteractionStart,
+  onInteractionEnd,
   zoomLevel,
   onZoomChange,
   showMillimeterGrid,
@@ -72,14 +80,12 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
   const clientToMillimeters = (clientX: number, clientY: number): Point2D => {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
-    const rect = svg.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return { x: 0, y: 0 };
-    const scaleX = viewWidthMm / rect.width;
-    const scaleY = viewHeightMm / rect.height;
-    return {
-      x: viewMinX + (clientX - rect.left) * scaleX,
-      y: viewMinY + (clientY - rect.top) * scaleY,
-    };
+    const matrix = svg.getScreenCTM();
+    if (!matrix) return {x:0,y:0};
+    const point = svg.createSVGPoint();
+    point.x=clientX; point.y=clientY;
+    const local = point.matrixTransform(matrix.inverse());
+    return {x:local.x,y:local.y};
   };
 
   const selectedEl = design.elements.find((e) => e.id === selectedElementId);
@@ -91,6 +97,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
     elYMm: number,
     locked: boolean
   ) => {
+    e.preventDefault();
     e.stopPropagation();
     onSelectElement(elementId);
     if (locked) return;
@@ -98,6 +105,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
     const el = design.elements.find((item) => item.id === elementId);
     if (!el) return;
 
+    onInteractionStart?.();
     setDragState({
       mode: 'move',
       elementId,
@@ -117,12 +125,15 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
     e: React.PointerEvent,
     corner: ResizeCorner
   ) => {
+    e.preventDefault();
     e.stopPropagation();
     if (!selectedEl || selectedEl.locked) return;
     const pt = clientToMillimeters(e.clientX, e.clientY);
 
+    onInteractionStart?.();
     setDragState({
       mode: 'resize',
+      element: structuredClone(selectedEl),
       elementId: selectedEl.id,
       corner,
       startPt: pt,
@@ -138,10 +149,12 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
   };
 
   const handleRotateHandlePointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
     e.stopPropagation();
     if (!selectedEl || selectedEl.locked) return;
     const pt = clientToMillimeters(e.clientX, e.clientY);
 
+    onInteractionStart?.();
     setDragState({
       mode: 'rotate',
       elementId: selectedEl.id,
@@ -186,44 +199,17 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
       ny = roundMm(Math.max(0, Math.min(design.heightMm, ny)), 2);
       onMoveElement(dragState.elementId, nx, ny);
     } else if (dragState.mode === 'resize' && onResizeElement) {
-      const dx = pt.x - dragState.startPt.x;
-      const dy = pt.y - dragState.startPt.y;
-
-      let factorX = 1;
-      let factorY = 1;
-      if (dragState.corner === 'se') {
-        factorX = 1;
-        factorY = 1;
-      } else if (dragState.corner === 'sw') {
-        factorX = -1;
-        factorY = 1;
-      } else if (dragState.corner === 'ne') {
-        factorX = 1;
-        factorY = -1;
-      } else if (dragState.corner === 'nw') {
-        factorX = -1;
-        factorY = -1;
-      }
-
-      let deltaW = dx * factorX * 2;
-      let newW = Math.max(1.0, dragState.initWidthMm + deltaW);
-      let newH = dragState.initHeightMm;
-
-      if (dragState.lockAspectRatio) {
-        newH = Math.max(0.8, roundMm(newW / dragState.aspectRatio, 2));
-      } else {
-        let deltaH = dy * factorY * 2;
-        newH = Math.max(0.8, dragState.initHeightMm + deltaH);
-      }
-
-      newW = roundMm(newW, 2);
-      newH = roundMm(newH, 2);
-      onResizeElement(dragState.elementId, newW, newH);
+      if (!dragState.element || !dragState.corner) return;
+      const resized = resizeArtwork(dragState.element, dragState.corner, {
+        x:pt.x-dragState.startPt.x, y:pt.y-dragState.startPt.y,
+      });
+      onResizeElement(dragState.elementId, resized.widthMm, resized.heightMm, resized.xMm, resized.yMm);
     } else if (dragState.mode === 'rotate' && onRotateElement) {
       const centerX = dragState.initXMm;
       const centerY = dragState.initYMm;
       const radians = Math.atan2(pt.y - centerY, pt.x - centerX);
-      let degrees = Math.round((radians * 180) / Math.PI + 90);
+      const initial = Math.atan2(dragState.startPt.y-centerY, dragState.startPt.x-centerX);
+      let degrees = Math.round(dragState.initRotationDeg+(radians-initial)*180/Math.PI);
       if (degrees < 0) degrees += 360;
       degrees = degrees % 360;
       onRotateElement(dragState.elementId, degrees);
@@ -231,6 +217,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
   };
 
   const handlePointerUp = () => {
+    if (dragState) onInteractionEnd?.();
     setDragState(null);
   };
 
@@ -259,7 +246,12 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
   const holeStroke = LIGHTBURN_LAYERS.HOLES.hexColor;
 
   // Handles de selección si hay un elemento activo
-  const handleRadius = 0.45;
+  const handleRadius = 0.6;
+  const bounds = selectedEl ? getElementNormalizedContentBounds(selectedEl) : null;
+  const left = selectedEl && bounds ? selectedEl.xMm+(bounds.minX-.5)*selectedEl.widthMm : 0;
+  const right = selectedEl && bounds ? selectedEl.xMm+(bounds.maxX-.5)*selectedEl.widthMm : 0;
+  const top = selectedEl && bounds ? selectedEl.yMm+(bounds.minY-.5)*selectedEl.heightMm : 0;
+  const bottom = selectedEl && bounds ? selectedEl.yMm+(bounds.maxY-.5)*selectedEl.heightMm : 0;
   const handleDistRot = 2.0;
 
   return (
@@ -274,7 +266,8 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
       }}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      onClick={() => onSelectElement(null)}
+      onPointerCancel={handlePointerUp}
+      onClick={(e) => { if (e.target === e.currentTarget) onSelectElement(null); }}
     >
       {/* Aviso de Simulación Visual de Material */}
       <div className="absolute top-3 left-4 z-10 pointer-events-none flex items-center gap-2 px-2.5 py-1 rounded-md bg-[#11161f]/85 border border-slate-700/80 shadow text-[11px] text-slate-300 backdrop-blur-sm">
@@ -515,7 +508,6 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
         >
           {compiled.engravingItems.map((eng) => {
             const rawEl = design.elements.find((e) => eng.id.endsWith(e.id));
-            const isSelected = rawEl && rawEl.id === selectedElementId;
             return (
               <g
                 key={eng.id}
@@ -558,20 +550,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
                     }
                   />
                 )}
-                {/* Caja de selección interactiva */}
-                {rawEl && isSelected && (
-                  <rect
-                    x={rawEl.xMm - rawEl.widthMm / 2 - 0.2}
-                    y={rawEl.yMm - rawEl.heightMm / 2 - 0.2}
-                    width={rawEl.widthMm + 0.4}
-                    height={rawEl.heightMm + 0.4}
-                    fill="transparent"
-                    stroke="#f59e0b"
-                    strokeWidth="0.14"
-                    strokeDasharray="0.4 0.25"
-                    pointerEvents="none"
-                  />
-                )}
+
               </g>
             );
           })}
@@ -589,71 +568,73 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
         ))}
 
         {/* CONTROLES DE MANIPULACIÓN INTERACTIVA (MANIJAS DE RESIZE Y ROTACIÓN CON MOUSE) */}
-        {selectedEl && (
-          <g>
+        {selectedEl && !selectedEl.locked && (
+          <g transform={`rotate(${selectedEl.rotationDeg} ${selectedEl.xMm} ${selectedEl.yMm})`} style={{touchAction:'none'}} onClick={e => e.stopPropagation()}>
+            <rect x={left} y={top} width={right-left} height={bottom-top}
+              fill="none" stroke="#f59e0b" strokeWidth="0.14" strokeDasharray="0.4 0.25" pointerEvents="none" />
             {/* Esquina Noroeste (NW) */}
             <circle
-              cx={selectedEl.xMm - selectedEl.widthMm / 2}
-              cy={selectedEl.yMm - selectedEl.heightMm / 2}
+              cx={left}
+              cy={top}
               r={handleRadius}
               fill="#ffffff"
               stroke="#f59e0b"
               strokeWidth="0.12"
-              className="cursor-nwse-resize hover:scale-125 transition-transform"
-              onPointerDown={(e) => handleResizeHandlePointerDown(e, 'nw')}
+              className="cursor-nwse-resize"
+              aria-label="Agrandar logo nw" data-resize-handle="nw" onPointerDown={(e) => handleResizeHandlePointerDown(e, 'nw')}
             />
             {/* Esquina Noreste (NE) */}
             <circle
-              cx={selectedEl.xMm + selectedEl.widthMm / 2}
-              cy={selectedEl.yMm - selectedEl.heightMm / 2}
+              cx={right}
+              cy={top}
               r={handleRadius}
               fill="#ffffff"
               stroke="#f59e0b"
               strokeWidth="0.12"
-              className="cursor-nesw-resize hover:scale-125 transition-transform"
-              onPointerDown={(e) => handleResizeHandlePointerDown(e, 'ne')}
+              className="cursor-nesw-resize"
+              aria-label="Agrandar logo ne" data-resize-handle="ne" onPointerDown={(e) => handleResizeHandlePointerDown(e, 'ne')}
             />
             {/* Esquina Sureste (SE) */}
             <circle
-              cx={selectedEl.xMm + selectedEl.widthMm / 2}
-              cy={selectedEl.yMm + selectedEl.heightMm / 2}
+              cx={right}
+              cy={bottom}
               r={handleRadius}
               fill="#ffffff"
               stroke="#f59e0b"
               strokeWidth="0.12"
-              className="cursor-nwse-resize hover:scale-125 transition-transform"
-              onPointerDown={(e) => handleResizeHandlePointerDown(e, 'se')}
+              className="cursor-nwse-resize"
+              aria-label="Agrandar logo se" data-resize-handle="se" onPointerDown={(e) => handleResizeHandlePointerDown(e, 'se')}
             />
             {/* Esquina Suroeste (SW) */}
             <circle
-              cx={selectedEl.xMm - selectedEl.widthMm / 2}
-              cy={selectedEl.yMm + selectedEl.heightMm / 2}
+              cx={left}
+              cy={bottom}
               r={handleRadius}
               fill="#ffffff"
               stroke="#f59e0b"
               strokeWidth="0.12"
-              className="cursor-nesw-resize hover:scale-125 transition-transform"
-              onPointerDown={(e) => handleResizeHandlePointerDown(e, 'sw')}
+              className="cursor-nesw-resize"
+              aria-label="Agrandar logo sw" data-resize-handle="sw" onPointerDown={(e) => handleResizeHandlePointerDown(e, 'sw')}
             />
 
             {/* Manija de Rotación Superior (ROT) */}
             <line
               x1={selectedEl.xMm}
-              y1={selectedEl.yMm - selectedEl.heightMm / 2}
+              y1={top}
               x2={selectedEl.xMm}
-              y2={selectedEl.yMm - selectedEl.heightMm / 2 - handleDistRot}
+              y2={top - handleDistRot}
               stroke="#f59e0b"
               strokeWidth="0.1"
               strokeDasharray="0.2 0.15"
             />
             <circle
               cx={selectedEl.xMm}
-              cy={selectedEl.yMm - selectedEl.heightMm / 2 - handleDistRot}
+              cy={top - handleDistRot}
               r={handleRadius * 1.15}
               fill="#f59e0b"
               stroke="#ffffff"
               strokeWidth="0.12"
-              className="cursor-grab hover:scale-125 transition-transform"
+              className="cursor-grab"
               onPointerDown={handleRotateHandlePointerDown}
             >
               <title>Arrastrar con el mouse para rotar el elemento</title>
