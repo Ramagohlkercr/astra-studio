@@ -1,0 +1,55 @@
+
+ RUN  v2.1.9 /Users/ramirogohlke/Documents/Astra Studio
+
+ ❯ src/core/__tests__/codexAudit.test.ts (14 tests | 4 failed) 17ms
+   × Codex boundary and persistence regressions > places compensated toolpath inside the declared material margin 3ms
+     → expected 4.8 to be greater than or equal to 5
+   × Codex boundary and persistence regressions > computes relative and horizontal SVG visible bounds from commands 1ms
+     → expected +0 to be 0.6 // Object.is equality
+   × Codex boundary and persistence regressions > rejects corrupt nested project structure before opening 1ms
+     → expected [Function] to throw an error
+   × Codex boundary and persistence regressions > rejects nonfinite dimensions encoded as JSON exponent 0ms
+     → expected [Function] to throw an error
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex boundary and persistence regressions > places compensated toolpath inside the declared material margin
+AssertionError: expected 4.8 to be greater than or equal to 5
+ ❯ src/core/__tests__/codexAudit.test.ts:27:346
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex boundary and persistence regressions > computes relative and horizontal SVG visible bounds from commands
+AssertionError: expected +0 to be 0.6 // Object.is equality
+
+- Expected
++ Received
+
+- 0.6
++ 0
+
+ ❯ src/core/__tests__/codexAudit.test.ts:28:218
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex boundary and persistence regressions > rejects corrupt nested project structure before opening
+AssertionError: expected [Function] to throw an error
+ ❯ src/core/__tests__/codexAudit.test.ts:29:219
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex boundary and persistence regressions > rejects nonfinite dimensions encoded as JSON exponent
+AssertionError: expected [Function] to throw an error
+ ❯ src/core/__tests__/codexAudit.test.ts:30:180
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 10 passed (14)
+   Start at  17:09:25
+   Duration  342ms (transform 60ms, setup 0ms, collect 70ms, tests 17ms, environment 112ms, prepare 28ms)
+

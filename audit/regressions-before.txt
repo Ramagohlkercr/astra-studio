@@ -1,0 +1,113 @@
+
+ RUN  v2.1.9 /Users/ramirogohlke/Documents/Astra Studio
+
+ ❯ src/core/__tests__/codexAudit.test.ts (8 tests | 8 failed) 9ms
+   × Codex independent regressions > centers rotated visible content against compiled coordinates 3ms
+     → expected 17 to be close to 20, received difference is 3, but expected 0.0005
+   × Codex independent regressions > rotates visible bounding dimensions 0ms
+     → expected 6 to be close to 4, received difference is 2, but expected 0.0005
+   × Codex independent regressions > fits proportionally with asymmetric transparent margins and rotation 0ms
+     → expected 2.666580578512397 to be close to 2, received difference is 0.6665805785123968, but expected 0.005
+   × Codex independent regressions > rejects unsupported SVG instead of fabricating a rectangle 1ms
+     → expected [Function] to throw an error
+   × Codex independent regressions > rejects SVG transforms rather than silently dropping them 0ms
+     → expected [Function] to throw an error
+   × Codex independent regressions > rejects a circular hole crossing an oval boundary 1ms
+     → expected 0 to be greater than 0
+   × Codex independent regressions > preserves rotated custom cut contour coordinates 2ms
+     → expected [ { x: +0, y: +0 }, …(2) ] to deeply equal [ { x: 20, y: +0 }, …(2) ]
+   × Codex independent regressions > rejects raster DXF instead of silently exporting cut only 2ms
+     → expected [Function] to throw an error
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex independent regressions > centers rotated visible content against compiled coordinates
+AssertionError: expected 17 to be close to 20, received difference is 3, but expected 0.0005
+ ❯ src/core/__tests__/codexAudit.test.ts:11:228
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex independent regressions > rotates visible bounding dimensions
+AssertionError: expected 6 to be close to 4, received difference is 2, but expected 0.0005
+ ❯ src/core/__tests__/codexAudit.test.ts:12:111
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex independent regressions > fits proportionally with asymmetric transparent margins and rotation
+AssertionError: expected 2.666580578512397 to be close to 2, received difference is 0.6665805785123968, but expected 0.005
+ ❯ src/core/__tests__/codexAudit.test.ts:13:189
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex independent regressions > rejects unsupported SVG instead of fabricating a rectangle
+AssertionError: expected [Function] to throw an error
+ ❯ src/core/__tests__/codexAudit.test.ts:14:135
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex independent regressions > rejects SVG transforms rather than silently dropping them
+AssertionError: expected [Function] to throw an error
+ ❯ src/core/__tests__/codexAudit.test.ts:15:203
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex independent regressions > rejects a circular hole crossing an oval boundary
+AssertionError: expected 0 to be greater than 0
+ ❯ src/core/__tests__/codexAudit.test.ts:16:337
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex independent regressions > preserves rotated custom cut contour coordinates
+AssertionError: expected [ { x: +0, y: +0 }, …(2) ] to deeply equal [ { x: 20, y: +0 }, …(2) ]
+
+- Expected
++ Received
+
+  Array [
+    Object {
+-     "x": 20,
++     "x": 0,
+      "y": 0,
+    },
+    Object {
+      "x": 20,
+-     "y": 40,
++     "y": 0,
+    },
+    Object {
+      "x": 0,
+-     "y": 0,
++     "y": 40,
+    },
+  ]
+
+ ❯ src/core/__tests__/codexAudit.test.ts:17:298
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex independent regressions > rejects raster DXF instead of silently exporting cut only
+AssertionError: expected [Function] to throw an error
+
+- Expected: 
+null
+
++ Received: 
+undefined
+
+ ❯ src/core/__tests__/codexAudit.test.ts:18:517
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/8]⎯
+
+ Test Files  1 failed (1)
+      Tests  8 failed (8)
+   Start at  17:07:49
+   Duration  322ms (transform 55ms, setup 0ms, collect 62ms, tests 9ms, environment 110ms, prepare 27ms)
+

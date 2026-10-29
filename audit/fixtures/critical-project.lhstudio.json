@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "1.0.0",
+  "application": "LaserHouse Studio",
+  "exportedAt": "2026-10-29T21:13:18.386Z",
+  "order": {
+    "id": "order-ref-200-ecocuero-20x10",
+    "projectName": "Pedido 200 Etiquetas Ecocuero 20×10 mm",
+    "clientName": "Cliente Textil — Colección Invierno",
+    "createdAt": "2026-10-29T21:13:18.386Z",
+    "updatedAt": "2026-10-29T21:13:18.386Z",
+    "notes": "Etiqueta de ecocuero suela 20 × 10 mm sin agujeros por defecto (opcionales desde el panel izquierdo) y marca grabada en el centro.",
+    "materialId": "ECOCUERO_SUELA",
+    "materialProfileSnapshot": {
+      "id": "ECOCUERO_SUELA",
+      "code": "ECOCUERO_SUELA",
+      "name": "Ecocuero Suela / Caramelo (PU Apto Láser)",
+      "category": "synthetic_leather",
+      "thicknessMm": 1.2,
+      "availableThicknessesMm": [
+        0.9,
+        1.2,
+        1.5,
+        2
+      ],
+      "fixedRibbonWidthMm": null,
+      "visual": {
+        "surfaceColor": "#C68B59",
+        "surfaceSecondaryColor": "#B07543",
+        "engraveColor": "#361D0E",
+        "cutStrokeColor": "#FF2A2A",
+        "opacity": 1,
+        "metallic": false,
+        "textureStyle": "leather"
+      },
+      "safetyWarning": "ADVERTENCIA CRÍTICA DE SEGURIDAD: Todo ecocuero o material sintético DEBE contar con ficha técnica y composición confirmada (Poliuretano PU apto para láser, 100% libre de PVC/cloro) antes de procesarse. Nunca cortar cuero sintético de PVC/vinilo en láser CO₂ (emite gas cloro corrosivo y tóxico).",
+      "requiresCompositionConfirmation": true,
+      "compositionConfirmedByOperator": false,
+      "separatePrintWorkflow": false,
+      "mirrorArtworkForBackEngrave": false,
+      "engraveParams": {
+        "speedMmPerSec": null,
+        "maxPowerPercent": null,
+        "minPowerPercent": null,
+        "passes": 1,
+        "lineIntervalMm": 0.1,
+        "operatorValidated": false,
+        "notes": "Ingresar velocidad (mm/s) y potencia (%) validadas en prueba física sobre recorte."
+      },
+      "holesParams": {
+        "speedMmPerSec": null,
+        "maxPowerPercent": null,
+        "minPowerPercent": null,
+        "passes": 1,
+        "operatorValidated": false,
+        "notes": "Corte interno de agujeros de costura (Capa 01 Azul). Se ejecuta antes del corte exterior."
+      },
+      "cutParams": {
+        "speedMmPerSec": null,
+        "maxPowerPercent": null,
+        "minPowerPercent": null,
+        "passes": 1,
+        "operatorValidated": false,
+        "notes": "Corte perimetral de etiqueta (Capa 02 Rojo)."
+      }
+    },
+    "labelDesign": {
+      "id": "design-lh-20x10",
+      "name": "Etiqueta_Ecocuero_20x10",
+      "shape": "rounded_rect",
+      "widthMm": 40,
+      "heightMm": 20,
+      "cornerRadiusMm": 1.5,
+      "safetyMarginMm": 1.2,
+      "kerfCompensationMm": 0,
+      "holes": {
+        "preset": "two_horizontal",
+        "diameterMm": 1.6,
+        "edgeDistanceMm": 2.2,
+        "customHoles": []
+      },
+      "elements": [
+        {
+          "id": "logo-raster-1793308361162",
+          "name": "asymmetric-transparent",
+          "type": "logo_raster",
+          "xMm": 14.277,
+          "yMm": 11.431,
+          "widthMm": 28.6167,
+          "heightMm": 17.17,
+          "aspectRatio": 1.6667,
+          "lockAspectRatio": true,
+          "rotationDeg": 0,
+          "locked": false,
+          "visible": true,
+          "originalDataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAAB4CAYAAAC3kr3rAAACfklEQVR4nO3TMY5CQRDEUO5/6c/GiIhgXW05eHmNxv16nueV5Dt8QLIMH5Aswwcky/AByTJ8QLIMH5Aswwcky/AByTJ8QLIMH5Aswwcky/AByTJ8QLIMH5Aswwcky/AByTJ8QLIMH5Aswwcky/AB+fiQvy/J7zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOU1YlnfQQUQaluUddBCRhmV5Bx1EpGFZ3kEHEWlYlnfQQUQaluUddBCRhmV5Bx1EpGFZ3kEHEWlYlnfQQUQaluUddBCRhmV5Bx1EpGFZ3kEHEWlYlnfQQUQaluUddBCRhmV5Bx1EpGFZ3kEHEWlYlnfQQUQaluUddBCRhmV5Bx1EpGFZ3kEHkY2wLDoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zoQOTqw6zqQ5B/hA5Jl+IBkGT4gWYYPSJbhA5Jl+IBkGT4gWYYPSJbhA5Jl+IBkGT4gWYYPSJbhA5Jl+IBkGT4gWYYPSJbhA5Jl+IBkGT4gWYYPSJbhA5Jl+IBkGT4gWYYPSJbhA5Jl+IBkGT4gWYYPSJbhA5Jl+IBkGT4gWYYPSJbhA5Jl+IBkGT4gWYYPSJbhA5Jl+IBkGT4gWfYGz6n3fM8xG+AAAAAASUVORK5CYII=",
+          "processedDataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAAB4CAYAAAC3kr3rAAAD4ElEQVR4AezdS24bMRBFUTtL0P7XqC0kIwGC0m6JNNmsYp0Ahj7Nz6v7dMf58+UfAgj8SIAgP6LxAIGvL4L4FSBwQoAgJ3A8QoAgfgMInBCYKMjJrR4hkIQAQZIUJeYaAgRZw92tSQgQJElRYq4hQJA13N2ahEBOQZLAFTM/AYLk79AEEwkQZCJcR+cnQJD8HZpgIgGCTITr6PwECPLSoY8IPBMgyDMN7xF4IUCQFyA+IvBMgCDPNLxH4IUAQV6A+IjAMwGCPNOY+/6j02+3219//Qw+gtywiCANsCytR4Ag9To3cQMBgjTAsrQeAYLU69zEDQQI0gAr7lLJZhEgyCyyzt2CAEG2qNEQswgQZBZZ525BgCBb1GiIWQQIMovsLucWn4MgxX8Axj8nQJBzPp4WJ0CQ4j8A458TIMg5H0+LEyBI8R/AY/z7/f498u9x7tlrhmcEydCSjMsIEGQZehdnIECQDC3JuIwAQZahd3EGAgTJ0JKMrQSGrSfIMJQO2pEAQXZs1UzDCBBkGEoH7UiAIDu2aqZhBAgyDKWDdiTwvyA7TmkmBDoJEKQTnG01CBCkRs+m7CRAkE5wttUgQJAaPZuyk8ClgnRmtA2BZQQIsgy9izMQIEiGlmRcRoAgy9C7OAMBgmRo6YKMo//btwsiX3LFLoJcAssl9QgQpF7nJm4gQJAGWJbWI0CQep2buIEAQRpgWVqPAEHedm5BZQIEqdy+2d8SIMhbRBZUJkCQyu2b/S0BgrxFZEFlAgRZ2b67wxMgSPiKBFxJgCAr6bs7PAGChK9IwJUECLKSvrvDEyBI+Ir6Ato1hgBBxnB0yqYECLJpscYaQ4AgYzg6ZVMCBNm0WGONIUCQMRwrnVJqVoKUqtuwrQQI0krM+lIECFKqbsO2EiBIK7HJ6+/3+7e/fgaj6yHIaKLO+wWBeFsJEq8TiQIRIEigMkSJR4Ag8TqRKBABggQqQ5R4BAgSrxOJZhDoPJMgneBsq0GAIDV6NmUnAYJ0grOtBgGC1OjZlJ0ECNIJzrYaBD4RpAYJUyJwQIAgB1B8hcCDAEEeJLwicECAIAdQfIXAgwBBHiS8InBAYLEgB4l8hUAgAgQJVIYo8QgQJF4nEgUiQJBAZYgSjwBB4nUiUSAC+woSCLIoeQkQJG93kl9AgCAXQHZFXgIEydud5BcQIMgFkF2RlwBBOrqzpQ4BgtTp2qQdBAjSAc2WOgQIUqdrk3YQIEgHNFvqECBIrK6lCUaAIMEKEScWAYLE6kOaYAQIEqwQcWIRIEisPqQJRoAgwQqZF8fJPQQI0kPNnjIECFKmaoP2EPgHAAD//5I51DcAAAAGSURBVAMA01CRAIZl6PIAAAAASUVORK5CYII=",
+          "pixelWidth": 200,
+          "pixelHeight": 120,
+          "processing": {
+            "mode": "raster",
+            "threshold": 145,
+            "brightness": 0,
+            "contrast": 15,
+            "invert": false,
+            "removeBackground": true,
+            "backgroundTolerance": 22,
+            "turdSize": 0.75
+          },
+          "vectorizedPathsNormalized": [
+            "M 0.4975 0.1667 L 0.5 0.1625 L 0.895 0.1625 L 0.8975 0.1667 L 0.8975 0.6583 L 0.895 0.6625 L 0.5 0.6625 L 0.4975 0.6583 Z",
+            "M 0.65 0.2875 L 0.6475 0.2917 L 0.6475 0.45 L 0.65 0.4542 L 0.745 0.4542 L 0.7475 0.45 L 0.7475 0.2917 L 0.745 0.2875 Z"
+          ],
+          "effectiveDpi": 307.9,
+          "contentBoundsNormalized": {
+            "minX": 0.5,
+            "minY": 0.16667,
+            "maxX": 0.9,
+            "maxY": 0.66667,
+            "width": 0.4,
+            "height": 0.5,
+            "centerNormX": 0.7,
+            "centerNormY": 0.41667
+          }
+        }
+      ]
+    },
+    "nestingConfig": {
+      "requestedQuantity": 200,
+      "machineBedWidthMm": 900,
+      "machineBedHeightMm": 600,
+      "sheetWidthMm": 900,
+      "sheetHeightMm": 600,
+      "gapXMm": 2,
+      "gapYMm": 2,
+      "marginTopMm": 5,
+      "marginRightMm": 5,
+      "marginBottomMm": 5,
+      "marginLeftMm": 5,
+      "rotationMode": "auto_optimize",
+      "centerInSheet": false,
+      "fillEntireSheetCapacity": false
+    },
+    "exportedFilesHistory": []
+  }
+}

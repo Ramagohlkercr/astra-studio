@@ -1,0 +1,30 @@
+
+ RUN  v2.1.9 /Users/ramirogohlke/Documents/Astra Studio
+
+ ❯ src/core/__tests__/codexAudit.test.ts (10 tests | 2 failed) 13ms
+   × Codex export and curve guards > samples cubic curves for DXF rather than cutting control polygons 2ms
+     → expected 4 to be greater than 10
+   × Codex export and curve guards > rejects invalid production geometry at DXF boundary 6ms
+     → expected [Function] to throw an error
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex export and curve guards > samples cubic curves for DXF rather than cutting control polygons
+AssertionError: expected 4 to be greater than 10
+ ❯ src/core/__tests__/codexAudit.test.ts:22:259
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > Codex export and curve guards > rejects invalid production geometry at DXF boundary
+AssertionError: expected [Function] to throw an error
+ ❯ src/core/__tests__/codexAudit.test.ts:23:269
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 8 passed (10)
+   Start at  17:08:37
+   Duration  344ms (transform 65ms, setup 0ms, collect 77ms, tests 13ms, environment 118ms, prepare 30ms)
+

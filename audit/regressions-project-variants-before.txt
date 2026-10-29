@@ -1,0 +1,27 @@
+
+ RUN  v2.1.9 /Users/ramirogohlke/Documents/Astra Studio
+
+ ❯ src/core/__tests__/codexAudit.test.ts (26 tests | 3 failed) 26ms
+   × rejects malformed project variant unknown-type 3ms
+     → expected [Function] to throw an error
+   × rejects malformed project variant invalid-viewbox 0ms
+     → expected [Function] to throw an error
+   × rejects malformed project variant future-schema 0ms
+     → expected [Function] to throw an error
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > rejects malformed project variant unknown-type
+ FAIL  src/core/__tests__/codexAudit.test.ts > rejects malformed project variant invalid-viewbox
+ FAIL  src/core/__tests__/codexAudit.test.ts > rejects malformed project variant future-schema
+AssertionError: expected [Function] to throw an error
+ ❯ src/core/__tests__/codexAudit.test.ts:50:696
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 23 passed (26)
+   Start at  17:18:01
+   Duration  586ms (transform 92ms, setup 0ms, collect 106ms, tests 26ms, environment 255ms, prepare 57ms)
+

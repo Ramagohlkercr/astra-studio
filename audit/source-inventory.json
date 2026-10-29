@@ -1,0 +1,137 @@
+[
+  {
+    "path": "src/App.tsx",
+    "bytes": 117450,
+    "lines": 2644
+  },
+  {
+    "path": "src/main.tsx",
+    "bytes": 230,
+    "lines": 10
+  },
+  {
+    "path": "src/index.css",
+    "bytes": 656,
+    "lines": 35
+  },
+  {
+    "path": "src/vite-env.d.ts",
+    "bytes": 38,
+    "lines": 1
+  },
+  {
+    "path": "src/core/types.ts",
+    "bytes": 14708,
+    "lines": 470
+  },
+  {
+    "path": "src/core/materials/materialsCatalog.ts",
+    "bytes": 9636,
+    "lines": 302
+  },
+  {
+    "path": "src/core/exporters/productionSummaryExporter.ts",
+    "bytes": 6753,
+    "lines": 109
+  },
+  {
+    "path": "src/core/exporters/svgExporter.ts",
+    "bytes": 9922,
+    "lines": 246
+  },
+  {
+    "path": "src/core/exporters/dxfExporter.ts",
+    "bytes": 6467,
+    "lines": 223
+  },
+  {
+    "path": "src/core/exporters/fileFormatValidator.ts",
+    "bytes": 12241,
+    "lines": 367
+  },
+  {
+    "path": "src/core/projects/projectManager.ts",
+    "bytes": 17909,
+    "lines": 590
+  },
+  {
+    "path": "src/core/image/browserImageLoader.ts",
+    "bytes": 3675,
+    "lines": 108
+  },
+  {
+    "path": "src/core/image/imageProcessor.ts",
+    "bytes": 19906,
+    "lines": 605
+  },
+  {
+    "path": "src/core/__tests__/wizardMandatoryTests.test.ts",
+    "bytes": 17545,
+    "lines": 484
+  },
+  {
+    "path": "src/core/__tests__/laserhouseCore.test.ts",
+    "bytes": 32612,
+    "lines": 836
+  },
+  {
+    "path": "src/core/__tests__/customDimensionsValidation.test.ts",
+    "bytes": 14396,
+    "lines": 381
+  },
+  {
+    "path": "src/core/__tests__/codexAudit.test.ts",
+    "bytes": 8821,
+    "lines": 50
+  },
+  {
+    "path": "src/core/geometry/vectorFont.ts",
+    "bytes": 10483,
+    "lines": 438
+  },
+  {
+    "path": "src/core/geometry/kerfCalibrationGenerator.ts",
+    "bytes": 3760,
+    "lines": 92
+  },
+  {
+    "path": "src/core/geometry/geometryEngine.ts",
+    "bytes": 61520,
+    "lines": 1918
+  },
+  {
+    "path": "src/core/nesting/nestingEngine.ts",
+    "bytes": 9686,
+    "lines": 289
+  },
+  {
+    "path": "src/components/ProductionBedPreview.tsx",
+    "bytes": 15882,
+    "lines": 404
+  },
+  {
+    "path": "src/components/LabelEditorCanvas.tsx",
+    "bytes": 27058,
+    "lines": 767
+  },
+  {
+    "path": "src/__tests__/CodexUI.test.tsx",
+    "bytes": 1440,
+    "lines": 10
+  },
+  {
+    "path": "src/__tests__/AppUI.test.tsx",
+    "bytes": 7887,
+    "lines": 180
+  },
+  {
+    "path": "src-tauri/src/lib.rs",
+    "bytes": 418,
+    "lines": 16
+  },
+  {
+    "path": "src-tauri/src/main.rs",
+    "bytes": 177,
+    "lines": 6
+  }
+]

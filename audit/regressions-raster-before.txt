@@ -1,0 +1,28 @@
+
+ RUN  v2.1.9 /Users/ramirogohlke/Documents/Astra Studio
+
+ ❯ src/core/__tests__/codexAudit.test.ts (18 tests | 1 failed) 17ms
+   × uses visible raster content for production safety, not transparent canvas 4ms
+     → expected 1 to be +0 // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > uses visible raster content for production safety, not transparent canvas
+AssertionError: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ src/core/__tests__/codexAudit.test.ts:41:166
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 17 passed (18)
+   Start at  17:13:06
+   Duration  376ms (transform 64ms, setup 0ms, collect 75ms, tests 17ms, environment 114ms, prepare 41ms)
+

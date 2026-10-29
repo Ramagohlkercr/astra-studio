@@ -1,0 +1,2 @@
+36193 111344 /Users/ramirogohlke/Documents/Astra Studio/dist_macos/LaserHouse Studio.app/Contents/MacOS/app
+36196 109792 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent

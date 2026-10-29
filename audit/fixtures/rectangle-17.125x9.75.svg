@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  =============================================================================
+  LASERHOUSE STUDIO — ARCHIVO DE PRODUCCIÓN VECTORIAL (ESCALA REAL 1:1 EN MM)
+  =============================================================================
+  Máquina destino : Vank 9060 CO2 (Área útil máx: 900 x 600 mm | Controladora Ruida RDC8445S)
+  Software destino: LightBurn Pro / RDWorks
+  Diseño etiqueta : Etiqueta_17.125x9.75mm (17.125 x 9.75 mm | Forma: rectangle)
+  Compensación Kerf: 0 mm
+  Material        : Ecocuero Suela / Caramelo (PU Apto Láser) (ECOCUERO_SUELA, Espesor: 1.2 mm)
+  Tanda           : 1 de 1
+  Cantidad en archivo: 25 unidades (Total pedido: 25 u.)
+  Dimensiones lienzo : 900 mm x 600 mm (1 unidad SVG = 1.0000 mm)
+  Mapeo de Capas LightBurn:
+    - Capa 00 (#000000 Negro) : GRABADO (0 elementos)
+    - Capa 01 (#0000FF Azul)  : AGUJEROS INTERNOS (0 contornos cerrados)
+    - Capa 02 (#FF0000 Rojo)  : CORTE EXTERIOR (25 contornos cerrados)
+  =============================================================================
+-->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+  width="900mm"
+  height="600mm"
+  viewBox="0 0 900 600"
+  version="1.1"
+  data-generator="LaserHouse Studio v0.2.0"
+  data-units="mm"
+  data-label-width-mm="17.125"
+  data-label-height-mm="9.75"
+  data-batch="1/1"
+  data-quantity="25"
+>
+  <g id="CAPA_02_CORTE" inkscape:groupmode="layer" inkscape:label="02_CORTE" data-layer="CUT" data-lightburn-layer="02">
+    <path id="pieza_1-cut" d="M 5 5 L 22.125 5 L 22.125 14.75 L 5 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_2-cut" d="M 24.125 5 L 41.25 5 L 41.25 14.75 L 24.125 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_3-cut" d="M 43.25 5 L 60.375 5 L 60.375 14.75 L 43.25 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_4-cut" d="M 62.375 5 L 79.5 5 L 79.5 14.75 L 62.375 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_5-cut" d="M 81.5 5 L 98.625 5 L 98.625 14.75 L 81.5 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_6-cut" d="M 100.625 5 L 117.75 5 L 117.75 14.75 L 100.625 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_7-cut" d="M 119.75 5 L 136.875 5 L 136.875 14.75 L 119.75 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_8-cut" d="M 138.875 5 L 156 5 L 156 14.75 L 138.875 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_9-cut" d="M 158 5 L 175.125 5 L 175.125 14.75 L 158 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_10-cut" d="M 177.125 5 L 194.25 5 L 194.25 14.75 L 177.125 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_11-cut" d="M 196.25 5 L 213.375 5 L 213.375 14.75 L 196.25 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_12-cut" d="M 215.375 5 L 232.5 5 L 232.5 14.75 L 215.375 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_13-cut" d="M 234.5 5 L 251.625 5 L 251.625 14.75 L 234.5 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_14-cut" d="M 253.625 5 L 270.75 5 L 270.75 14.75 L 253.625 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_15-cut" d="M 272.75 5 L 289.875 5 L 289.875 14.75 L 272.75 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_16-cut" d="M 291.875 5 L 309 5 L 309 14.75 L 291.875 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_17-cut" d="M 311 5 L 328.125 5 L 328.125 14.75 L 311 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_18-cut" d="M 330.125 5 L 347.25 5 L 347.25 14.75 L 330.125 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_19-cut" d="M 349.25 5 L 366.375 5 L 366.375 14.75 L 349.25 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_20-cut" d="M 368.375 5 L 385.5 5 L 385.5 14.75 L 368.375 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_21-cut" d="M 387.5 5 L 404.625 5 L 404.625 14.75 L 387.5 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_22-cut" d="M 406.625 5 L 423.75 5 L 423.75 14.75 L 406.625 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_23-cut" d="M 425.75 5 L 442.875 5 L 442.875 14.75 L 425.75 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_24-cut" d="M 444.875 5 L 462 5 L 462 14.75 L 444.875 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+    <path id="pieza_25-cut" d="M 464 5 L 481.125 5 L 481.125 14.75 L 464 14.75 Z" fill="none" stroke="#FF0000" stroke-width="0.1" />
+  </g>
+</svg>

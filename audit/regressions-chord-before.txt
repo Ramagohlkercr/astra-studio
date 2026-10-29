@@ -1,0 +1,21 @@
+
+ RUN  v2.1.9 /Users/ramirogohlke/Documents/Astra Studio
+
+ ❯ src/core/__tests__/codexAudit.test.ts (19 tests | 1 failed) 19ms
+   × limits circular DXF chord deviation to 0.01 mm for large labels 2ms
+     → expected 0.21415052717897254 to be less than 0.01
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/core/__tests__/codexAudit.test.ts > limits circular DXF chord deviation to 0.01 mm for large labels
+AssertionError: expected 0.21415052717897254 to be less than 0.01
+ ❯ src/core/__tests__/codexAudit.test.ts:43:353
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 18 passed (19)
+   Start at  17:14:22
+   Duration  341ms (transform 63ms, setup 0ms, collect 74ms, tests 19ms, environment 112ms, prepare 23ms)
+

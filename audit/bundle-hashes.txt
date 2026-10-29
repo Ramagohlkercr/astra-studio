@@ -1,0 +1,2 @@
+95b565c468216f0be89010e8deb0d21ab0e163c6122bc2a608fbc82c7cbc023d  dist_macos/LaserHouse Studio.app/Contents/MacOS/app
+95b565c468216f0be89010e8deb0d21ab0e163c6122bc2a608fbc82c7cbc023d  src-tauri/target/release/bundle/macos/LaserHouse Studio.app/Contents/MacOS/app
