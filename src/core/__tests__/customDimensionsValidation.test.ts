@@ -28,7 +28,7 @@ import {
 } from '../exporters/fileFormatValidator';
 import { LabelDesign, LabelElement, NestingConfig, OrderProject } from '../types';
 
-describe('LaserHouse Studio — Verificación de Medidas Personalizadas (12 Casos Obligatorios)', () => {
+describe('Astra Studio — Verificación de Medidas Personalizadas (12 Casos Obligatorios)', () => {
   // 1. Creación de etiqueta 40 × 20 mm
   it('1. Permite crear una etiqueta con medidas nominales de 40 × 20 mm', () => {
     const design = createBlankLabelDesign(40, 20);

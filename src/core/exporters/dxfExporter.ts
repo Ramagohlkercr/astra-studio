@@ -206,7 +206,7 @@ export function exportProductionDxf(
     design.name
       .trim()
       .replace(/[^a-zA-Z0-9_-]+/g, '_')
-      .replace(/^_+|_+$/g, '') || 'Etiqueta_LaserHouse';
+      .replace(/^_+|_+$/g, '') || 'Etiqueta_Astra';
 
   return {
     dxfContent: dxfLines.join('\n') + '\n',

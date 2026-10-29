@@ -22,11 +22,11 @@ export function generateProductionSummaryReport(params: {
 
   const lines: string[] = [
     '===============================================================================',
-    '  LASERHOUSE STUDIO — HOJA TÉCNICA DE PRODUCCIÓN LÁSER',
+    '  ASTRA STUDIO — HOJA TÉCNICA DE PRODUCCIÓN LÁSER',
     '===============================================================================',
     `Fecha generación    : ${new Date().toISOString()}`,
     `Proyecto / Pedido   : ${project?.projectName || design.name}`,
-    `Cliente             : ${project?.clientName || 'Producción Interna LaserHouse'}`,
+    `Cliente             : ${project?.clientName || 'Producción Interna Astra'}`,
     `Observaciones       : ${project?.notes || 'Sin observaciones adicionales'}`,
     '',
     '1. EQUIPAMIENTO OBJETIVO',
@@ -100,7 +100,7 @@ export function generateProductionSummaryReport(params: {
     design.name
       .trim()
       .replace(/[^a-zA-Z0-9_-]+/g, '_')
-      .replace(/^_+|_+$/g, '') || 'Etiqueta_LaserHouse';
+      .replace(/^_+|_+$/g, '') || 'Etiqueta_Astra';
 
   return {
     reportText: lines.join('\n') + '\n',

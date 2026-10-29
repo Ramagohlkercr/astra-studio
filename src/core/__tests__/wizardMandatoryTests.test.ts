@@ -32,7 +32,7 @@ import { parseAndAuditLightBurnSvg } from '../exporters/fileFormatValidator';
 import { INITIAL_MATERIALS_CATALOG } from '../materials/materialsCatalog';
 import { LabelDesign, LabelElement, OrderProject, Point2D, SvgLogoElement } from '../types';
 
-describe('LaserHouse Studio — Las 16 Pruebas Obligatorias del Asistente CAD/CAM', () => {
+describe('Astra Studio — Las 16 Pruebas Obligatorias del Asistente CAD/CAM', () => {
   // 1. Logo con márgenes transparentes
   it('1. detecta límites visibles y centra ignorando márgenes transparentes del lienzo', () => {
     // Simular imagen de 100x100 px con contenido solo en [30..70, 20..60] (márgenes asimétricos)

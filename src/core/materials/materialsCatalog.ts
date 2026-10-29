@@ -1,7 +1,7 @@
 import { MaterialProfile } from '../types';
 
 /**
- * Catálogo de materiales iniciales de LaserHouse Studio.
+ * Catálogo de materiales iniciales de Astra Studio.
  * REGLA OBLIGATORIA: No se inventan potencias ni velocidades como parámetros seguros pre-validados.
  * Los valores de velocidad/potencia inician en null (pendientes de ingreso por el operador según
  * su calibración física en la Vank 9060 CO2) y son completamente editables y persistibles.

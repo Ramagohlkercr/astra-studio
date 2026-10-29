@@ -152,7 +152,7 @@ export function exportProductionSvg(
     `<?xml version="1.0" encoding="UTF-8" standalone="no"?>`,
     `<!--`,
     `  =============================================================================`,
-    `  LASERHOUSE STUDIO — ARCHIVO DE PRODUCCIÓN VECTORIAL (ESCALA REAL 1:1 EN MM)`,
+    `  ASTRA STUDIO — ARCHIVO DE PRODUCCIÓN VECTORIAL (ESCALA REAL 1:1 EN MM)`,
     `  =============================================================================`,
     `  Máquina destino : Vank 9060 CO2 (Área útil máx: 900 x 600 mm | Controladora Ruida RDC8445S)`,
     `  Software destino: LightBurn Pro / RDWorks`,
@@ -175,7 +175,7 @@ export function exportProductionSvg(
     `  height="${canvasHeightMm}mm"`,
     `  viewBox="0 0 ${canvasWidthMm} ${canvasHeightMm}"`,
     `  version="1.1"`,
-    `  data-generator="LaserHouse Studio v0.2.0"`,
+    `  data-generator="Astra Studio v0.2.0"`,
     `  data-units="mm"`,
     `  data-label-width-mm="${design.widthMm}"`,
     `  data-label-height-mm="${design.heightMm}"`,
@@ -241,6 +241,6 @@ function sanitizeName(raw: string): string {
     raw
       .trim()
       .replace(/[^a-zA-Z0-9_-]+/g, '_')
-      .replace(/^_+|_+$/g, '') || 'Etiqueta_LaserHouse'
+      .replace(/^_+|_+$/g, '') || 'Etiqueta_Astra'
   );
 }

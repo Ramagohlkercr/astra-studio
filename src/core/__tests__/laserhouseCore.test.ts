@@ -37,7 +37,7 @@ import {
 } from '../projects/projectManager';
 import { LabelDesign } from '../types';
 
-describe('LaserHouse Studio — Motor Geométrico en Milímetros (Precisión Crítica)', () => {
+describe('Astra Studio — Motor Geométrico en Milímetros (Precisión Crítica)', () => {
   const testSizes: Array<{ w: number; h: number; shape: LabelDesign['shape'] }> = [
     { w: 10, h: 10, shape: 'square' },
     { w: 15, h: 15, shape: 'rounded_rect' },
@@ -105,7 +105,7 @@ describe('LaserHouse Studio — Motor Geométrico en Milímetros (Precisión Cr�
   });
 });
 
-describe('LaserHouse Studio — Agujeros Opcionales (0, 1, 2, 4 y Personalizados)', () => {
+describe('Astra Studio — Agujeros Opcionales (0, 1, 2, 4 y Personalizados)', () => {
   it('NO agrega agujeros automáticamente al crear una etiqueta nueva', () => {
     const blank = createBlankLabelDesign(25, 12, 'rounded_rect');
     expect(blank.holes.preset).toBe('none');
@@ -156,7 +156,7 @@ describe('LaserHouse Studio — Agujeros Opcionales (0, 1, 2, 4 y Personalizados
   });
 });
 
-describe('LaserHouse Studio — Distribución Automática y Dimensiones de Material Reales', () => {
+describe('Astra Studio — Distribución Automática y Dimensiones de Material Reales', () => {
   const quantities = [1, 25, 100, 200, 500, 1000];
 
   it.each(quantities)(
@@ -245,7 +245,7 @@ describe('LaserHouse Studio — Distribución Automática y Dimensiones de Mater
   });
 });
 
-describe('LaserHouse Studio — Validación Independiente LightBurn SVG y RDWorks DXF R12', () => {
+describe('Astra Studio — Validación Independiente LightBurn SVG y RDWorks DXF R12', () => {
   it('audita con lector independiente los archivos SVG y DXF de 200 etiquetas de 20x10 mm verificando escala 1:1, capas y cierre de vértices', () => {
     const design = createReference20x10LabelDesign(true);
     const material = INITIAL_MATERIALS_CATALOG.find((m) => m.id === 'ECOCUERO_SUELA')!;
@@ -300,7 +300,7 @@ describe('LaserHouse Studio — Validación Independiente LightBurn SVG y RDWork
   });
 });
 
-describe('LaserHouse Studio — Pruebas con Logos Reales, Huecos Internos y Protección de Corte/Agujeros', () => {
+describe('Astra Studio — Pruebas con Logos Reales, Huecos Internos y Protección de Corte/Agujeros', () => {
   it('vectoriza PNG con transparencia y PNG con fondo blanco conservando agujeros/huecos internos (ej. letra O / anillo)', () => {
     const w = 24;
     const h = 24;

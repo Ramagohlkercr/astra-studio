@@ -1,5 +1,5 @@
 /**
- * LaserHouse Studio — Core Domain Types
+ * Astra Studio — Core Domain Types
  * Todas las dimensiones geométricas se expresan estrictamente en milímetros (mm).
  * Máquina de referencia: Vank 9060 CO2 (Área útil: 900 x 600 mm, Controladora Ruida RDC8445S).
  */

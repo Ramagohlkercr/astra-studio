@@ -1,8 +1,8 @@
 {
-  "name": "laserhouse-studio",
+  "name": "astra-studio",
   "private": true,
   "version": "0.1.0",
-  "description": "LaserHouse Studio — Software CAD/CAM de creación, distribución automática y preparación de etiquetas láser (Vank 9060 CO2 / LightBurn / RDWorks)",
+  "description": "Astra Studio — Software CAD/CAM de creación, distribución automática y preparación de etiquetas láser (Vank 9060 CO2 / LightBurn / RDWorks)",
   "type": "module",
   "scripts": {
     "dev": "vite",

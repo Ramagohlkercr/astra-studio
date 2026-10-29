@@ -2,11 +2,11 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import App from '../App';
 
-describe('LaserHouse Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
+describe('Astra Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
   it('renderiza la cabecera industrial, permite navegar por los 6 pasos y cambiar medidas con Undo/Redo', () => {
     render(<App />);
 
-    expect(screen.getByText(/LASERHOUSE STUDIO/i)).toBeDefined();
+    expect(screen.getByText(/ASTRA STUDIO/i)).toBeDefined();
     expect(screen.getByRole('button', { name: /1.*Logo/i }).getAttribute('aria-current')).toBe('step');
 
     // Comprobar la barra de progreso de 6 pasos

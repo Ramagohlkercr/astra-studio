@@ -1117,7 +1117,7 @@ export function App() {
           <div className="flex items-center gap-2">
             <span className="studio-brand-mark"></span>
             <h1 className="studio-brand font-semibold text-white flex items-center gap-1.5">
-              <span>LaserHouse Studio</span>
+              <span>Astra Studio</span>
             </h1>
           </div>
           <span className="text-slate-600">|</span>

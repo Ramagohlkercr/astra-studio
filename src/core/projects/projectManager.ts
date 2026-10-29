@@ -483,7 +483,7 @@ export function serializeOrderProjectToJson(order: OrderProject): string {
   return JSON.stringify(
     {
       schemaVersion: '1.0.0',
-      application: 'LaserHouse Studio',
+      application: 'Astra Studio',
       exportedAt: new Date().toISOString(),
       order,
     },

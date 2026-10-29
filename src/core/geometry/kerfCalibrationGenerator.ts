@@ -1,5 +1,5 @@
 /**
- * LaserHouse Studio — Generador de Patrón de Calibración de Kerf (Corte Láser)
+ * Astra Studio — Generador de Patrón de Calibración de Kerf (Corte Láser)
  * Permite medir el corte físico (kerf) del haz láser en la Vank 9060 CO₂ mediante un calibre digital,
  * independientemente del software de corte utilizado.
  *
@@ -56,13 +56,13 @@ export function generateKerfCalibrationPatternSvg(materialName = 'Material'): Ke
      width="${totalWidthMm}mm"
      height="${totalHeightMm}mm"
      viewBox="0 0 ${totalWidthMm} ${totalHeightMm}">
-  <!-- LaserHouse Studio — Patrón de Calibración de Kerf para Vank 9060 CO2 -->
+  <!-- Astra Studio — Patrón de Calibración de Kerf para Vank 9060 CO2 -->
   <!-- Material de referencia: ${materialName} -->
 
   <!-- Capa 00: GRABADO -->
   <g id="CAPA_00_GRABADO">
     <text x="${totalWidthMm / 2}" y="5" text-anchor="middle" fill="${engraveColor}" font-size="2.6" font-family="sans-serif" font-weight="bold">
-      CALIBRACION DE KERF LASERHOUSE — ${materialName.toUpperCase()}
+      CALIBRACION DE KERF ASTRA — ${materialName.toUpperCase()}
     </text>
     ${numbersSvg.join('\n    ')}
     <text x="${totalWidthMm / 2}" y="${totalHeightMm - 3}" text-anchor="middle" fill="${engraveColor}" font-size="2.0" font-family="monospace">
@@ -85,8 +85,8 @@ export function generateKerfCalibrationPatternSvg(materialName = 'Material'): Ke
     svgContent,
     widthMm: totalWidthMm,
     heightMm: totalHeightMm,
-    filenameSuggested: `LaserHouse_Calibracion_Kerf_${safeMaterialCode}_100x20mm.svg`,
+    filenameSuggested: `Astra_Calibracion_Kerf_${safeMaterialCode}_100x20mm.svg`,
     instructions:
-      'Cortar sobre recorte de prueba en la Vank 9060 CO₂. Empujar las 10 tablillas hacia la izquierda dentro del marco. Medir la luz restante a la derecha con un calibre digital en milímetros y dividir por 10. Ingresar el valor obtenido en el campo Kerf (mm) de LaserHouse Studio.',
+      'Cortar sobre recorte de prueba en la Vank 9060 CO₂. Empujar las 10 tablillas hacia la izquierda dentro del marco. Medir la luz restante a la derecha con un calibre digital en milímetros y dividir por 10. Ingresar el valor obtenido en el campo Kerf (mm) de Astra Studio.',
   };
 }
