@@ -122,6 +122,25 @@ export interface ImageProcessingOptions {
   turdSize: number;
 }
 
+export interface ContentBoundsNormalized {
+  /** Coordenada X mínima del contenido visible normalizada al lienzo [0..1] */
+  minX: number;
+  /** Coordenada Y mínima del contenido visible normalizada al lienzo [0..1] */
+  minY: number;
+  /** Coordenada X máxima del contenido visible normalizada al lienzo [0..1] */
+  maxX: number;
+  /** Coordenada Y máxima del contenido visible normalizada al lienzo [0..1] */
+  maxY: number;
+  /** Ancho del contenido visible relativo al lienzo [0..1] */
+  width: number;
+  /** Alto del contenido visible relativo al lienzo [0..1] */
+  height: number;
+  /** Centro horizontal del contenido visible relativo al lienzo [0..1] (0.5 = centro perfecto del lienzo) */
+  centerNormX: number;
+  /** Centro vertical del contenido visible relativo al lienzo [0..1] (0.5 = centro perfecto del lienzo) */
+  centerNormY: number;
+}
+
 export interface DesignElementBase {
   id: string;
   name: string;
@@ -140,6 +159,8 @@ export interface DesignElementBase {
   locked: boolean;
   visible: boolean;
   groupId?: string;
+  /** Límites y centro del contenido visible real ignorando márgenes transparentes (0..1) */
+  contentBoundsNormalized?: ContentBoundsNormalized;
 }
 
 export interface SvgLogoElement extends DesignElementBase {

@@ -1,5 +1,9 @@
 import React, { useRef, useState } from 'react';
-import { compileLabelGeometry, roundMm } from '../core/geometry/geometryEngine';
+import {
+  compileLabelGeometry,
+  getElementVisibleBoundingBoxMm,
+  roundMm,
+} from '../core/geometry/geometryEngine';
 import {
   LabelDesign,
   LIGHTBURN_LAYERS,
@@ -402,9 +406,10 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
           strokeWidth={isTechnical ? 0.16 : 0.22}
         />
 
-        {/* Guía de margen de seguridad y ejes centrales (Capa T1 no productiva) */}
+        {/* Guía de margen de seguridad, ejes centrales y cotas de distancia a bordes */}
         {showSafetyGuides && (
           <g pointerEvents="none">
+            {/* Contorno de zona segura */}
             <path
               d={compiled.safetyGuideContour.svgPathD}
               fill="none"
@@ -413,26 +418,90 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
               strokeDasharray="0.45 0.35"
               opacity={0.85}
             />
+            {/* Eje central vertical X = W/2 */}
             <line
               x1={design.widthMm / 2}
-              y1={0}
+              y1={-paddingMm * 0.4}
               x2={design.widthMm / 2}
-              y2={design.heightMm}
-              stroke={LIGHTBURN_LAYERS.GUIDE.hexColor}
-              strokeWidth="0.06"
-              strokeDasharray="0.3 0.3"
-              opacity={0.5}
+              y2={design.heightMm + paddingMm * 0.4}
+              stroke="#06b6d4"
+              strokeWidth="0.08"
+              strokeDasharray="0.6 0.35"
+              opacity={0.7}
             />
+            {/* Eje central horizontal Y = H/2 */}
             <line
-              x1={0}
+              x1={-paddingMm * 0.4}
               y1={design.heightMm / 2}
-              x2={design.widthMm}
+              x2={design.widthMm + paddingMm * 0.4}
               y2={design.heightMm / 2}
-              stroke={LIGHTBURN_LAYERS.GUIDE.hexColor}
-              strokeWidth="0.06"
-              strokeDasharray="0.3 0.3"
-              opacity={0.5}
+              stroke="#06b6d4"
+              strokeWidth="0.08"
+              strokeDasharray="0.6 0.35"
+              opacity={0.7}
             />
+            {/* Marcador en cruz de centro exacto */}
+            <circle
+              cx={design.widthMm / 2}
+              cy={design.heightMm / 2}
+              r={0.4}
+              fill="none"
+              stroke="#06b6d4"
+              strokeWidth="0.08"
+              opacity={0.8}
+            />
+
+            {/* Distancias libres a los bordes de la etiqueta para el elemento seleccionado */}
+            {selectedEl && (() => {
+              const box = getElementVisibleBoundingBoxMm(selectedEl);
+              const dLeft = roundMm(box.minX, 2);
+              const dRight = roundMm(design.widthMm - box.maxX, 2);
+              const dTop = roundMm(box.minY, 2);
+              const dBottom = roundMm(design.heightMm - box.maxY, 2);
+              const midY = box.minY + box.height / 2;
+              const midX = box.minX + box.width / 2;
+
+              return (
+                <g opacity={0.85}>
+                  {/* Distancia Izquierda */}
+                  {dLeft > 0.1 && (
+                    <>
+                      <line x1={0} y1={midY} x2={box.minX} y2={midY} stroke="#38bdf8" strokeWidth="0.06" strokeDasharray="0.2 0.2" />
+                      <text x={box.minX / 2} y={midY - 0.3} textAnchor="middle" fill="#38bdf8" fontSize="0.7" fontFamily="monospace" fontWeight="bold">
+                        {dLeft}
+                      </text>
+                    </>
+                  )}
+                  {/* Distancia Derecha */}
+                  {dRight > 0.1 && (
+                    <>
+                      <line x1={box.maxX} y1={midY} x2={design.widthMm} y2={midY} stroke="#38bdf8" strokeWidth="0.06" strokeDasharray="0.2 0.2" />
+                      <text x={box.maxX + dRight / 2} y={midY - 0.3} textAnchor="middle" fill="#38bdf8" fontSize="0.7" fontFamily="monospace" fontWeight="bold">
+                        {dRight}
+                      </text>
+                    </>
+                  )}
+                  {/* Distancia Superior */}
+                  {dTop > 0.1 && (
+                    <>
+                      <line x1={midX} y1={0} x2={midX} y2={box.minY} stroke="#38bdf8" strokeWidth="0.06" strokeDasharray="0.2 0.2" />
+                      <text x={midX + 0.3} y={box.minY / 2 + 0.2} textAnchor="start" fill="#38bdf8" fontSize="0.7" fontFamily="monospace" fontWeight="bold">
+                        {dTop}
+                      </text>
+                    </>
+                  )}
+                  {/* Distancia Inferior */}
+                  {dBottom > 0.1 && (
+                    <>
+                      <line x1={midX} y1={box.maxY} x2={midX} y2={design.heightMm} stroke="#38bdf8" strokeWidth="0.06" strokeDasharray="0.2 0.2" />
+                      <text x={midX + 0.3} y={box.maxY + dBottom / 2 + 0.2} textAnchor="start" fill="#38bdf8" fontSize="0.7" fontFamily="monospace" fontWeight="bold">
+                        {dBottom}
+                      </text>
+                    </>
+                  )}
+                </g>
+              );
+            })()}
           </g>
         )}
 

@@ -50,7 +50,7 @@ export async function processImageDataUrlInBrowser(params: {
         ctx.drawImage(img, 0, 0, workW, workH);
         const imgData = ctx.getImageData(0, 0, workW, workH);
 
-        const { processedRgba, binaryMask } = processRgbaBufferToBinaryMask(
+        const { processedRgba, binaryMask, contentBoundsNormalized } = processRgbaBufferToBinaryMask(
           imgData.data,
           workW,
           workH,
@@ -96,6 +96,7 @@ export async function processImageDataUrlInBrowser(params: {
           processing: { ...params.options },
           vectorizedPathsNormalized,
           effectiveDpi,
+          contentBoundsNormalized,
         });
       } catch (err) {
         reject(err);

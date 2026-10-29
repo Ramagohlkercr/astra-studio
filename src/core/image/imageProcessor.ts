@@ -1,5 +1,10 @@
 import { roundMm } from '../geometry/geometryEngine';
-import { ImageProcessingOptions, Millimeters, Point2D } from '../types';
+import {
+  ContentBoundsNormalized,
+  ImageProcessingOptions,
+  Millimeters,
+  Point2D,
+} from '../types';
 
 export const DEFAULT_IMAGE_PROCESSING: ImageProcessingOptions = {
   mode: 'raster',
@@ -79,12 +84,17 @@ export function processRgbaBufferToBinaryMask(
   binaryMask: Uint8Array;
   hasTransparency: boolean;
   darkPixelCount: number;
+  contentBoundsNormalized: ContentBoundsNormalized;
 } {
   const totalPixels = width * height;
   const processedRgba = new Uint8ClampedArray(rgba.length);
   const binaryMask = new Uint8Array(totalPixels);
   let hasTransparency = false;
   let darkPixelCount = 0;
+  let minDarkX = width;
+  let maxDarkX = -1;
+  let minDarkY = height;
+  let maxDarkY = -1;
 
   // Detectar color de fondo predominante en las 4 esquinas para eliminación de fondo blanco/claro
   const cornerIndices = [
@@ -169,6 +179,12 @@ export function processRgbaBufferToBinaryMask(
     if (isEngraved) {
       binaryMask[p] = 1;
       darkPixelCount++;
+      const px = p % width;
+      const py = Math.floor(p / width);
+      if (px < minDarkX) minDarkX = px;
+      if (px > maxDarkX) maxDarkX = px;
+      if (py < minDarkY) minDarkY = py;
+      if (py > maxDarkY) maxDarkY = py;
       processedRgba[idx] = 18;
       processedRgba[idx + 1] = 18;
       processedRgba[idx + 2] = 18;
@@ -182,11 +198,41 @@ export function processRgbaBufferToBinaryMask(
     }
   }
 
+  let contentBoundsNormalized: ContentBoundsNormalized;
+  if (darkPixelCount > 0 && maxDarkX >= minDarkX && maxDarkY >= minDarkY) {
+    const normMinX = roundMm(minDarkX / width, 5);
+    const normMinY = roundMm(minDarkY / height, 5);
+    const normMaxX = roundMm(Math.min(1, (maxDarkX + 1) / width), 5);
+    const normMaxY = roundMm(Math.min(1, (maxDarkY + 1) / height), 5);
+    contentBoundsNormalized = {
+      minX: normMinX,
+      minY: normMinY,
+      maxX: normMaxX,
+      maxY: normMaxY,
+      width: Math.max(0.001, roundMm(normMaxX - normMinX, 5)),
+      height: Math.max(0.001, roundMm(normMaxY - normMinY, 5)),
+      centerNormX: roundMm((normMinX + normMaxX) / 2, 5),
+      centerNormY: roundMm((normMinY + normMaxY) / 2, 5),
+    };
+  } else {
+    contentBoundsNormalized = {
+      minX: 0,
+      minY: 0,
+      maxX: 1,
+      maxY: 1,
+      width: 1,
+      height: 1,
+      centerNormX: 0.5,
+      centerNormY: 0.5,
+    };
+  }
+
   return {
     processedRgba,
     binaryMask,
     hasTransparency,
     darkPixelCount,
+    contentBoundsNormalized,
   };
 }
 
@@ -370,6 +416,7 @@ export function parseSvgLogoString(svgText: string): {
   originalViewBox: { minX: number; minY: number; width: number; height: number };
   normalizedPaths: string[];
   aspectRatio: number;
+  contentBoundsNormalized: ContentBoundsNormalized;
 } {
   let minX = 0;
   let minY = 0;
@@ -506,18 +553,19 @@ export function parseSvgLogoString(svgText: string): {
     );
   }
 
-  // Si el SVG no tenía viewBox ni width/height explícitos, inferir caja de coordenadas desde los números de los paths
-  if (!hasExplicitBox && normalizedPaths.length > 0) {
+  // Extraer envolvente real de todos los números presentes en los paths para detectar centrado y límites visibles reales
+  let bx0 = Infinity;
+  let by0 = Infinity;
+  let bx1 = -Infinity;
+  let by1 = -Infinity;
+
+  if (normalizedPaths.length > 0) {
     const allNums = normalizedPaths
       .join(' ')
       .match(/[-+]?(?:\d+\.?\d*|\.\d+)/g)
       ?.map(Number)
       .filter(Number.isFinite);
     if (allNums && allNums.length >= 4) {
-      let bx0 = Infinity,
-        by0 = Infinity,
-        bx1 = -Infinity,
-        by1 = -Infinity;
       for (let i = 0; i + 1 < allNums.length; i += 2) {
         const vx = allNums[i];
         const vy = allNums[i + 1];
@@ -527,17 +575,43 @@ export function parseSvgLogoString(svgText: string): {
         if (vy > by1) by1 = vy;
       }
       if (bx1 > bx0 && by1 > by0) {
-        minX = bx0;
-        minY = by0;
-        width = bx1 - bx0;
-        height = by1 - by0;
+        if (!hasExplicitBox) {
+          minX = bx0;
+          minY = by0;
+          width = bx1 - bx0;
+          height = by1 - by0;
+        }
       }
     }
   }
+
+  let normMinX = 0;
+  let normMinY = 0;
+  let normMaxX = 1;
+  let normMaxY = 1;
+
+  if (Number.isFinite(bx0) && Number.isFinite(bx1) && bx1 > bx0 && Number.isFinite(by0) && Number.isFinite(by1) && by1 > by0 && width > 0 && height > 0) {
+    normMinX = roundMm(Math.max(0, Math.min(1, (bx0 - minX) / width)), 5);
+    normMinY = roundMm(Math.max(0, Math.min(1, (by0 - minY) / height)), 5);
+    normMaxX = roundMm(Math.max(normMinX, Math.min(1, (bx1 - minX) / width)), 5);
+    normMaxY = roundMm(Math.max(normMinY, Math.min(1, (by1 - minY) / height)), 5);
+  }
+
+  const contentBoundsNormalized: ContentBoundsNormalized = {
+    minX: normMinX,
+    minY: normMinY,
+    maxX: normMaxX,
+    maxY: normMaxY,
+    width: Math.max(0.001, roundMm(normMaxX - normMinX, 5)),
+    height: Math.max(0.001, roundMm(normMaxY - normMinY, 5)),
+    centerNormX: roundMm((normMinX + normMaxX) / 2, 5),
+    centerNormY: roundMm((normMinY + normMaxY) / 2, 5),
+  };
 
   return {
     originalViewBox: { minX, minY, width, height },
     normalizedPaths,
     aspectRatio: roundMm(width / Math.max(0.001, height), 4),
+    contentBoundsNormalized,
   };
 }

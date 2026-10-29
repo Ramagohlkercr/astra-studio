@@ -2,6 +2,7 @@ import {
   BoundingBox,
   ClosedContour,
   CompiledLabelGeometry,
+  ContentBoundsNormalized,
   EngravedItemGeometry,
   GeometricValidationReport,
   HoleConfiguration,
@@ -771,13 +772,14 @@ export function computeSafeEngravingZone(design: LabelDesign): BoundingBox {
   if (design.shape === 'circle' || design.shape === 'oval') {
     const rx = Math.max(1, design.widthMm / 2 - margin);
     const ry = Math.max(1, design.heightMm / 2 - margin);
-    // Rectángulo inscrito óptimo a ~45° (cos 45° = 0.7071, usamos 0.76 para aprovechar área central)
+    // Rectángulo inscrito geométrico exacto a 45° (cos 45° = 1 / sqrt(2) ≈ 0.7071)
+    const factor = 0.7071;
     const cx = design.widthMm / 2;
     const cy = design.heightMm / 2;
-    minX = Math.max(minX, cx - rx * 0.78);
-    maxX = Math.min(maxX, cx + rx * 0.78);
-    minY = Math.max(minY, cy - ry * 0.78);
-    maxY = Math.min(maxY, cy + ry * 0.78);
+    minX = Math.max(minX, cx - rx * factor);
+    maxX = Math.min(maxX, cx + rx * factor);
+    minY = Math.max(minY, cy - ry * factor);
+    maxY = Math.min(maxY, cy + ry * factor);
   }
 
   // Restringir zona según agujeros para evitar que un logo centrado pise agujeros laterales o superiores
@@ -829,49 +831,354 @@ export function computeSafeEngravingZone(design: LabelDesign): BoundingBox {
  * dentro de la zona segura de grabado de la etiqueta, conservando su proporción exacta
  * y evitando invadir agujeros o líneas de corte.
  */
+/**
+ * Obtiene los límites de contenido normalizados [0..1] de un elemento,
+ * detectando automáticamente el contenido visible si contiene márgenes transparentes.
+ */
+export function getElementNormalizedContentBounds(el: LabelElement): ContentBoundsNormalized {
+  if (el.contentBoundsNormalized) {
+    return el.contentBoundsNormalized;
+  }
+
+  if (el.type === 'logo_svg') {
+    let bx0 = Infinity,
+      by0 = Infinity,
+      bx1 = -Infinity,
+      by1 = -Infinity;
+    const allNums = el.normalizedPaths
+      .join(' ')
+      .match(/[-+]?(?:\d+\.?\d*|\.\d+)/g)
+      ?.map(Number)
+      .filter(Number.isFinite);
+
+    const vb = el.originalViewBox;
+    if (allNums && allNums.length >= 4 && vb.width > 0 && vb.height > 0) {
+      for (let i = 0; i + 1 < allNums.length; i += 2) {
+        const vx = allNums[i];
+        const vy = allNums[i + 1];
+        if (vx < bx0) bx0 = vx;
+        if (vx > bx1) bx1 = vx;
+        if (vy < by0) by0 = vy;
+        if (vy > by1) by1 = vy;
+      }
+      if (bx1 > bx0 && by1 > by0) {
+        const normMinX = Math.max(0, Math.min(1, (bx0 - vb.minX) / vb.width));
+        const normMinY = Math.max(0, Math.min(1, (by0 - vb.minY) / vb.height));
+        const normMaxX = Math.max(normMinX, Math.min(1, (bx1 - vb.minX) / vb.width));
+        const normMaxY = Math.max(normMinY, Math.min(1, (by1 - vb.minY) / vb.height));
+        return {
+          minX: roundMm(normMinX, 5),
+          minY: roundMm(normMinY, 5),
+          maxX: roundMm(normMaxX, 5),
+          maxY: roundMm(normMaxY, 5),
+          width: Math.max(0.001, roundMm(normMaxX - normMinX, 5)),
+          height: Math.max(0.001, roundMm(normMaxY - normMinY, 5)),
+          centerNormX: roundMm((normMinX + normMaxX) / 2, 5),
+          centerNormY: roundMm((normMinY + normMaxY) / 2, 5),
+        };
+      }
+    }
+  }
+
+  return {
+    minX: 0,
+    minY: 0,
+    maxX: 1,
+    maxY: 1,
+    width: 1,
+    height: 1,
+    centerNormX: 0.5,
+    centerNormY: 0.5,
+  };
+}
+
+/**
+ * Calcula la caja envolvente física (en milímetros reales) del contenido visible de un elemento,
+ * ignorando márgenes transparentes o espacios vacíos del lienzo original.
+ */
+export function getElementVisibleBoundingBoxMm(el: LabelElement): BoundingBox {
+  const norm = getElementNormalizedContentBounds(el);
+  const visW = roundMm(el.widthMm * norm.width, 3);
+  const visH = roundMm(el.heightMm * norm.height, 3);
+  const visCx = roundMm(el.xMm + (norm.centerNormX - 0.5) * el.widthMm, 3);
+  const visCy = roundMm(el.yMm + (norm.centerNormY - 0.5) * el.heightMm, 3);
+
+  return {
+    minX: roundMm(visCx - visW / 2, 3),
+    minY: roundMm(visCy - visH / 2, 3),
+    maxX: roundMm(visCx + visW / 2, 3),
+    maxY: roundMm(visCy + visH / 2, 3),
+    width: visW,
+    height: visH,
+  };
+}
+
+/**
+ * Calcula la caja envolvente combinada en milímetros de un grupo de elementos visibles.
+ */
+export function computeGroupVisibleBoundingBox(elements: LabelElement[]): BoundingBox {
+  const visibleEls = elements.filter((e) => e.visible);
+  if (visibleEls.length === 0) {
+    return { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 };
+  }
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const el of visibleEls) {
+    const box = getElementVisibleBoundingBoxMm(el);
+    if (box.minX < minX) minX = box.minX;
+    if (box.minY < minY) minY = box.minY;
+    if (box.maxX > maxX) maxX = box.maxX;
+    if (box.maxY > maxY) maxY = box.maxY;
+  }
+  return {
+    minX: roundMm(minX, 3),
+    minY: roundMm(minY, 3),
+    maxX: roundMm(maxX, 3),
+    maxY: roundMm(maxY, 3),
+    width: roundMm(maxX - minX, 3),
+    height: roundMm(maxY - minY, 3),
+  };
+}
+
+/**
+ * Centrado Geométrico Exacto:
+ * Posiciona el centro del contenido VISIBLE del elemento exactamente en el centro físico de la etiqueta
+ * (o centro de la zona segura). No utiliza el centro del lienzo del PNG si tiene espacios transparentes.
+ */
+export function centerElementGeometrically(
+  el: LabelElement,
+  design: LabelDesign,
+  alignTo: 'label_center' | 'safe_zone_center' = 'label_center'
+): LabelElement {
+  const safeZone = computeSafeEngravingZone(design);
+  const targetCx =
+    alignTo === 'label_center'
+      ? roundMm(design.widthMm / 2, 4)
+      : roundMm((safeZone.minX + safeZone.maxX) / 2, 4);
+  const targetCy =
+    alignTo === 'label_center'
+      ? roundMm(design.heightMm / 2, 4)
+      : roundMm((safeZone.minY + safeZone.maxY) / 2, 4);
+
+  const norm = getElementNormalizedContentBounds(el);
+  const newXMm = roundMm(targetCx - (norm.centerNormX - 0.5) * el.widthMm, 3);
+  const newYMm = roundMm(targetCy - (norm.centerNormY - 0.5) * el.heightMm, 3);
+
+  return {
+    ...el,
+    xMm: newXMm,
+    yMm: newYMm,
+  };
+}
+
+/**
+ * Centra un conjunto de elementos geométricamente en la etiqueta,
+ * conservando estrictamente su composición y distancias relativas.
+ */
+export function centerAllElementsGeometrically(
+  elements: LabelElement[],
+  design: LabelDesign,
+  alignTo: 'label_center' | 'safe_zone_center' = 'label_center'
+): LabelElement[] {
+  const visibleEls = elements.filter((e) => e.visible);
+  if (visibleEls.length === 0) return elements;
+  if (visibleEls.length === 1) {
+    return elements.map((e) =>
+      e.id === visibleEls[0].id ? centerElementGeometrically(e, design, alignTo) : e
+    );
+  }
+
+  const groupBBox = computeGroupVisibleBoundingBox(elements);
+  const safeZone = computeSafeEngravingZone(design);
+  const targetCx =
+    alignTo === 'label_center'
+      ? roundMm(design.widthMm / 2, 4)
+      : roundMm((safeZone.minX + safeZone.maxX) / 2, 4);
+  const targetCy =
+    alignTo === 'label_center'
+      ? roundMm(design.heightMm / 2, 4)
+      : roundMm((safeZone.minY + safeZone.maxY) / 2, 4);
+
+  const currentGroupCx = (groupBBox.minX + groupBBox.maxX) / 2;
+  const currentGroupCy = (groupBBox.minY + groupBBox.maxY) / 2;
+  const deltaX = targetCx - currentGroupCx;
+  const deltaY = targetCy - currentGroupCy;
+
+  return elements.map((el) => {
+    if (!el.visible) return el;
+    return {
+      ...el,
+      xMm: roundMm(el.xMm + deltaX, 3),
+      yMm: roundMm(el.yMm + deltaY, 3),
+    };
+  });
+}
+
+/**
+ * Ajusta y escala automáticamente un elemento al espacio disponible dentro de la zona segura,
+ * conservando su proporción exacta y centrándolo geométricamente.
+ */
+export function fitElementToAvailableSpace(
+  el: LabelElement,
+  design: LabelDesign,
+  fillRatio = 0.88,
+  alignTo: 'label_center' | 'safe_zone_center' = 'label_center'
+): LabelElement {
+  const safeZone = computeSafeEngravingZone(design);
+  const norm = getElementNormalizedContentBounds(el);
+
+  const maxVisW = Math.max(1.0, safeZone.width * fillRatio);
+  const maxVisH = Math.max(1.0, safeZone.height * fillRatio);
+
+  const visAspect =
+    el.aspectRatio > 0
+      ? el.aspectRatio
+      : Math.max(
+          0.001,
+          (el.widthMm * norm.width) / Math.max(0.001, el.heightMm * norm.height)
+        );
+
+  let nextVisW = maxVisW;
+  let nextVisH = nextVisW / visAspect;
+  if (nextVisH > maxVisH) {
+    nextVisH = maxVisH;
+    nextVisW = nextVisH * visAspect;
+  }
+
+  const nextWidthMm = roundMm(Math.max(1.0, nextVisW / Math.max(0.01, norm.width)), 2);
+  const nextHeightMm = roundMm(Math.max(1.0, nextVisH / Math.max(0.01, norm.height)), 2);
+
+  let updatedEl: LabelElement;
+  if (el.type === 'vector_text') {
+    const scaleFactor = el.heightMm > 0 ? nextHeightMm / el.heightMm : 1;
+    const nextFontSize = roundMm(Math.max(1.0, Math.min(maxVisH, el.fontSizeMm * scaleFactor)), 2);
+    updatedEl = {
+      ...el,
+      widthMm: nextWidthMm,
+      heightMm: nextHeightMm,
+      fontSizeMm: nextFontSize,
+    };
+  } else {
+    updatedEl = {
+      ...el,
+      widthMm: nextWidthMm,
+      heightMm: nextHeightMm,
+    };
+  }
+
+  return centerElementGeometrically(updatedEl, design, alignTo);
+}
+
+/**
+ * Ajusta y escala todos los elementos colectivamente al espacio disponible,
+ * conservando su proporción y distancias relativas.
+ */
+export function fitAllElementsToAvailableSpace(
+  elements: LabelElement[],
+  design: LabelDesign,
+  fillRatio = 0.88,
+  alignTo: 'label_center' | 'safe_zone_center' = 'label_center'
+): LabelElement[] {
+  const visibleEls = elements.filter((e) => e.visible);
+  if (visibleEls.length === 0) return elements;
+  if (visibleEls.length === 1) {
+    return elements.map((e) =>
+      e.id === visibleEls[0].id ? fitElementToAvailableSpace(e, design, fillRatio, alignTo) : e
+    );
+  }
+
+  const groupBBox = computeGroupVisibleBoundingBox(elements);
+  const safeZone = computeSafeEngravingZone(design);
+  const maxW = Math.max(1.0, safeZone.width * fillRatio);
+  const maxH = Math.max(1.0, safeZone.height * fillRatio);
+
+  const scale = Math.min(
+    groupBBox.width > 0 ? maxW / groupBBox.width : 1,
+    groupBBox.height > 0 ? maxH / groupBBox.height : 1
+  );
+
+  const groupCx = (groupBBox.minX + groupBBox.maxX) / 2;
+  const groupCy = (groupBBox.minY + groupBBox.maxY) / 2;
+
+  const targetCx =
+    alignTo === 'label_center'
+      ? roundMm(design.widthMm / 2, 4)
+      : roundMm((safeZone.minX + safeZone.maxX) / 2, 4);
+  const targetCy =
+    alignTo === 'label_center'
+      ? roundMm(design.heightMm / 2, 4)
+      : roundMm((safeZone.minY + safeZone.maxY) / 2, 4);
+
+  return elements.map((el) => {
+    if (!el.visible) return el;
+    const relX = el.xMm - groupCx;
+    const relY = el.yMm - groupCy;
+    const newW = roundMm(el.widthMm * scale, 2);
+    const newH = roundMm(el.heightMm * scale, 2);
+    const newX = roundMm(targetCx + relX * scale, 3);
+    const newY = roundMm(targetCy + relY * scale, 3);
+
+    if (el.type === 'vector_text') {
+      return {
+        ...el,
+        xMm: newX,
+        yMm: newY,
+        widthMm: newW,
+        heightMm: newH,
+        fontSizeMm: roundMm(Math.max(1.0, el.fontSizeMm * scale), 2),
+      };
+    }
+    return {
+      ...el,
+      xMm: newX,
+      yMm: newY,
+      widthMm: newW,
+      heightMm: newH,
+    };
+  });
+}
+
+/**
+ * Micromovimiento o ajuste fino en milímetros exactos (ej. 0.1 mm, 0.01 mm).
+ */
+export function nudgeElementMm(
+  el: LabelElement,
+  deltaXMm: number,
+  deltaYMm: number,
+  design?: LabelDesign
+): LabelElement {
+  let nextX = roundMm(el.xMm + deltaXMm, 3);
+  let nextY = roundMm(el.yMm + deltaYMm, 3);
+
+  if (design) {
+    const minX = 0;
+    const maxX = design.widthMm;
+    const minY = 0;
+    const maxY = design.heightMm;
+    nextX = Math.max(minX, Math.min(maxX, nextX));
+    nextY = Math.max(minY, Math.min(maxY, nextY));
+  }
+
+  return {
+    ...el,
+    xMm: nextX,
+    yMm: nextY,
+  };
+}
+
+/**
+ * Ajusta y centra automáticamente un elemento de diseño (Logo SVG/PNG o Texto)
+ * dentro de la zona segura de grabado de la etiqueta, conservando su proporción exacta
+ * y evitando invadir agujeros o líneas de corte. (Compatible con versiones anteriores).
+ */
 export function fitElementIntoSafeZone(
   el: LabelElement,
   design: LabelDesign,
   fillRatio = 0.85
 ): LabelElement {
-  const safeZone = computeSafeEngravingZone(design);
-  const targetCenterX = roundMm((safeZone.minX + safeZone.maxX) / 2, 2);
-  const targetCenterY = roundMm((safeZone.minY + safeZone.maxY) / 2, 2);
-
-  const maxW = Math.max(1.5, safeZone.width * fillRatio);
-  const maxH = Math.max(1.5, safeZone.height * fillRatio);
-  const aspect = el.aspectRatio > 0 ? el.aspectRatio : el.widthMm / Math.max(0.1, el.heightMm);
-
-  let nextW = maxW;
-  let nextH = nextW / aspect;
-  if (nextH > maxH) {
-    nextH = maxH;
-    nextW = nextH * aspect;
-  }
-
-  nextW = roundMm(nextW, 2);
-  nextH = roundMm(nextH, 2);
-
-  if (el.type === 'vector_text') {
-    const scaleFactor = el.heightMm > 0 ? nextH / el.heightMm : 1;
-    const nextFontSize = roundMm(Math.max(1.0, Math.min(maxH, el.fontSizeMm * scaleFactor)), 2);
-    return {
-      ...el,
-      xMm: targetCenterX,
-      yMm: targetCenterY,
-      widthMm: nextW,
-      heightMm: nextH,
-      fontSizeMm: nextFontSize,
-    };
-  }
-
-  return {
-    ...el,
-    xMm: targetCenterX,
-    yMm: targetCenterY,
-    widthMm: nextW,
-    heightMm: nextH,
-  };
+  return fitElementToAvailableSpace(el, design, fillRatio, 'safe_zone_center');
 }
 
 /**

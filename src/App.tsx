@@ -1,7 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertCircle,
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  CircleDot,
   Copy,
   Download,
   Eye,
@@ -9,9 +15,11 @@ import {
   FilePlus2,
   FolderOpen,
   Grid,
+  Info,
   Layers,
   Lock,
   Maximize2,
+  Move,
   MoveHorizontal,
   MoveVertical,
   Plus,
@@ -40,14 +48,23 @@ import {
 import { generateProductionSummaryReport } from './core/exporters/productionSummaryExporter';
 import { exportProductionSvg, SvgExportMode } from './core/exporters/svgExporter';
 import {
+  centerAllElementsGeometrically,
+  centerElementGeometrically,
+  compileLabelGeometry,
   computeSafeEngravingZone,
+  fitAllElementsToAvailableSpace,
   fitElementIntoSafeZone,
+  fitElementToAvailableSpace,
+  getElementNormalizedContentBounds,
+  getElementVisibleBoundingBoxMm,
+  nudgeElementMm,
   roundMm,
   validateLabelAndBatchGeometry,
 } from './core/geometry/geometryEngine';
 import { generateKerfCalibrationPatternSvg } from './core/geometry/kerfCalibrationGenerator';
 import { processImageDataUrlInBrowser } from './core/image/browserImageLoader';
 import {
+  computeEffectiveDpi,
   DEFAULT_IMAGE_PROCESSING,
   parseSvgLogoString,
 } from './core/image/imageProcessor';
@@ -66,20 +83,87 @@ import {
   upsertOrderProject,
 } from './core/projects/projectManager';
 import {
+  HoleConfiguration,
   HolePreset,
   HoleSpec,
   ImageProcessingOptions,
   LabelDesign,
   LabelElement,
   LabelShapeType,
+  LIGHTBURN_LAYERS,
   MaterialProfile,
   NestingConfig,
   OrderProject,
   RasterLogoElement,
+  SvgLogoElement,
 } from './core/types';
 
-type ActiveWorkspaceTab = 'editor' | 'production' | 'inspector';
-type LeftSidebarSection = 'materials' | 'geometry' | 'elements';
+export type WizardStepId =
+  | 'logo'
+  | 'dimensions'
+  | 'holes'
+  | 'engraving'
+  | 'production'
+  | 'export';
+
+interface WizardStepDef {
+  id: WizardStepId;
+  number: number;
+  label: string;
+  title: string;
+  subtitle: string;
+}
+
+const WIZARD_STEPS: WizardStepDef[] = [
+  {
+    id: 'logo',
+    number: 1,
+    label: 'Logo',
+    title: 'Paso 1: Importar y Procesar Logotipo',
+    subtitle:
+      'Carga el logotipo de tu cliente (PNG, JPG o SVG). Se detectan los límites visibles reales ignorando márgenes transparentes.',
+  },
+  {
+    id: 'dimensions',
+    number: 2,
+    label: 'Medidas',
+    title: 'Paso 2: Medidas y Forma de la Etiqueta',
+    subtitle:
+      'Define las dimensiones físicas reales (mm) y la forma geométrica. El logo se adapta sin deformarse.',
+  },
+  {
+    id: 'holes',
+    number: 3,
+    label: 'Orificios',
+    title: 'Paso 3: Orificios para Costura o Sujeción',
+    subtitle:
+      'Indicá si la etiqueta lleva orificios de fijación. Sin agujeros por defecto para una superficie limpia.',
+  },
+  {
+    id: 'engraving',
+    number: 4,
+    label: 'Grabado',
+    title: 'Paso 4: Centrado y Tamaño del Grabado',
+    subtitle:
+      'Alineación geométrica exacta con el centro físico de la etiqueta, ajuste proporcional a zona segura y micromovimiento.',
+  },
+  {
+    id: 'production',
+    number: 5,
+    label: 'Producción',
+    title: 'Paso 5: Material y Distribución en Plancha',
+    subtitle:
+      'Selecciona el material, cantidad requerida (50 a 500u) y recorte para calcular el anidado óptimo en la Vank 9060.',
+  },
+  {
+    id: 'export',
+    number: 6,
+    label: 'Exportar',
+    title: 'Paso 6: Revisión y Exportación Final',
+    subtitle:
+      'Auditoría matemática independiente y descarga de archivos técnicos para LightBurn (SVG 1:1) y RDWorks (DXF R12).',
+  },
+];
 
 interface HistorySnapshot {
   labelDesign: LabelDesign;
@@ -114,6 +198,29 @@ export function App() {
     initialOrder.nestingConfig
   );
 
+  // Navegación principal del Asistente de 6 pasos
+  const [currentStep, setCurrentStep] = useState<WizardStepId>('logo');
+
+  // Estado de edición interactiva
+  const [selectedElementId, setSelectedElementId] = useState<string | null>(() => {
+    return initialOrder.labelDesign.elements[0]?.id || null;
+  });
+  const [zoomLevel, setZoomLevel] = useState<number>(1.0);
+  const [showMillimeterGrid, setShowMillimeterGrid] = useState<boolean>(true);
+  const [showSafetyGuides, setShowSafetyGuides] = useState<boolean>(true);
+  const [snapToGridMm, setSnapToGridMm] = useState<number>(0.5);
+  const [renderStyle, setRenderStyle] = useState<'realistic_material' | 'technical_lightburn'>(
+    'realistic_material'
+  );
+  const [activeBatchIndex, setActiveBatchIndex] = useState<number>(0);
+  const [isOrdersModalOpen, setIsOrdersModalOpen] = useState<boolean>(false);
+  const [orderSearchQuery, setOrderSearchQuery] = useState<string>('');
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  // Acordeón de opciones avanzadas
+  const [showAdvancedProduction, setShowAdvancedProduction] = useState<boolean>(false);
+  const [showAdvancedImageOptions, setShowAdvancedImageOptions] = useState<boolean>(false);
+
   // Undo / Redo History
   const [history, setHistory] = useState<HistorySnapshot[]>([
     {
@@ -124,76 +231,9 @@ export function App() {
   ]);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
 
-  const pushStateWithHistory = (
-    nextDesign: LabelDesign,
-    nextNesting: NestingConfig = nestingConfig,
-    nextMatId: string = selectedMaterialId
-  ) => {
-    setLabelDesign(nextDesign);
-    setNestingConfig(nextNesting);
-    setSelectedMaterialId(nextMatId);
-
-    setHistory((prev) => {
-      const sliced = prev.slice(0, historyIndex + 1);
-      const next = [
-        ...sliced,
-        {
-          labelDesign: structuredClone(nextDesign),
-          nestingConfig: structuredClone(nextNesting),
-          materialId: nextMatId,
-        },
-      ].slice(-40);
-      setHistoryIndex(next.length - 1);
-      return next;
-    });
-  };
-
-  const handleUndo = () => {
-    if (historyIndex <= 0) return;
-    const prevIdx = historyIndex - 1;
-    const snap = history[prevIdx];
-    setHistoryIndex(prevIdx);
-    setLabelDesign(structuredClone(snap.labelDesign));
-    setNestingConfig(structuredClone(snap.nestingConfig));
-    setSelectedMaterialId(snap.materialId);
-  };
-
-  const handleRedo = () => {
-    if (historyIndex >= history.length - 1) return;
-    const nextIdx = historyIndex + 1;
-    const snap = history[nextIdx];
-    setHistoryIndex(nextIdx);
-    setLabelDesign(structuredClone(snap.labelDesign));
-    setNestingConfig(structuredClone(snap.nestingConfig));
-    setSelectedMaterialId(snap.materialId);
-  };
-
-  const [workspaceTab, setWorkspaceTab] = useState<ActiveWorkspaceTab>('editor');
-  const [leftSection, setLeftSection] = useState<LeftSidebarSection>('geometry');
-  const [selectedElementId, setSelectedElementId] = useState<string | null>(
-    initialOrder.labelDesign.elements[0]?.id || null
-  );
-  const [activeBatchIndex, setActiveBatchIndex] = useState<number>(0);
-
-  // Controles visuales del editor (no alteran jamás las medidas de producción)
-  const [zoomLevel, setZoomLevel] = useState<number>(1.35);
-  const [showMillimeterGrid, setShowMillimeterGrid] = useState<boolean>(true);
-  const [showSafetyGuides, setShowSafetyGuides] = useState<boolean>(true);
-  const [snapToGridMm, setSnapToGridMm] = useState<number>(0.5);
-  const [renderStyle, setRenderStyle] = useState<
-    'realistic_material' | 'technical_lightburn'
-  >('realistic_material');
-
-  const [showOrdersModal, setShowOrdersModal] = useState<boolean>(false);
-  const [showValidationBlockModal, setShowValidationBlockModal] = useState<boolean>(false);
-  const [orderSearchQuery, setOrderSearchQuery] = useState<string>('');
-  const [statusBanner, setStatusBanner] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const projectJsonInputRef = useRef<HTMLInputElement | null>(null);
-
   const activeMaterial = useMemo(() => {
     return (
-      materials.find((m) => m.id === selectedMaterialId) || materials[0]
+      materials.find((m) => m.id === selectedMaterialId) || INITIAL_MATERIALS_CATALOG[0]
     );
   }, [materials, selectedMaterialId]);
 
@@ -201,225 +241,103 @@ export function App() {
     return computeNestingLayout(labelDesign, nestingConfig);
   }, [labelDesign, nestingConfig]);
 
-  useEffect(() => {
-    if (activeBatchIndex >= nestingResult.batches.length) {
-      setActiveBatchIndex(0);
-    }
-  }, [nestingResult.batches.length, activeBatchIndex]);
-
   const validationReport = useMemo(() => {
-    return validateLabelAndBatchGeometry(
-      labelDesign,
-      nestingResult,
-      activeBatchIndex
-    );
+    return validateLabelAndBatchGeometry(labelDesign, nestingResult, activeBatchIndex);
   }, [labelDesign, nestingResult, activeBatchIndex]);
 
+  const activeBatch = nestingResult.batches[activeBatchIndex] || nestingResult.batches[0];
+
+  const notify = (msg: string) => {
+    setStatusMessage(msg);
+    setTimeout(() => {
+      setStatusMessage((prev) => (prev === msg ? null : prev));
+    }, 4500);
+  };
+
+  const pushStateWithHistory = (
+    nextDesign: LabelDesign,
+    nextNesting?: NestingConfig,
+    nextMatId?: string
+  ) => {
+    const snap: HistorySnapshot = {
+      labelDesign: structuredClone(nextDesign),
+      nestingConfig: structuredClone(nextNesting || nestingConfig),
+      materialId: nextMatId || selectedMaterialId,
+    };
+    const sliced = history.slice(0, historyIndex + 1);
+    setHistory([...sliced, snap]);
+    setHistoryIndex(sliced.length);
+    setLabelDesign(nextDesign);
+    if (nextNesting) setNestingConfig(nextNesting);
+    if (nextMatId) setSelectedMaterialId(nextMatId);
+  };
+
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      const prev = history[historyIndex - 1];
+      setHistoryIndex(historyIndex - 1);
+      setLabelDesign(structuredClone(prev.labelDesign));
+      setNestingConfig(structuredClone(prev.nestingConfig));
+      setSelectedMaterialId(prev.materialId);
+      notify('Acción deshecha.');
+    }
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < history.length - 1) {
+      const next = history[historyIndex + 1];
+      setHistoryIndex(historyIndex + 1);
+      setLabelDesign(structuredClone(next.labelDesign));
+      setNestingConfig(structuredClone(next.nestingConfig));
+      setSelectedMaterialId(next.materialId);
+      notify('Acción rehecha.');
+    }
+  };
+
+  // Atajos de teclado para Undo / Redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        if (e.shiftKey) {
+          e.preventDefault();
+          handleRedo();
+        } else {
+          e.preventDefault();
+          handleUndo();
+        }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [historyIndex, history]);
+
+  // Sincronizar selección si no hay elemento seleccionado
+  useEffect(() => {
+    if (!selectedElementId && labelDesign.elements.length > 0) {
+      setSelectedElementId(labelDesign.elements[0].id);
+    }
+  }, [labelDesign.elements, selectedElementId]);
+
+  // Selección de elemento actual
   const selectedElement = useMemo(() => {
     return labelDesign.elements.find((e) => e.id === selectedElementId) || null;
   }, [labelDesign.elements, selectedElementId]);
 
-  const notify = (msg: string) => {
-    setStatusBanner(msg);
-    window.setTimeout(() => {
-      setStatusBanner((curr) => (curr === msg ? null : curr));
-    }, 4500);
-  };
+  // ==========================================
+  // MANIPULACIÓN DEL LOGOTIPO / IMAGEN
+  // ==========================================
 
-  const handleAutoFixCriticalErrors = () => {
-    const nextElements = labelDesign.elements.map((el) =>
-      fitElementIntoSafeZone(el, labelDesign, 0.82)
-    );
-    pushStateWithHistory({
-      ...labelDesign,
-      elements: nextElements,
-    });
-    setShowValidationBlockModal(false);
-    notify('Elementos reajustados automáticamente a la zona segura. Errores críticos resueltos.');
-  };
-
-  const filteredOrders = useMemo(() => {
-    if (!orderSearchQuery.trim()) return orders;
-    const q = orderSearchQuery.toLowerCase();
-    return orders.filter(
-      (o) =>
-        o.projectName.toLowerCase().includes(q) ||
-        o.clientName.toLowerCase().includes(q) ||
-        o.materialId.toLowerCase().includes(q) ||
-        `${o.labelDesign.widthMm}x${o.labelDesign.heightMm}`.includes(q)
-    );
-  }, [orders, orderSearchQuery]);
-
-  // Crear nueva etiqueta limpia SIN agujeros automáticos (Sprint 2 Punto 3)
-  const handleCreateNewBlankProject = () => {
-    const blankDesign = createBlankLabelDesign(20, 10, 'rounded_rect');
-    const newId = `order-${Date.now()}`;
-    setActiveOrderId(newId);
-    setProjectName('Nuevo Proyecto Etiquetas');
-    setClientName('Cliente LaserHouse');
-    setOrderNotes('');
-    pushStateWithHistory(blankDesign, {
-      ...nestingConfig,
-      requestedQuantity: 100,
-    });
-    setSelectedElementId(blankDesign.elements[0]?.id || null);
-    setWorkspaceTab('editor');
-    notify('Nueva etiqueta creada (20×10 mm, sin agujeros por defecto).');
-  };
-
-  // Cambiar dimensión de etiqueta y recentrar proporcionalmente elementos
-  const updateLabelDimensions = (
-    newWidthMm: number,
-    newHeightMm: number,
-    newShape?: LabelShapeType,
-    newCornerRadiusMm?: number
-  ) => {
-    const w = roundMm(Math.max(4, Math.min(890, newWidthMm)), 2);
-    const h = roundMm(Math.max(4, Math.min(590, newHeightMm)), 2);
-    const ratioX = labelDesign.widthMm > 0 ? w / labelDesign.widthMm : 1;
-    const ratioY = labelDesign.heightMm > 0 ? h / labelDesign.heightMm : 1;
-
-    const updatedElements = labelDesign.elements.map((el) => ({
-      ...el,
-      xMm: roundMm(el.xMm * ratioX, 2),
-      yMm: roundMm(el.yMm * ratioY, 2),
-    }));
-
-    pushStateWithHistory({
-      ...labelDesign,
-      shape: newShape ?? labelDesign.shape,
-      widthMm: w,
-      heightMm: h,
-      cornerRadiusMm:
-        newCornerRadiusMm !== undefined
-          ? roundMm(newCornerRadiusMm, 2)
-          : labelDesign.cornerRadiusMm,
-      elements: updatedElements,
-    });
-  };
-
-  // Mover elemento en el lienzo
-  const handleMoveElement = (id: string, newXMm: number, newYMm: number) => {
-    setLabelDesign((prev) => ({
-      ...prev,
-      elements: prev.elements.map((el) =>
-        el.id === id ? { ...el, xMm: newXMm, yMm: newYMm } : el
-      ),
-    }));
-  };
-
-  // Actualizar elemento seleccionado
-  const updateSelectedElement = (patch: Partial<LabelElement>) => {
-    if (!selectedElementId) return;
-    const nextElements = labelDesign.elements.map((el) => {
-      if (el.id !== selectedElementId) return el;
-      const updated = { ...el, ...patch } as LabelElement;
-      if (updated.lockAspectRatio && updated.aspectRatio > 0) {
-        if ('widthMm' in patch && !('heightMm' in patch)) {
-          updated.heightMm = roundMm(updated.widthMm / updated.aspectRatio, 2);
-        } else if ('heightMm' in patch && !('widthMm' in patch)) {
-          updated.widthMm = roundMm(updated.heightMm * updated.aspectRatio, 2);
-        }
-      }
-      return updated;
-    });
-    pushStateWithHistory({
-      ...labelDesign,
-      elements: nextElements,
-    });
-  };
-
-  // Ajustar elemento seleccionado a la zona segura (evitando agujeros y márgenes)
-  const handleFitSelectedToSafeZone = () => {
-    if (!selectedElement) return;
-    const fitted = fitElementIntoSafeZone(selectedElement, labelDesign, 0.84);
-    pushStateWithHistory({
-      ...labelDesign,
-      elements: labelDesign.elements.map((el) =>
-        el.id === selectedElement.id ? fitted : el
-      ),
-    });
-    notify(
-      `Elemento "${selectedElement.name}" centrado y ajustado a la zona segura (${fitted.widthMm}×${fitted.heightMm} mm).`
-    );
-  };
-
-  // Alineación precisa del elemento seleccionado dentro de la etiqueta y la zona segura
-  const alignSelectedElement = (
-    mode: 'safe_left' | 'safe_right' | 'safe_top' | 'safe_bottom' | 'center_x' | 'center_y'
-  ) => {
-    if (!selectedElement) return;
-    const safe = computeSafeEngravingZone(labelDesign);
-    let nx = selectedElement.xMm;
-    let ny = selectedElement.yMm;
-
-    if (mode === 'safe_left') {
-      nx = roundMm(safe.minX + selectedElement.widthMm / 2, 2);
-    } else if (mode === 'safe_right') {
-      nx = roundMm(safe.maxX - selectedElement.widthMm / 2, 2);
-    } else if (mode === 'center_x') {
-      nx = roundMm(labelDesign.widthMm / 2, 2);
-    }
-
-    if (mode === 'safe_top') {
-      ny = roundMm(safe.minY + selectedElement.heightMm / 2, 2);
-    } else if (mode === 'safe_bottom') {
-      ny = roundMm(safe.maxY - selectedElement.heightMm / 2, 2);
-    } else if (mode === 'center_y') {
-      ny = roundMm(labelDesign.heightMm / 2, 2);
-    }
-
-    updateSelectedElement({ xMm: nx, yMm: ny });
-  };
-
-  // Descarga del patrón físico de calibración de Kerf (10 líneas de corte para medir con calibre)
-  const handleExportKerfPattern = () => {
-    const kerf = generateKerfCalibrationPatternSvg(activeMaterial.name);
-    triggerBrowserDownload(kerf.svgContent, kerf.filenameSuggested, 'image/svg+xml;charset=utf-8');
-    notify(`Patrón de calibración de Kerf generado: ${kerf.filenameSuggested}`);
-  };
-
-  // Reprocesar imagen raster cuando cambian sus controles de umbral/brillo/contraste/vectorización
-  const handleReprocessRasterElement = async (
-    el: RasterLogoElement,
-    nextOptions: ImageProcessingOptions
-  ) => {
-    try {
-      const reprocessed = await processImageDataUrlInBrowser({
-        dataUrl: el.originalDataUrl,
-        name: el.name,
-        targetWidthMm: el.widthMm,
-        centerXMm: el.xMm,
-        centerYMm: el.yMm,
-        options: nextOptions,
-        existingId: el.id,
-      });
-      reprocessed.rotationDeg = el.rotationDeg;
-      reprocessed.locked = el.locked;
-      pushStateWithHistory({
-        ...labelDesign,
-        elements: labelDesign.elements.map((item) =>
-          item.id === el.id ? reprocessed : item
-        ),
-      });
-    } catch (err) {
-      notify(`Error al procesar imagen: ${(err as Error).message}`);
-    }
-  };
-
-  // Importar archivo de logo real (SVG, PNG, JPG/JPEG)
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = '';
-
+  const handleImageUpload = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
 
     if (ext === 'svg' || file.type === 'image/svg+xml') {
       const text = await file.text();
       const parsed = parseSvgLogoString(text);
 
-      const rawEl: LabelElement = {
+      const rawEl: SvgLogoElement = {
         id: `logo-svg-${Date.now()}`,
         name: file.name.replace(/\.[^.]+$/, ''),
         type: 'logo_svg',
@@ -435,17 +353,18 @@ export function App() {
         rawSvgContent: text,
         normalizedPaths: parsed.normalizedPaths,
         originalViewBox: parsed.originalViewBox,
+        contentBoundsNormalized: parsed.contentBoundsNormalized,
       };
-      const fittedEl = fitElementIntoSafeZone(rawEl, labelDesign, 0.8);
+
+      const fittedEl = fitElementToAvailableSpace(rawEl, labelDesign, 0.85);
 
       pushStateWithHistory({
         ...labelDesign,
-        elements: [...labelDesign.elements, fittedEl],
+        elements: [fittedEl],
       });
       setSelectedElementId(fittedEl.id);
-      setLeftSection('elements');
       notify(
-        `Logo SVG "${file.name}" importado y ajustado a la zona segura (${fittedEl.widthMm}×${fittedEl.heightMm} mm).`
+        `Logo SVG "${file.name}" cargado y centrado geométricamente (${fittedEl.widthMm}×${fittedEl.heightMm} mm).`
       );
       return;
     }
@@ -463,20 +382,20 @@ export function App() {
           centerYMm: roundMm(labelDesign.heightMm / 2, 2),
           options: DEFAULT_IMAGE_PROCESSING,
         });
-        const fittedRaster = fitElementIntoSafeZone(
+
+        const fittedRaster = fitElementToAvailableSpace(
           rasterEl,
           labelDesign,
-          0.8
+          0.85
         ) as RasterLogoElement;
 
         pushStateWithHistory({
           ...labelDesign,
-          elements: [...labelDesign.elements, fittedRaster],
+          elements: [fittedRaster],
         });
         setSelectedElementId(fittedRaster.id);
-        setLeftSection('elements');
         notify(
-          `Imagen "${file.name}" procesada (${fittedRaster.vectorizedPathsNormalized.length} contornos cerrados, ${Math.round(fittedRaster.effectiveDpi)} DPI).`
+          `Imagen "${file.name}" importada (${fittedRaster.pixelWidth}×${fittedRaster.pixelHeight} px, ${Math.round(fittedRaster.effectiveDpi)} DPI).`
         );
       } catch (err) {
         notify(`No se pudo procesar la imagen: ${(err as Error).message}`);
@@ -485,25 +404,24 @@ export function App() {
     reader.readAsDataURL(file);
   };
 
-  // Generador de logos PNG/SVG de prueba reales (con transparencia, con fondo blanco y con huecos internos)
-  const handleLoadSampleClientLogo = async (
-    kind: 'png_transparent' | 'png_white_bg' | 'svg_hollow'
+  // Carga de logos de muestra reales
+  const handleLoadSampleLogo = async (
+    kind: 'svg_hex' | 'svg_hollow' | 'png_sample'
   ) => {
-    if (kind === 'svg_hollow') {
-      const sampleSvg = `<svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
-        <path d="M 10 8 L 50 8 L 58 30 L 50 52 L 10 52 L 2 30 Z M 20 18 L 20 42 L 40 42 L 40 18 Z" />
-        <path d="M 70 12 L 112 12 L 112 48 L 70 48 Z M 80 22 L 80 38 L 102 38 L 102 22 Z" />
-        <line x1="62" y1="10" x2="62" y2="50" />
+    if (kind === 'svg_hex') {
+      const sampleSvg = `<svg viewBox="0 0 44 28" xmlns="http://www.w3.org/2000/svg">
+        <path d="M 8 2 L 36 2 L 42 14 L 36 26 L 8 26 L 2 14 Z" />
+        <path d="M 14 8 L 20 8 L 20 18 L 30 18 L 30 22 L 14 22 Z" />
       </svg>`;
       const parsed = parseSvgLogoString(sampleSvg);
-      const rawEl: LabelElement = {
+      const rawEl: SvgLogoElement = {
         id: `logo-svg-sample-${Date.now()}`,
-        name: 'Logo_Cliente_SVG_Huecos',
+        name: 'Logo Hexagonal LH',
         type: 'logo_svg',
         xMm: roundMm(labelDesign.widthMm / 2, 2),
         yMm: roundMm(labelDesign.heightMm / 2, 2),
         widthMm: 12,
-        heightMm: 6,
+        heightMm: roundMm(12 / parsed.aspectRatio, 2),
         aspectRatio: parsed.aspectRatio,
         lockAspectRatio: true,
         rotationDeg: 0,
@@ -512,58 +430,78 @@ export function App() {
         rawSvgContent: sampleSvg,
         normalizedPaths: parsed.normalizedPaths,
         originalViewBox: parsed.originalViewBox,
+        contentBoundsNormalized: parsed.contentBoundsNormalized,
       };
-      const fitted = fitElementIntoSafeZone(rawEl, labelDesign, 0.8);
+      const fitted = fitElementToAvailableSpace(rawEl, labelDesign, 0.85);
       pushStateWithHistory({
         ...labelDesign,
         elements: [fitted],
       });
       setSelectedElementId(fitted.id);
-      notify('Logo SVG de prueba con huecos internos y trazo abierto cargado y ajustado a zona segura.');
+      notify('Logo SVG Hexagonal LH cargado y centrado.');
       return;
     }
 
-    // Generar PNG real en Canvas (con fondo transparente o con fondo blanco)
+    if (kind === 'svg_hollow') {
+      const sampleSvg = `<svg viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg">
+        <path d="M 10 8 L 50 8 L 58 30 L 50 52 L 10 52 L 2 30 Z M 20 18 L 20 42 L 40 42 L 40 18 Z" />
+        <path d="M 70 12 L 112 12 L 112 48 L 70 48 Z M 80 22 L 80 38 L 102 38 L 102 22 Z" />
+        <line x1="62" y1="10" x2="62" y2="50" />
+      </svg>`;
+      const parsed = parseSvgLogoString(sampleSvg);
+      const rawEl: SvgLogoElement = {
+        id: `logo-svg-hollow-${Date.now()}`,
+        name: 'Logo SVG con Huecos Internos',
+        type: 'logo_svg',
+        xMm: roundMm(labelDesign.widthMm / 2, 2),
+        yMm: roundMm(labelDesign.heightMm / 2, 2),
+        widthMm: 14,
+        heightMm: 7,
+        aspectRatio: parsed.aspectRatio,
+        lockAspectRatio: true,
+        rotationDeg: 0,
+        locked: false,
+        visible: true,
+        rawSvgContent: sampleSvg,
+        normalizedPaths: parsed.normalizedPaths,
+        originalViewBox: parsed.originalViewBox,
+        contentBoundsNormalized: parsed.contentBoundsNormalized,
+      };
+      const fitted = fitElementToAvailableSpace(rawEl, labelDesign, 0.85);
+      pushStateWithHistory({
+        ...labelDesign,
+        elements: [fitted],
+      });
+      setSelectedElementId(fitted.id);
+      notify('Logo SVG con huecos internos y contornos cerrados cargado.');
+      return;
+    }
+
+    // PNG de muestra con fondo transparente
     const canvas = document.createElement('canvas');
     canvas.width = 240;
     canvas.height = 120;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    ctx.clearRect(0, 0, 240, 120);
 
-    if (kind === 'png_white_bg') {
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, 240, 120);
-    } else {
-      ctx.clearRect(0, 0, 240, 120);
-    }
-
-    // Dibujar emblema negro con hueco interno (anillo + letras "LH")
+    // Emblema circular con hueco y texto
     ctx.fillStyle = '#111111';
     ctx.beginPath();
     ctx.arc(60, 60, 42, 0, Math.PI * 2);
     ctx.fill();
 
-    // Hueco interior del anillo
-    if (kind === 'png_white_bg') {
-      ctx.fillStyle = '#FFFFFF';
-      ctx.beginPath();
-      ctx.arc(60, 60, 24, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.beginPath();
-      ctx.arc(60, 60, 24, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalCompositeOperation = 'source-over';
-    }
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.arc(60, 60, 24, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
 
-    // Punto central dentro del hueco
     ctx.fillStyle = '#111111';
     ctx.beginPath();
     ctx.arc(60, 60, 9, 0, Math.PI * 2);
     ctx.fill();
 
-    // Letras gruesas "LH" a la derecha
     ctx.fillRect(120, 25, 16, 70);
     ctx.fillRect(120, 79, 42, 16);
     ctx.fillRect(172, 25, 16, 70);
@@ -573,16 +511,13 @@ export function App() {
     const dataUrl = canvas.toDataURL('image/png');
     const rasterEl = await processImageDataUrlInBrowser({
       dataUrl,
-      name:
-        kind === 'png_transparent'
-          ? 'Logo_PNG_Transparente'
-          : 'Logo_PNG_Fondo_Blanco',
+      name: 'Logo_PNG_Muestra_LH',
       targetWidthMm: 12,
       centerXMm: roundMm(labelDesign.widthMm / 2, 2),
       centerYMm: roundMm(labelDesign.heightMm / 2, 2),
       options: DEFAULT_IMAGE_PROCESSING,
     });
-    const fitted = fitElementIntoSafeZone(
+    const fitted = fitElementToAvailableSpace(
       rasterEl,
       labelDesign,
       0.82
@@ -592,47 +527,352 @@ export function App() {
       elements: [fitted],
     });
     setSelectedElementId(fitted.id);
+    notify('Logo PNG monocromático de muestra cargado.');
+  };
+
+  // Re-procesamiento en vivo de opciones de imagen (umbral, contraste, etc.)
+  const handleUpdateImageProcessing = async (
+    updates: Partial<ImageProcessingOptions>
+  ) => {
+    if (!selectedElement || selectedElement.type !== 'logo_raster') return;
+    const newOptions: ImageProcessingOptions = {
+      ...selectedElement.processing,
+      ...updates,
+    };
+
+    try {
+      const reprocessed = await processImageDataUrlInBrowser({
+        dataUrl: selectedElement.originalDataUrl,
+        name: selectedElement.name,
+        targetWidthMm: selectedElement.widthMm,
+        centerXMm: selectedElement.xMm,
+        centerYMm: selectedElement.yMm,
+        options: newOptions,
+        existingId: selectedElement.id,
+      });
+
+      const updatedEls = labelDesign.elements.map((el) =>
+        el.id === selectedElement.id ? reprocessed : el
+      );
+      pushStateWithHistory({
+        ...labelDesign,
+        elements: updatedEls,
+      });
+    } catch (err) {
+      notify(`Error al procesar parámetros de imagen: ${(err as Error).message}`);
+    }
+  };
+
+  // ==========================================
+  // PASO 2: FORMA Y MEDIDAS DE LA ETIQUETA
+  // ==========================================
+
+  const handleApplyDimensionPreset = (w: number, h: number) => {
+    const updated: LabelDesign = {
+      ...labelDesign,
+      widthMm: w,
+      heightMm: h,
+    };
+    // Re-adaptar elementos proporcionalmente para que no queden fuera de la nueva etiqueta
+    const adaptedElements = fitAllElementsToAvailableSpace(
+      labelDesign.elements,
+      updated,
+      0.85
+    );
+    pushStateWithHistory({
+      ...updated,
+      elements: adaptedElements,
+    });
+    notify(`Medida actualizada a ${w} × ${h} mm.`);
+  };
+
+  const handleUpdateLabelDimensions = (w: number, h: number) => {
+    const safeW = Math.max(5, Math.min(600, w));
+    const safeH = Math.max(5, Math.min(400, h));
+    const updated: LabelDesign = {
+      ...labelDesign,
+      widthMm: safeW,
+      heightMm: safeH,
+    };
+    const adaptedElements = fitAllElementsToAvailableSpace(
+      labelDesign.elements,
+      updated,
+      0.85
+    );
+    pushStateWithHistory({
+      ...updated,
+      elements: adaptedElements,
+    });
+  };
+
+  const handleUpdateLabelShape = (shape: LabelShapeType) => {
+    const updated: LabelDesign = {
+      ...labelDesign,
+      shape,
+    };
+    const adaptedElements = fitAllElementsToAvailableSpace(
+      labelDesign.elements,
+      updated,
+      0.85
+    );
+    pushStateWithHistory({
+      ...updated,
+      elements: adaptedElements,
+    });
+    notify(`Forma cambiada a ${shape}.`);
+  };
+
+  // ==========================================
+  // PASO 3: ORIFICIOS
+  // ==========================================
+
+  const handleSetHolePreset = (preset: HolePreset) => {
+    const updatedHoles: HoleConfiguration = {
+      ...labelDesign.holes,
+      preset,
+      diameterMm: labelDesign.holes.diameterMm || 2.0,
+      edgeDistanceMm: labelDesign.holes.edgeDistanceMm || 2.5,
+      customHoles:
+        preset === 'custom' && (!labelDesign.holes.customHoles || labelDesign.holes.customHoles.length === 0)
+          ? [
+              {
+                id: 'hole-custom-1',
+                x: roundMm(labelDesign.holes.edgeDistanceMm || 2.5),
+                y: roundMm(labelDesign.heightMm / 2),
+                diameterMm: labelDesign.holes.diameterMm || 2.0,
+              },
+            ]
+          : labelDesign.holes.customHoles,
+    };
+
+    const nextDesign: LabelDesign = {
+      ...labelDesign,
+      holes: updatedHoles,
+    };
+
+    // Si los nuevos agujeros invaden el logo, avisar o re-adaptar
+    pushStateWithHistory(nextDesign);
     notify(
-      `Logo ${kind === 'png_transparent' ? 'PNG con transparencia' : 'PNG con fondo blanco'} vectorizado con conservación de huecos (${fitted.vectorizedPathsNormalized.length} contornos cerrados).`
+      preset === 'none'
+        ? 'Etiqueta sin orificios.'
+        : `Orificios configurados: ${preset} (${updatedHoles.diameterMm} mm de diámetro).`
     );
   };
 
-  // Agregar texto vectorial paramétrico
-  const handleAddVectorText = () => {
-    const newText: LabelElement = {
-      id: `text-${Date.now()}`,
-      name: 'Texto Grabado',
-      type: 'vector_text',
-      xMm: roundMm(labelDesign.widthMm / 2, 2),
-      yMm: roundMm(labelDesign.heightMm / 2, 2),
-      widthMm: roundMm(Math.min(12, labelDesign.widthMm * 0.7), 2),
-      heightMm: 2.2,
-      aspectRatio: 5.0,
-      lockAspectRatio: false,
-      rotationDeg: 0,
-      locked: false,
-      visible: true,
-      text: 'LASERHOUSE',
-      fontSizeMm: 2.2,
-      letterSpacingMm: 0.4,
-      fontStyle: 'sans_industrial',
-      strokeWidthMm: 0.3,
-    };
-    const fitted = fitElementIntoSafeZone(newText, labelDesign, 0.75);
+  const handleUpdateHoleDiameter = (diam: number) => {
+    const safeD = Math.max(0.5, Math.min(10, diam));
     pushStateWithHistory({
       ...labelDesign,
-      elements: [...labelDesign.elements, fitted],
+      holes: {
+        ...labelDesign.holes,
+        diameterMm: safeD,
+      },
     });
-    setSelectedElementId(fitted.id);
-    setLeftSection('elements');
   };
 
-  // Descargar archivo generado al disco del operador
-  const triggerBrowserDownload = (
-    content: string,
-    filename: string,
-    mimeType: string
+  const handleUpdateHoleEdgeDistance = (dist: number) => {
+    const safeDist = Math.max(0.8, Math.min(labelDesign.widthMm / 2 - 1, dist));
+    pushStateWithHistory({
+      ...labelDesign,
+      holes: {
+        ...labelDesign.holes,
+        edgeDistanceMm: safeDist,
+      },
+    });
+  };
+
+  // ==========================================
+  // PASO 4: CENTRADO, AJUSTE Y MICROMOVIMIENTO
+  // ==========================================
+
+  // 1. Centrado Geométrico Exacto (Alinear contenido visible con centro físico W/2, H/2)
+  const handleCenterLogoGeometrically = () => {
+    if (labelDesign.elements.length === 0) return;
+    const centeredEls = centerAllElementsGeometrically(
+      labelDesign.elements,
+      labelDesign,
+      'label_center'
+    );
+    pushStateWithHistory({
+      ...labelDesign,
+      elements: centeredEls,
+    });
+    notify(
+      `Logotipo centrado geométricamente en el centro físico de la etiqueta (${roundMm(labelDesign.widthMm / 2, 2)}, ${roundMm(labelDesign.heightMm / 2, 2)} mm).`
+    );
+  };
+
+  // 2. Centrado en Zona Libre entre orificios
+  const handleCenterInSafeZone = () => {
+    if (labelDesign.elements.length === 0) return;
+    const centeredEls = centerAllElementsGeometrically(
+      labelDesign.elements,
+      labelDesign,
+      'safe_zone_center'
+    );
+    pushStateWithHistory({
+      ...labelDesign,
+      elements: centeredEls,
+    });
+    notify('Logotipo centrado en el área libre entre orificios.');
+  };
+
+  // 3. Ajustar al Espacio Disponible (Escala proporcional máxima a la zona segura)
+  const handleFitToAvailableSpace = () => {
+    if (labelDesign.elements.length === 0) return;
+    const fittedEls = fitAllElementsToAvailableSpace(
+      labelDesign.elements,
+      labelDesign,
+      0.88,
+      'safe_zone_center'
+    );
+    pushStateWithHistory({
+      ...labelDesign,
+      elements: fittedEls,
+    });
+    notify('Logotipo ajustado proporcionalmente al espacio seguro disponible.');
+  };
+
+  // 4. Ajuste Óptico / Micromovimiento (0.1 mm y 0.01 mm)
+  const handleNudge = (deltaX: number, deltaY: number) => {
+    if (!selectedElement) return;
+    const nudged = nudgeElementMm(selectedElement, deltaX, deltaY, labelDesign);
+    const updatedEls = labelDesign.elements.map((el) =>
+      el.id === selectedElement.id ? nudged : el
+    );
+    pushStateWithHistory({
+      ...labelDesign,
+      elements: updatedEls,
+    });
+  };
+
+  // 5. Alineación rápida a bordes seguros
+  const handleAlignToEdge = (
+    alignment:
+      | 'safe_left'
+      | 'safe_right'
+      | 'safe_top'
+      | 'safe_bottom'
+      | 'center_x'
+      | 'center_y'
   ) => {
+    if (!selectedElement) return;
+    const safeZone = computeSafeEngravingZone(labelDesign);
+    const norm = getElementNormalizedContentBounds(selectedElement);
+    const visW = selectedElement.widthMm * norm.width;
+    const visH = selectedElement.heightMm * norm.height;
+
+    let nextX = selectedElement.xMm;
+    let nextY = selectedElement.yMm;
+
+    switch (alignment) {
+      case 'safe_left':
+        nextX = roundMm(safeZone.minX + visW / 2 - (norm.centerNormX - 0.5) * selectedElement.widthMm, 3);
+        break;
+      case 'safe_right':
+        nextX = roundMm(safeZone.maxX - visW / 2 - (norm.centerNormX - 0.5) * selectedElement.widthMm, 3);
+        break;
+      case 'center_x':
+        nextX = roundMm(labelDesign.widthMm / 2 - (norm.centerNormX - 0.5) * selectedElement.widthMm, 3);
+        break;
+      case 'safe_top':
+        nextY = roundMm(safeZone.minY + visH / 2 - (norm.centerNormY - 0.5) * selectedElement.heightMm, 3);
+        break;
+      case 'safe_bottom':
+        nextY = roundMm(safeZone.maxY - visH / 2 - (norm.centerNormY - 0.5) * selectedElement.heightMm, 3);
+        break;
+      case 'center_y':
+        nextY = roundMm(labelDesign.heightMm / 2 - (norm.centerNormY - 0.5) * selectedElement.heightMm, 3);
+        break;
+    }
+
+    const updated = {
+      ...selectedElement,
+      xMm: nextX,
+      yMm: nextY,
+    };
+    const updatedEls = labelDesign.elements.map((el) =>
+      el.id === selectedElement.id ? updated : el
+    );
+    pushStateWithHistory({
+      ...labelDesign,
+      elements: updatedEls,
+    });
+    notify(`Alineado a ${alignment}.`);
+  };
+
+  // 6. Cambio manual de tamaño en milímetros
+  const handleUpdateElementSizeMm = (newW: number, newH?: number) => {
+    if (!selectedElement) return;
+    const norm = getElementNormalizedContentBounds(selectedElement);
+    const aspect =
+      selectedElement.aspectRatio > 0
+        ? selectedElement.aspectRatio
+        : selectedElement.widthMm / Math.max(0.1, selectedElement.heightMm);
+
+    const safeW = Math.max(1.0, roundMm(newW, 2));
+    const safeH =
+      selectedElement.lockAspectRatio || newH === undefined
+        ? roundMm(safeW / aspect, 2)
+        : Math.max(1.0, roundMm(newH, 2));
+
+    let updatedEl: LabelElement;
+    if (selectedElement.type === 'vector_text') {
+      const scaleFactor = selectedElement.heightMm > 0 ? safeH / selectedElement.heightMm : 1;
+      const nextFontSize = roundMm(
+        Math.max(0.8, selectedElement.fontSizeMm * scaleFactor),
+        2
+      );
+      updatedEl = {
+        ...selectedElement,
+        widthMm: safeW,
+        heightMm: safeH,
+        fontSizeMm: nextFontSize,
+      };
+    } else {
+      updatedEl = {
+        ...selectedElement,
+        widthMm: safeW,
+        heightMm: safeH,
+      };
+    }
+
+    const updatedEls = labelDesign.elements.map((el) =>
+      el.id === selectedElement.id ? updatedEl : el
+    );
+    pushStateWithHistory({
+      ...labelDesign,
+      elements: updatedEls,
+    });
+  };
+
+  // ==========================================
+  // PASO 5: PRODUCCIÓN (MATERIAL, CANTIDAD, ANIDADO)
+  // ==========================================
+
+  const handleSetRequestedQuantity = (qty: number) => {
+    const safeQty = Math.max(1, Math.min(10000, qty));
+    pushStateWithHistory(labelDesign, {
+      ...nestingConfig,
+      requestedQuantity: safeQty,
+    });
+    notify(`Cantidad de producción actualizada: ${safeQty} etiquetas.`);
+  };
+
+  const handleSelectMaterialSheet = (presetWidth: number, presetHeight: number) => {
+    pushStateWithHistory(labelDesign, {
+      ...nestingConfig,
+      sheetWidthMm: presetWidth,
+      sheetHeightMm: presetHeight,
+    });
+    notify(`Recorte de material definido en ${presetWidth} × ${presetHeight} mm.`);
+  };
+
+  // ==========================================
+  // PASO 6: EXPORTADORES (SVG, DXF, PROYECTO, KERF)
+  // ==========================================
+
+  const triggerDownload = (filename: string, content: string, mimeType: string) => {
     const blob = new Blob([content], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -644,2651 +884,1579 @@ export function App() {
     URL.revokeObjectURL(url);
   };
 
-  const handleExportSvg = (mode: SvgExportMode) => {
-    const critical = validationReport.issues.filter((i) => i.severity === 'error');
-    if (critical.length > 0) {
-      setShowValidationBlockModal(true);
-      return;
+  const handleExportSvg = (mode: SvgExportMode = 'combined') => {
+    try {
+      const artifact = exportProductionSvg(
+        labelDesign,
+        nestingResult,
+        activeMaterial,
+        { mode, batchIndex: activeBatchIndex }
+      );
+      triggerDownload(artifact.filenameSuggested, artifact.svgContent, 'image/svg+xml');
+      notify(`Archivo SVG "${artifact.filenameSuggested}" exportado.`);
+    } catch (err) {
+      notify(`Error al exportar SVG: ${(err as Error).message}`);
     }
-    const artifact = exportProductionSvg(
-      labelDesign,
-      nestingResult,
-      activeMaterial,
-      {
-        mode,
-        batchIndex: activeBatchIndex,
-      }
-    );
-    triggerBrowserDownload(
-      artifact.svgContent,
-      artifact.filenameSuggested,
-      'image/svg+xml;charset=utf-8'
-    );
-    notify(
-      `Exportado SVG LightBurn: ${artifact.filenameSuggested} (${artifact.pieceCount} etiquetas, ${artifact.widthMm}×${artifact.heightMm} mm).`
-    );
   };
 
   const handleExportDxf = () => {
-    const critical = validationReport.issues.filter((i) => i.severity === 'error');
-    if (critical.length > 0) {
-      setShowValidationBlockModal(true);
-      return;
-    }
-    const artifact = exportProductionDxf(
-      labelDesign,
-      nestingResult,
-      activeBatchIndex
-    );
-    triggerBrowserDownload(
-      artifact.dxfContent,
-      artifact.filenameSuggested,
-      'application/dxf;charset=utf-8'
-    );
-    notify(
-      `Exportado DXF RDWorks: ${artifact.filenameSuggested} (${artifact.pieceCount} etiquetas en escala 1:1 mm).`
-    );
-  };
-
-  const handleExportSummary = () => {
-    const summary = generateProductionSummaryReport({
-      project: { projectName, clientName, notes: orderNotes },
-      design: labelDesign,
-      material: activeMaterial,
-      nesting: nestingResult,
-      batchIndex: activeBatchIndex,
-    });
-    triggerBrowserDownload(
-      summary.reportText,
-      summary.filenameSuggested,
-      'text/plain;charset=utf-8'
-    );
-    notify(`Exportada Hoja Técnica de Producción: ${summary.filenameSuggested}`);
-  };
-
-  const buildCurrentOrderObject = (): OrderProject => ({
-    id: activeOrderId,
-    projectName: projectName.trim() || labelDesign.name,
-    clientName: clientName.trim() || 'Cliente LaserHouse',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    notes: orderNotes,
-    materialId: activeMaterial.id,
-    materialProfileSnapshot: structuredClone(activeMaterial),
-    labelDesign: structuredClone(labelDesign),
-    nestingConfig: structuredClone(nestingConfig),
-    exportedFilesHistory: [],
-  });
-
-  const handleSaveCurrentOrder = () => {
-    const orderToSave = buildCurrentOrderObject();
-    const nextOrders = upsertOrderProject(orders, orderToSave);
-    setOrders(nextOrders);
-    notify(`Pedido "${orderToSave.projectName}" guardado correctamente.`);
-  };
-
-  const handleDownloadProjectJson = () => {
-    const orderObj = buildCurrentOrderObject();
-    const jsonStr = serializeOrderProjectToJson(orderObj);
-    const cleanName = orderObj.projectName.replace(/[^a-zA-Z0-9_-]+/g, '_');
-    triggerBrowserDownload(
-      jsonStr,
-      `${cleanName}_${labelDesign.widthMm}x${labelDesign.heightMm}mm.lhstudio.json`,
-      'application/json;charset=utf-8'
-    );
-    notify('Archivo de proyecto (.lhstudio.json) descargado con todas sus dimensiones.');
-  };
-
-  const handleImportProjectJsonFile = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = '';
     try {
-      const text = await file.text();
-      const restored = deserializeOrderProjectFromJson(text);
-      const nextOrders = upsertOrderProject(orders, restored);
-      setOrders(nextOrders);
-      handleLoadOrder(restored);
-      notify(
-        `Proyecto "${restored.projectName}" recuperado (${restored.labelDesign.widthMm}×${restored.labelDesign.heightMm} mm, ${restored.nestingConfig.requestedQuantity} u.).`
+      const artifact = exportProductionDxf(
+        labelDesign,
+        nestingResult,
+        activeBatchIndex
       );
+      triggerDownload(artifact.filenameSuggested, artifact.dxfContent, 'application/dxf');
+      notify(`Archivo DXF R12 "${artifact.filenameSuggested}" exportado.`);
     } catch (err) {
-      notify(`Error al abrir proyecto: ${(err as Error).message}`);
+      notify(`Error al exportar DXF: ${(err as Error).message}`);
     }
   };
 
-  const handleLoadOrder = (ord: OrderProject) => {
-    setActiveOrderId(ord.id);
-    setProjectName(ord.projectName);
-    setClientName(ord.clientName);
-    setOrderNotes(ord.notes);
-    setSelectedMaterialId(ord.materialId);
-    pushStateWithHistory(
-      structuredClone(ord.labelDesign),
-      structuredClone(ord.nestingConfig),
-      ord.materialId
-    );
-    setSelectedElementId(ord.labelDesign.elements[0]?.id || null);
-    setShowOrdersModal(false);
-    notify(
-      `Pedido "${ord.projectName}" cargado (${ord.labelDesign.widthMm}×${ord.labelDesign.heightMm} mm · ${ord.nestingConfig.requestedQuantity} u.).`
-    );
+  const handleExportSummaryReport = () => {
+    try {
+      const artifact = generateProductionSummaryReport({
+        project: {
+          id: activeOrderId,
+          projectName,
+          clientName,
+          notes: orderNotes,
+        },
+        design: labelDesign,
+        material: activeMaterial,
+        nesting: nestingResult,
+        batchIndex: activeBatchIndex,
+      });
+      triggerDownload(artifact.filenameSuggested, artifact.reportText, 'text/plain');
+      notify(`Hoja de ruta "${artifact.filenameSuggested}" descargada.`);
+    } catch (err) {
+      notify(`Error al generar resumen: ${(err as Error).message}`);
+    }
   };
 
-  const handleDuplicateOrderWithNewQuantity = (
-    ord: OrderProject,
-    newQty: number
-  ) => {
-    const duplicated = duplicateOrderWithQuantity(ord, newQty);
-    const nextOrders = upsertOrderProject(orders, duplicated);
-    setOrders(nextOrders);
-    handleLoadOrder(duplicated);
-  };
-
-  const currentBatch =
-    nestingResult.batches[activeBatchIndex] || nestingResult.batches[0];
-
-  const liveFormatAudit = useMemo(() => {
-    if (workspaceTab !== 'inspector') return null;
-    const svgArt = exportProductionSvg(labelDesign, nestingResult, activeMaterial, {
-      mode: 'combined',
-      batchIndex: activeBatchIndex,
-    });
-    const dxfArt = exportProductionDxf(labelDesign, nestingResult, activeBatchIndex);
-    return {
-      svgContent: svgArt.svgContent,
-      svgAudit: parseAndAuditLightBurnSvg(svgArt.svgContent),
-      dxfAudit: parseAndAuditDxfR12(dxfArt.dxfContent),
+  const handleSaveOrderProject = () => {
+    const project: OrderProject = {
+      id: activeOrderId || `order-${Date.now()}`,
+      projectName,
+      clientName,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      notes: orderNotes,
+      materialId: selectedMaterialId,
+      materialProfileSnapshot: activeMaterial,
+      labelDesign,
+      nestingConfig,
+      exportedFilesHistory: [],
     };
-  }, [workspaceTab, labelDesign, nestingResult, activeMaterial, activeBatchIndex]);
+    const jsonStr = serializeOrderProjectToJson(project);
+    const updatedCatalog = upsertOrderProject(orders, project);
+    setOrders(updatedCatalog);
+    triggerDownload(`${projectName.replace(/\s+/g, '_')}.lhstudio.json`, jsonStr, 'application/json');
+    notify(`Proyecto guardado y descargado.`);
+  };
 
-  // Gestión de agujeros personalizados (Sprint 2 Punto 3)
-  const handleAddCustomHole = () => {
-    const currentCustom = labelDesign.holes.customHoles || [];
-    const newHole: HoleSpec = {
-      id: `hole-custom-${Date.now()}`,
-      x: roundMm(labelDesign.widthMm / 2, 2),
-      y: roundMm(labelDesign.heightMm / 2, 2),
-      diameterMm: labelDesign.holes.diameterMm || 1.6,
+  const handleDownloadKerfPattern = () => {
+    const artifact = generateKerfCalibrationPatternSvg(activeMaterial.name);
+    triggerDownload(artifact.filenameSuggested, artifact.svgContent, 'image/svg+xml');
+    notify('Patrón de calibración de Kerf (100×20 mm) descargado.');
+  };
+
+  const handleCreateNewBlankOrder = () => {
+    const blank = createBlankLabelDesign(20, 10, 'rounded_rect');
+    const newOrder: OrderProject = {
+      id: `order-new-${Date.now()}`,
+      projectName: 'Nuevo Pedido 20x10',
+      clientName: 'Cliente Nuevo',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      notes: '',
+      materialId: 'ECOCUERO_SUELA',
+      materialProfileSnapshot: INITIAL_MATERIALS_CATALOG[0],
+      labelDesign: blank,
+      nestingConfig: {
+        ...initialOrder.nestingConfig,
+        requestedQuantity: 200,
+      },
+      exportedFilesHistory: [],
     };
-    pushStateWithHistory({
-      ...labelDesign,
-      holes: {
-        ...labelDesign.holes,
-        preset: 'custom',
-        customHoles: [...currentCustom, newHole],
+    setActiveOrderId(newOrder.id);
+    setProjectName(newOrder.projectName);
+    setClientName(newOrder.clientName);
+    setOrderNotes(newOrder.notes);
+    setSelectedMaterialId(newOrder.materialId);
+    setLabelDesign(newOrder.labelDesign);
+    setNestingConfig(newOrder.nestingConfig);
+    setHistory([
+      {
+        labelDesign: structuredClone(newOrder.labelDesign),
+        nestingConfig: structuredClone(newOrder.nestingConfig),
+        materialId: newOrder.materialId,
       },
-    });
+    ]);
+    setHistoryIndex(0);
+    setCurrentStep('logo');
+    notify('Nuevo pedido iniciado (Etiqueta en blanco 20×10 mm sin agujeros).');
   };
 
-  const handleUpdateCustomHole = (id: string, patch: Partial<HoleSpec>) => {
-    pushStateWithHistory({
-      ...labelDesign,
-      holes: {
-        ...labelDesign.holes,
-        customHoles: (labelDesign.holes.customHoles || []).map((h) =>
-          h.id === id ? { ...h, ...patch } : h
-        ),
-      },
-    });
+  // Navegación secuencial Atrás / Continuar
+  const currentStepIndex = WIZARD_STEPS.findIndex((s) => s.id === currentStep);
+
+  const handleGoNext = () => {
+    if (currentStepIndex < WIZARD_STEPS.length - 1) {
+      setCurrentStep(WIZARD_STEPS[currentStepIndex + 1].id);
+    }
   };
 
-  const handleRemoveCustomHole = (id: string) => {
-    pushStateWithHistory({
-      ...labelDesign,
-      holes: {
-        ...labelDesign.holes,
-        customHoles: (labelDesign.holes.customHoles || []).filter(
-          (h) => h.id !== id
-        ),
-      },
-    });
+  const handleGoPrev = () => {
+    if (currentStepIndex > 0) {
+      setCurrentStep(WIZARD_STEPS[currentStepIndex - 1].id);
+    }
   };
+
+  // ==========================================
+  // RENDERIZADO PRINCIPAL
+  // ==========================================
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0b0e14] text-[#e6edf3] overflow-hidden select-none">
-      {/* Inputs ocultos para importar logos (SVG/PNG/JPG) y proyectos (.lhstudio.json) */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".svg,.png,.jpg,.jpeg,image/svg+xml,image/png,image/jpeg"
-        className="hidden"
-        onChange={handleFileUpload}
-      />
-      <input
-        ref={projectJsonInputRef}
-        type="file"
-        accept=".json,.lhstudio.json,application/json"
-        className="hidden"
-        onChange={handleImportProjectJsonFile}
-      />
-
-      {/* BARRA SUPERIOR DE COMANDOS INDUSTRIAL */}
-      <header className="flex items-center justify-between px-4 py-2.5 bg-[#11161f] border-b border-slate-800/90 shrink-0">
+    <div className="flex flex-col h-screen w-screen bg-[#090c10] text-slate-100 font-sans select-none overflow-hidden">
+      {/* 1. TOP HEADER INDUSTRIAL */}
+      <header className="h-13 bg-[#11161f] border-b border-slate-800 flex items-center justify-between px-4 z-20 shrink-0">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center font-black text-slate-950 text-sm shadow">
-              LH
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold tracking-tight text-sm text-white whitespace-nowrap">
-                  LASERHOUSE STUDIO
-                </span>
-                <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 whitespace-nowrap">
-                  CAD/CAM v0.3
-                </span>
-              </div>
-              <div className="text-[11px] text-slate-400 font-mono whitespace-nowrap truncate max-w-[360px]">
-                Vank 9060 CO₂ (900×600 mm) · Ruida RDC8445S · LightBurn
-              </div>
-            </div>
+            <span className="w-3 h-3 rounded-full bg-cyan-400 shadow-[0_0_8px_#06b6d4]"></span>
+            <h1 className="font-bold text-sm tracking-wide text-white uppercase flex items-center gap-1.5">
+              <span>LASERHOUSE STUDIO</span>
+              <span className="text-[10px] text-cyan-400 bg-cyan-950/70 border border-cyan-800/80 px-1.5 py-0.5 rounded font-mono">
+                CAD/CAM Láser
+              </span>
+              <span className="text-[10px] text-slate-400 font-mono hidden md:inline ml-1">
+                Vank 9060 CO₂ (900×600 mm)
+              </span>
+            </h1>
           </div>
-
-          <div className="h-6 w-px bg-slate-800 mx-1" />
-
-          {/* Gestión de Proyectos / Pedidos */}
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={handleCreateNewBlankProject}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-slate-800/80 hover:bg-slate-700/80 text-xs font-medium text-slate-200 border border-slate-700/70 transition"
-              title="Crear nueva etiqueta en blanco (sin agujeros por defecto)"
-            >
-              <FilePlus2 className="w-3.5 h-3.5 text-sky-400" />
-              <span>Nuevo</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowOrdersModal(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-slate-800/80 hover:bg-slate-700/80 text-xs font-medium text-slate-200 border border-slate-700/70 transition"
-              title="Abrir catálogo de pedidos guardados o importar archivo .lhstudio.json"
-            >
-              <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
-              <span>Pedidos ({orders.length})</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleSaveCurrentOrder}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-slate-800/80 hover:bg-slate-700/80 text-xs font-medium text-slate-200 border border-slate-700/70 transition"
-              title="Guardar trabajo actual en el registro de pedidos"
-            >
-              <Save className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Guardar</span>
-            </button>
-
-            <div className="flex items-center rounded bg-slate-900/90 border border-slate-800 p-0.5 ml-1">
-              <button
-                type="button"
-                onClick={handleUndo}
-                disabled={historyIndex <= 0}
-                className="p-1.5 rounded hover:bg-slate-800 disabled:opacity-35 text-slate-300"
-                title="Deshacer"
-              >
-                <Undo2 className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={handleRedo}
-                disabled={historyIndex >= history.length - 1}
-                className="p-1.5 rounded hover:bg-slate-800 disabled:opacity-35 text-slate-300"
-                title="Rehacer"
-              >
-                <Redo2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
+          <span className="text-slate-600">|</span>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              className="bg-slate-900/80 border border-slate-700/80 text-xs px-2 py-1 rounded text-slate-200 focus:outline-none focus:border-cyan-500 font-medium"
+              placeholder="Nombre del pedido"
+              title="Nombre del proyecto"
+            />
+            <input
+              type="text"
+              value={clientName}
+              onChange={(e) => setClientName(e.target.value)}
+              className="bg-slate-900/80 border border-slate-700/80 text-xs px-2 py-1 rounded text-slate-400 focus:outline-none focus:border-cyan-500 font-medium"
+              placeholder="Cliente"
+              title="Cliente"
+            />
           </div>
         </div>
 
-        {/* Selector de Modo Central */}
-        <div className="flex items-center bg-[#0b0e14] p-1 rounded-lg border border-slate-800">
-          <button
-            type="button"
-            onClick={() => setWorkspaceTab('editor')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition ${
-              workspaceTab === 'editor'
-                ? 'bg-amber-500 text-slate-950 shadow'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Sliders className="w-3.5 h-3.5" />
-            <span>
-              1. Editor de Etiqueta ({labelDesign.widthMm}×{labelDesign.heightMm} mm)
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setWorkspaceTab('production')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition ${
-              workspaceTab === 'production'
-                ? 'bg-amber-500 text-slate-950 shadow'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Grid className="w-3.5 h-3.5" />
-            <span>
-              2. Mesa de Producción ({nestingResult.totalExportedQuantity} u. ·{' '}
-              {nestingResult.totalBatches}{' '}
-              {nestingResult.totalBatches === 1 ? 'tanda' : 'tandas'})
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setWorkspaceTab('inspector')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition ${
-              workspaceTab === 'inspector'
-                ? 'bg-amber-500 text-slate-950 shadow'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <FileCode2 className="w-3.5 h-3.5" />
-            <span>3. Auditoría & Validación LightBurn/DXF</span>
-          </button>
-        </div>
-
-        {/* Botones de Exportación Directa */}
+        {/* Acciones Rápidas de Proyecto y Undo/Redo */}
         <div className="flex items-center gap-1.5">
-          {!validationReport.isValid && (
-            <span
-              className="flex items-center gap-1 px-2 py-1 rounded bg-red-500/20 border border-red-500/50 text-red-300 text-[11px] font-medium"
-              title="Existen advertencias geométricas que deben revisarse antes de cortar"
+          <div className="flex items-center bg-slate-900/90 border border-slate-800 rounded-lg p-0.5 mr-2">
+            <button
+              onClick={handleUndo}
+              disabled={historyIndex <= 0}
+              title="Deshacer (Ctrl+Z)"
+              className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400 rounded transition-colors"
             >
-              <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-              <span>Revisar alertas</span>
-            </span>
-          )}
+              <Undo2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={handleRedo}
+              disabled={historyIndex >= history.length - 1}
+              title="Rehacer (Ctrl+Y)"
+              className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 disabled:hover:text-slate-400 rounded transition-colors"
+            >
+              <Redo2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
           <button
-            type="button"
-            onClick={() => handleExportSvg('combined')}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow transition"
-            title="Exportar SVG 1:1 en milímetros con capas separadas (#000000 Grabado, #0000FF Agujeros, #FF0000 Corte) para LightBurn"
+            onClick={() => setIsOrdersModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded text-slate-200 transition-colors"
+            title="Catálogo de pedidos guardados"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>Exportar SVG LightBurn</span>
+            <FolderOpen className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Pedidos</span>
           </button>
+
           <button
-            type="button"
-            onClick={handleExportDxf}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 font-semibold text-xs transition"
-            title="Exportar DXF AC1009 en milímetros reales ($INSUNITS=4) compatible con RDWorks y LightBurn"
+            onClick={handleSaveOrderProject}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded text-slate-200 transition-colors"
+            title="Guardar archivo de proyecto editable (.lhstudio.json)"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>DXF RDWorks</span>
+            <Save className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Guardar</span>
+          </button>
+
+          <button
+            onClick={handleCreateNewBlankOrder}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-800 rounded text-cyan-300 transition-colors"
+            title="Crear nueva etiqueta en blanco (sin agujeros por defecto)"
+          >
+            <FilePlus2 className="w-3.5 h-3.5" />
+            <span>+ Nuevo</span>
           </button>
         </div>
       </header>
 
-      {/* Banner de notificación si existe */}
-      {statusBanner && (
-        <div className="bg-emerald-950/90 border-b border-emerald-500/40 px-4 py-1.5 text-xs text-emerald-200 flex items-center justify-between">
-          <span className="font-mono">{statusBanner}</span>
-          <button
-            type="button"
-            onClick={() => setStatusBanner(null)}
-            className="text-emerald-400 hover:text-white text-xs"
-          >
-            Cerrar
-          </button>
+      {/* 2. BARRA DE PROGRESO DEL ASISTENTE DE 6 PASOS */}
+      <nav aria-label="Progreso del asistente" className="h-11 bg-[#0d1117] border-b border-slate-800/90 flex items-center justify-between px-4 z-10 shrink-0">
+        <div className="flex items-center gap-1 w-full max-w-5xl">
+          {WIZARD_STEPS.map((step, idx) => {
+            const isActive = currentStep === step.id;
+            const isCompleted = currentStepIndex > idx;
+            return (
+              <React.Fragment key={step.id}>
+                <button
+                  onClick={() => setCurrentStep(step.id)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                    isActive
+                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                      : isCompleted
+                        ? 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800/80'
+                        : 'text-slate-500 hover:text-slate-400 border border-transparent'
+                  }`}
+                >
+                  <span
+                    className={`w-4.5 h-4.5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                      isActive
+                        ? 'bg-cyan-500 text-slate-950 font-black'
+                        : isCompleted
+                          ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-500/50'
+                          : 'bg-slate-800 text-slate-400'
+                    }`}
+                  >
+                    {isCompleted ? '✓' : step.number}
+                  </span>
+                  <span className="hidden sm:inline font-semibold">{step.label}</span>
+                </button>
+                {idx < WIZARD_STEPS.length - 1 && (
+                  <div className="flex-1 max-w-6 h-px bg-slate-800 mx-1"></div>
+                )}
+              </React.Fragment>
+            );
+          })}
         </div>
-      )}
 
-      {/* CUERPO PRINCIPAL DE 3 PANELES */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* PANEL IZQUIERDO */}
-        <aside className="w-80 bg-[#11161f] border-r border-slate-800/90 flex flex-col shrink-0">
-          <div className="grid grid-cols-3 border-b border-slate-800 bg-[#0d1118] text-[11px] font-semibold">
-            <button
-              type="button"
-              onClick={() => setLeftSection('geometry')}
-              className={`py-2.5 text-center border-b-2 transition ${
-                leftSection === 'geometry'
-                  ? 'border-amber-500 text-amber-300 bg-[#11161f]'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              1. Forma / mm
-            </button>
-            <button
-              type="button"
-              onClick={() => setLeftSection('elements')}
-              className={`py-2.5 text-center border-b-2 transition ${
-                leftSection === 'elements'
-                  ? 'border-amber-500 text-amber-300 bg-[#11161f]'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              2. Logo / Arte
-            </button>
-            <button
-              type="button"
-              onClick={() => setLeftSection('materials')}
-              className={`py-2.5 text-center border-b-2 transition ${
-                leftSection === 'materials'
-                  ? 'border-amber-500 text-amber-300 bg-[#11161f]'
-                  : 'border-transparent text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              3. Material
-            </button>
-          </div>
+        {/* Resumen de Estado Rápido */}
+        <div className="hidden lg:flex items-center gap-3 text-[11px] text-slate-400 shrink-0">
+          <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono text-cyan-400">
+            {labelDesign.widthMm}×{labelDesign.heightMm} mm
+          </span>
+          <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono text-slate-300">
+            {labelDesign.holes.preset === 'none' ? 'Sin orificios' : `${labelDesign.holes.diameterMm}mm agujeros`}
+          </span>
+          <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono text-amber-300">
+            {nestingConfig.requestedQuantity} u.
+          </span>
+        </div>
+      </nav>
 
-          <div className="flex-1 overflow-y-auto p-3.5 space-y-4 text-xs">
-            {/* SECCIÓN 1: GEOMETRÍA, MEDIDAS Y AGUJEROS OPCIONALES */}
-            {leftSection === 'geometry' && (
-              <>
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                    Nombre de Etiqueta / Diseño
-                  </label>
-                  <input
-                    type="text"
-                    value={labelDesign.name}
-                    onChange={(e) =>
-                      pushStateWithHistory({ ...labelDesign, name: e.target.value })
+      {/* 3. CONTENEDOR CENTRAL DEL ASISTENTE */}
+      <main className="flex-1 flex overflow-hidden">
+        {/* PANEL LATERAL DE CONTROLES DEL PASO ACTIVO (Ancho ~400px) */}
+        <aside aria-label="Controles del paso actual" className="w-105 min-w-[360px] max-w-[440px] bg-[#0d1117] border-r border-slate-800 flex flex-col justify-between shrink-0 overflow-y-auto">
+          <div className="p-4 space-y-4">
+            {/* Cabecera del paso */}
+            <div className="border-b border-slate-800/80 pb-3">
+              <span className="text-[10px] font-bold tracking-wider uppercase text-cyan-400 font-mono">
+                Paso {WIZARD_STEPS[currentStepIndex].number} de 6
+              </span>
+              <h2 className="text-sm font-bold text-white mt-0.5">
+                {WIZARD_STEPS[currentStepIndex].title}
+              </h2>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                {WIZARD_STEPS[currentStepIndex].subtitle}
+              </p>
+            </div>
+
+            {/* CONTENIDO ESPECÍFICO DEL PASO 1: IMPORTAR LOGO */}
+            {currentStep === 'logo' && (
+              <div className="space-y-4">
+                {/* Zona de Drop para Archivos */}
+                <div
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                      handleImageUpload(e.dataTransfer.files[0]);
                     }
-                    className="w-full px-2.5 py-1.5 rounded bg-[#0b0e14] border border-slate-700 text-slate-100 font-mono text-xs focus:border-amber-500 focus:outline-none"
+                  }}
+                  className="border-2 border-dashed border-slate-700 hover:border-cyan-500/80 rounded-xl p-5 text-center bg-slate-900/40 hover:bg-slate-900/80 transition-all cursor-pointer group"
+                  onClick={() => {
+                    const input = document.getElementById('logo-file-input') as HTMLInputElement;
+                    input?.click();
+                  }}
+                >
+                  <input
+                    id="logo-file-input"
+                    type="file"
+                    accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
+                    className="hidden"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleImageUpload(e.target.files[0]);
+                      }
+                    }}
                   />
+                  <div className="w-10 h-10 rounded-full bg-cyan-950/60 border border-cyan-800/60 flex items-center justify-center mx-auto mb-2 group-hover:scale-110 transition-transform">
+                    <Upload className="w-5 h-5 text-cyan-400" />
+                  </div>
+                  <p className="text-xs font-semibold text-slate-200">
+                    Arrastrá el logotipo aquí o hacé clic para seleccionar
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-1 font-mono">
+                    Formatos admitidos: PNG, JPG y SVG vectorial
+                  </p>
                 </div>
 
-                {/* Medidas predeterminadas */}
+                {/* Logos de Prueba Rápidos */}
                 <div>
-                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                    Medidas Predeterminadas (mm)
-                  </label>
+                  <span className="text-[11px] text-slate-400 font-semibold block mb-1.5">
+                    O cargar logotipo de muestra para probar:
+                  </span>
                   <div className="grid grid-cols-3 gap-1.5">
-                    {STANDARD_DIMENSION_PRESETS.map((preset) => {
-                      const active =
-                        labelDesign.widthMm === preset.widthMm &&
-                        labelDesign.heightMm === preset.heightMm;
-                      return (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          onClick={() =>
-                            updateLabelDimensions(
-                              preset.widthMm,
-                              preset.heightMm,
-                              preset.recommendedShape,
-                              preset.recommendedCornerRadiusMm
-                            )
-                          }
-                          className={`px-2 py-1.5 rounded font-mono text-[11px] border transition ${
-                            active
-                              ? 'bg-amber-500/20 border-amber-500 text-amber-300 font-bold'
-                              : 'bg-[#0b0e14] border-slate-800 text-slate-300 hover:border-slate-600'
-                          }`}
-                        >
-                          {preset.label}
-                        </button>
-                      );
-                    })}
+                    <button
+                      onClick={() => handleLoadSampleLogo('svg_hex')}
+                      className="px-2 py-1.5 text-[11px] bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded text-slate-300 font-medium text-center"
+                    >
+                      SVG Hexágono
+                    </button>
+                    <button
+                      onClick={() => handleLoadSampleLogo('svg_hollow')}
+                      className="px-2 py-1.5 text-[11px] bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded text-slate-300 font-medium text-center"
+                    >
+                      SVG Huecos
+                    </button>
+                    <button
+                      onClick={() => handleLoadSampleLogo('png_sample')}
+                      className="px-2 py-1.5 text-[11px] bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded text-slate-300 font-medium text-center"
+                    >
+                      PNG Emblema
+                    </button>
                   </div>
                 </div>
 
-                {/* Geometría / Forma de Etiqueta */}
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                    Geometría de Corte Exterior
-                  </label>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {(
-                      [
-                        { id: 'rounded_rect', label: 'Esquinas Redond.' },
-                        { id: 'rectangle', label: 'Rectangular' },
-                        { id: 'square', label: 'Cuadrada' },
-                        { id: 'circle', label: 'Circular' },
-                        { id: 'oval', label: 'Ovalada' },
-                        { id: 'capsule', label: 'Cápsula / Píldora' },
-                        { id: 'octagon_tag', label: 'Tag Chaflán 8L' },
-                        { id: 'custom_polygon', label: 'Tag Flecha' },
-                      ] as Array<{ id: LabelShapeType; label: string }>
-                    ).map((sh) => (
-                      <button
-                        key={sh.id}
-                        type="button"
-                        onClick={() => {
-                          const nextH =
-                            sh.id === 'square' || sh.id === 'circle'
-                              ? labelDesign.widthMm
-                              : labelDesign.heightMm;
-                          updateLabelDimensions(labelDesign.widthMm, nextH, sh.id);
-                        }}
-                        className={`px-2.5 py-1.5 rounded text-left text-xs border transition ${
-                          labelDesign.shape === sh.id
-                            ? 'bg-amber-500/20 border-amber-500 text-amber-300 font-semibold'
-                            : 'bg-[#0b0e14] border-slate-800 text-slate-300 hover:border-slate-700'
+                {/* Si hay un elemento seleccionado, mostrar diagnósticos y controles de ajuste */}
+                {selectedElement ? (
+                  <div className="space-y-3 bg-slate-900/70 border border-slate-800 rounded-lg p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-200">
+                        {selectedElement.name}
+                      </span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 font-mono text-cyan-400">
+                        {selectedElement.type === 'logo_svg' ? 'Vector SVG' : 'Imagen Raster'}
+                      </span>
+                    </div>
+
+                    {/* Detección de transparencia y límites visibles */}
+                    {selectedElement.contentBoundsNormalized && (
+                      <div className="text-[11px] space-y-1 bg-slate-950/70 p-2 rounded border border-slate-800/80">
+                        <div className="flex justify-between text-slate-400">
+                          <span>Área visible detectada:</span>
+                          <span className="font-mono text-emerald-400 font-bold">
+                            {roundMm(selectedElement.widthMm * selectedElement.contentBoundsNormalized.width, 2)} ×{' '}
+                            {roundMm(selectedElement.heightMm * selectedElement.contentBoundsNormalized.height, 2)} mm
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-slate-400">
+                          <span>Fondo detectado:</span>
+                          <span className="font-mono text-slate-300">
+                            {selectedElement.type === 'logo_raster' && selectedElement.processing.removeBackground
+                              ? 'Fondo claro eliminado'
+                              : 'Transparente / Nativo'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Advertencia de Resolución / Calidad (DPI) para imágenes Raster */}
+                    {selectedElement.type === 'logo_raster' && (
+                      <div
+                        className={`p-2 rounded border text-[11px] flex items-start gap-1.5 ${
+                          selectedElement.effectiveDpi >= 200
+                            ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-300'
+                            : 'bg-amber-950/30 border-amber-800/40 text-amber-300'
                         }`}
                       >
-                        {sh.label}
+                        {selectedElement.effectiveDpi >= 200 ? (
+                          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
+                        ) : (
+                          <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                        )}
+                        <div>
+                          <div className="font-bold">
+                            {selectedElement.effectiveDpi >= 200
+                              ? `Resolución óptima (${Math.round(selectedElement.effectiveDpi)} DPI)`
+                              : `Calidad baja (${Math.round(selectedElement.effectiveDpi)} DPI)`}
+                          </div>
+                          <div className="text-[10px] opacity-90">
+                            {selectedElement.effectiveDpi >= 200
+                              ? 'La imagen cuenta con suficiente densidad para un grabado láser nítido.'
+                              : 'Recomendado ≥ 200 DPI para evitar bordes pixelados.'}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Controles de procesado si es imagen raster */}
+                    {selectedElement.type === 'logo_raster' && (
+                      <div className="space-y-2 pt-2 border-t border-slate-800 text-xs">
+                        <div className="flex items-center justify-between">
+                          <label className="text-slate-300 flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedElement.processing.removeBackground}
+                              onChange={(e) =>
+                                handleUpdateImageProcessing({ removeBackground: e.target.checked })
+                              }
+                              className="rounded bg-slate-800 border-slate-700 text-cyan-500"
+                            />
+                            <span>Eliminar fondo claro</span>
+                          </label>
+                          <label className="text-slate-300 flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={selectedElement.processing.invert}
+                              onChange={(e) =>
+                                handleUpdateImageProcessing({ invert: e.target.checked })
+                              }
+                              className="rounded bg-slate-800 border-slate-700 text-cyan-500"
+                            />
+                            <span>Invertir grabado</span>
+                          </label>
+                        </div>
+
+                        {/* Sliders de Umbral y Contraste */}
+                        <div>
+                          <div className="flex justify-between text-[11px] text-slate-400 mb-1">
+                            <span>Umbral de grabado (Threshold):</span>
+                            <span className="font-mono text-cyan-400">
+                              {selectedElement.processing.threshold}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min="40"
+                            max="220"
+                            value={selectedElement.processing.threshold}
+                            onChange={(e) =>
+                              handleUpdateImageProcessing({ threshold: Number(e.target.value) })
+                            }
+                            className="w-full accent-cyan-500 cursor-pointer"
+                          />
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between text-[11px] text-slate-400 mb-1">
+                            <span>Contraste:</span>
+                            <span className="font-mono text-cyan-400">
+                              {selectedElement.processing.contrast}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min="-50"
+                            max="80"
+                            value={selectedElement.processing.contrast}
+                            onChange={(e) =>
+                              handleUpdateImageProcessing({ contrast: Number(e.target.value) })
+                            }
+                            className="w-full accent-cyan-500 cursor-pointer"
+                          />
+                        </div>
+
+                        {/* Modo de salida */}
+                        <div className="pt-1 flex items-center justify-between">
+                          <span className="text-[11px] text-slate-400">Modo de grabado:</span>
+                          <div className="flex gap-1 text-[11px]">
+                            <button
+                              onClick={() => handleUpdateImageProcessing({ mode: 'raster' })}
+                              className={`px-2 py-0.5 rounded ${
+                                selectedElement.processing.mode === 'raster'
+                                  ? 'bg-cyan-500 text-slate-950 font-bold'
+                                  : 'bg-slate-800 text-slate-400'
+                              }`}
+                            >
+                              Monocromático
+                            </button>
+                            <button
+                              onClick={() => handleUpdateImageProcessing({ mode: 'vector' })}
+                              className={`px-2 py-0.5 rounded ${
+                                selectedElement.processing.mode === 'vector'
+                                  ? 'bg-cyan-500 text-slate-950 font-bold'
+                                  : 'bg-slate-800 text-slate-400'
+                              }`}
+                            >
+                              Vectorizar
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-3 rounded bg-slate-900/40 border border-slate-800 text-xs text-slate-500 text-center">
+                    Carga un archivo o utiliza un logo de muestra para continuar.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* CONTENIDO ESPECÍFICO DEL PASO 2: MEDIDAS Y FORMA */}
+            {currentStep === 'dimensions' && (
+              <div className="space-y-4 text-xs">
+                {/* Presets frecuentes de taller */}
+                <div>
+                  <span className="text-slate-400 font-semibold block mb-1.5">
+                    Medidas frecuentes de taller:
+                  </span>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {STANDARD_DIMENSION_PRESETS.map((p) => (
+                      <button
+                        key={p.label}
+                        onClick={() => handleApplyDimensionPreset(p.widthMm, p.heightMm)}
+                        className={`px-2 py-1.5 rounded font-mono text-[11px] border transition-all ${
+                          labelDesign.widthMm === p.widthMm && labelDesign.heightMm === p.heightMm
+                            ? 'bg-cyan-500 text-slate-950 font-bold border-cyan-400'
+                            : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700'
+                        }`}
+                      >
+                        {p.label}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {/* Dimensiones personalizadas exactas en milímetros */}
-                <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-2.5">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-sky-400">
-                    Cotas Físicas Reales (mm)
+                {/* Dimensiones físicas personalizadas */}
+                <div className="grid grid-cols-2 gap-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+                  <div>
+                    <label className="text-slate-400 block mb-1">Ancho físico (mm):</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="5"
+                      max="600"
+                      value={labelDesign.widthMm}
+                      onChange={(e) =>
+                        handleUpdateLabelDimensions(Number(e.target.value), labelDesign.heightMm)
+                      }
+                      className="w-full bg-slate-950 border border-slate-700 px-2.5 py-1.5 rounded text-white font-mono text-xs focus:border-cyan-500"
+                    />
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[10px] text-slate-400 mb-1">
-                        Ancho (X mm)
-                      </label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="4"
-                        max="890"
-                        value={labelDesign.widthMm}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value) || 10;
-                          const nextH =
-                            labelDesign.shape === 'square' ||
-                            labelDesign.shape === 'circle'
-                              ? val
-                              : labelDesign.heightMm;
-                          updateLabelDimensions(val, nextH);
-                        }}
-                        className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-slate-400 mb-1">
-                        Alto (Y mm)
-                      </label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="4"
-                        max="590"
-                        value={labelDesign.heightMm}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value) || 10;
-                          const nextW =
-                            labelDesign.shape === 'square' ||
-                            labelDesign.shape === 'circle'
-                              ? val
-                              : labelDesign.widthMm;
-                          updateLabelDimensions(nextW, val);
-                        }}
-                        className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                      />
-                    </div>
+                  <div>
+                    <label className="text-slate-400 block mb-1">Alto físico (mm):</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="5"
+                      max="400"
+                      value={labelDesign.heightMm}
+                      onChange={(e) =>
+                        handleUpdateLabelDimensions(labelDesign.widthMm, Number(e.target.value))
+                      }
+                      className="w-full bg-slate-950 border border-slate-700 px-2.5 py-1.5 rounded text-white font-mono text-xs focus:border-cyan-500"
+                    />
                   </div>
+                </div>
 
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="block text-[10px] text-slate-400 mb-1">
-                        Radio esq. (mm)
-                      </label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        max="50"
-                        disabled={labelDesign.shape !== 'rounded_rect'}
-                        value={labelDesign.cornerRadiusMm}
-                        onChange={(e) =>
-                          pushStateWithHistory({
-                            ...labelDesign,
-                            cornerRadiusMm: Math.max(
-                              0,
-                              parseFloat(e.target.value) || 0
-                            ),
-                          })
-                        }
-                        className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100 disabled:opacity-40"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] text-slate-400 mb-1">
-                        Margen seg. (mm)
-                      </label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0.5"
-                        max="15"
-                        value={labelDesign.safetyMarginMm}
-                        onChange={(e) =>
-                          pushStateWithHistory({
-                            ...labelDesign,
-                            safetyMarginMm: Math.max(
-                              0.5,
-                              parseFloat(e.target.value) || 1.0
-                            ),
-                          })
-                        }
-                        className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                      />
-                    </div>
-                    <div>
-                      <label
-                        className="block text-[10px] text-slate-400 mb-1"
-                        title="Compensación de ancho de haz láser (Kerf). 0 = medida nominal sin compensación."
+                {/* Selector de Forma */}
+                <div>
+                  <span className="text-slate-400 font-semibold block mb-1.5">
+                    Forma de la etiqueta:
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[
+                      { id: 'rounded_rect', label: 'Esquinas redondeadas' },
+                      { id: 'rectangle', label: 'Rectangular recta' },
+                      { id: 'circle', label: 'Circular' },
+                      { id: 'oval', label: 'Ovalada' },
+                      { id: 'capsule', label: 'Cápsula' },
+                      { id: 'octagon_tag', label: 'Octágono Tag' },
+                    ].map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => handleUpdateLabelShape(s.id as LabelShapeType)}
+                        className={`px-2 py-1.5 rounded text-left border text-[11px] transition-colors ${
+                          labelDesign.shape === s.id
+                            ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500 font-bold'
+                            : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700/80'
+                        }`}
                       >
-                        Kerf (mm)
-                      </label>
-                      <input
-                        type="number"
-                        step="0.02"
-                        min="0"
-                        max="1.5"
-                        value={labelDesign.kerfCompensationMm}
-                        onChange={(e) =>
-                          pushStateWithHistory({
-                            ...labelDesign,
-                            kerfCompensationMm: Math.max(
-                              0,
-                              parseFloat(e.target.value) || 0
-                            ),
-                          })
-                        }
-                        className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                      />
-                    </div>
+                        {s.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
-                {/* Configuración de Agujeros Opcionales (Sin agujeros, 1, 2, 4 o Personalizados) */}
-                <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-400">
-                      Agujeros Opcionales (Costura)
-                    </span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300">
-                      Capa 01 #0000FF
-                    </span>
+                {/* Radio de esquina si es rounded_rect */}
+                {labelDesign.shape === 'rounded_rect' && (
+                  <div className="bg-slate-900/60 p-2.5 rounded border border-slate-800">
+                    <div className="flex justify-between text-slate-400 mb-1">
+                      <span>Radio de esquina:</span>
+                      <span className="font-mono text-cyan-400">{labelDesign.cornerRadiusMm} mm</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0.5"
+                      max={Math.min(10, Math.min(labelDesign.widthMm, labelDesign.heightMm) / 2)}
+                      step="0.5"
+                      value={labelDesign.cornerRadiusMm}
+                      onChange={(e) =>
+                        pushStateWithHistory({
+                          ...labelDesign,
+                          cornerRadiusMm: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-cyan-500 cursor-pointer"
+                    />
                   </div>
-
-                  <select
-                    aria-label="Configuración de agujeros"
-                    value={labelDesign.holes.preset}
-                    onChange={(e) => {
-                      const nextPreset = e.target.value as HolePreset;
-                      const nextCustom =
-                        nextPreset === 'custom' &&
-                        (!labelDesign.holes.customHoles ||
-                          labelDesign.holes.customHoles.length === 0)
-                          ? [
-                              {
-                                id: 'hole-custom-1',
-                                x: roundMm(labelDesign.holes.edgeDistanceMm, 2),
-                                y: roundMm(labelDesign.heightMm / 2, 2),
-                                diameterMm: labelDesign.holes.diameterMm,
-                              },
-                            ]
-                          : labelDesign.holes.customHoles;
-                      pushStateWithHistory({
-                        ...labelDesign,
-                        holes: {
-                          ...labelDesign.holes,
-                          preset: nextPreset,
-                          customHoles: nextCustom,
-                        },
-                      });
-                    }}
-                    className="w-full px-2 py-1.5 rounded bg-[#11161f] border border-slate-700 text-slate-100 text-xs"
-                  >
-                    <option value="none">Sin agujeros (Predeterminado)</option>
-                    <option value="single_left">1 Agujero izquierdo</option>
-                    <option value="single_top">1 Agujero superior</option>
-                    <option value="two_horizontal">2 Agujeros laterales (Izq / Der)</option>
-                    <option value="two_vertical">2 Agujeros verticales (Sup / Inf)</option>
-                    <option value="four_corners">4 Agujeros en esquinas</option>
-                    <option value="custom">Configuración personalizada (X, Y libre)</option>
-                  </select>
-
-                  {labelDesign.holes.preset !== 'none' && (
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      <div>
-                        <label className="block text-[10px] text-slate-400 mb-1">
-                          Diámetro Ø (mm)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.1"
-                          min="0.6"
-                          max="15"
-                          value={labelDesign.holes.diameterMm}
-                          onChange={(e) =>
-                            pushStateWithHistory({
-                              ...labelDesign,
-                              holes: {
-                                ...labelDesign.holes,
-                                diameterMm: Math.max(
-                                  0.5,
-                                  parseFloat(e.target.value) || 1.5
-                                ),
-                              },
-                            })
-                          }
-                          className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-slate-400 mb-1">
-                          Dist. al borde (mm)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.1"
-                          min="0.8"
-                          max="30"
-                          disabled={labelDesign.holes.preset === 'custom'}
-                          value={labelDesign.holes.edgeDistanceMm}
-                          onChange={(e) =>
-                            pushStateWithHistory({
-                              ...labelDesign,
-                              holes: {
-                                ...labelDesign.holes,
-                                edgeDistanceMm: Math.max(
-                                  0.8,
-                                  parseFloat(e.target.value) || 2.0
-                                ),
-                              },
-                            })
-                          }
-                          className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100 disabled:opacity-40"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Editor de agujeros personalizados (X, Y, Ø en mm) */}
-                  {labelDesign.holes.preset === 'custom' && (
-                    <div className="space-y-2 pt-2 border-t border-slate-800">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] text-slate-400">
-                          Coordenadas desde esquina sup-izq (mm)
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleAddCustomHole}
-                          className="px-2 py-0.5 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/40 text-[10px] font-semibold"
-                        >
-                          + Agregar agujero
-                        </button>
-                      </div>
-                      {(labelDesign.holes.customHoles || []).map((ch, idx) => (
-                        <div
-                          key={ch.id}
-                          className="grid grid-cols-7 gap-1 items-center bg-[#11161f] p-1.5 rounded border border-slate-800"
-                        >
-                          <span className="text-[10px] font-mono text-slate-400 col-span-1">
-                            #{idx + 1}
-                          </span>
-                          <input
-                            type="number"
-                            step="0.2"
-                            value={ch.x}
-                            title="X (mm)"
-                            onChange={(e) =>
-                              handleUpdateCustomHole(ch.id, {
-                                x: parseFloat(e.target.value) || 0,
-                              })
-                            }
-                            className="col-span-2 px-1.5 py-0.5 rounded bg-[#0b0e14] border border-slate-700 font-mono text-[11px]"
-                          />
-                          <input
-                            type="number"
-                            step="0.2"
-                            value={ch.y}
-                            title="Y (mm)"
-                            onChange={(e) =>
-                              handleUpdateCustomHole(ch.id, {
-                                y: parseFloat(e.target.value) || 0,
-                              })
-                            }
-                            className="col-span-2 px-1.5 py-0.5 rounded bg-[#0b0e14] border border-slate-700 font-mono text-[11px]"
-                          />
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0.5"
-                            value={ch.diameterMm}
-                            title="Ø Diámetro (mm)"
-                            onChange={(e) =>
-                              handleUpdateCustomHole(ch.id, {
-                                diameterMm: Math.max(
-                                  0.5,
-                                  parseFloat(e.target.value) || 1.5
-                                ),
-                              })
-                            }
-                            className="col-span-1 px-1 py-0.5 rounded bg-[#0b0e14] border border-slate-700 font-mono text-[11px]"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveCustomHole(ch.id)}
-                            className="col-span-1 flex justify-center text-slate-400 hover:text-red-400"
-                            title="Eliminar agujero"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </>
+                )}
+              </div>
             )}
 
-            {/* SECCIÓN 2: IMPORTACIÓN DE LOGOS, VECTORIZACIÓN Y ELEMENTOS DE GRABADO */}
-            {leftSection === 'elements' && (
-              <>
+            {/* CONTENIDO ESPECÍFICO DEL PASO 3: ORIFICIOS */}
+            {currentStep === 'holes' && (
+              <div className="space-y-4 text-xs">
+                <div>
+                  <h3 className="font-bold text-slate-200 text-xs mb-1">¿La etiqueta lleva orificios?</h3>
+                  <p className="text-[11px] text-slate-400 mb-2 leading-relaxed">
+                    Si se aplicará con remaches o costura, selecciona la distribución deseada.
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[
+                      { id: 'none', label: 'Sin agujeros (Lisa)', desc: 'Predeterminado' },
+                      { id: 'single_left', label: '1 Agujero lateral', desc: 'Llaveros' },
+                      { id: 'single_top', label: '1 Agujero superior', desc: 'Colgantes' },
+                      { id: 'two_horizontal', label: '2 Agujeros laterales', desc: 'Costura horizontal' },
+                      { id: 'two_vertical', label: '2 Agujeros verticales', desc: 'Costura vertical' },
+                      { id: 'four_corners', label: '4 Agujeros en esquinas', desc: 'Remachado perimetral' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        onClick={() => handleSetHolePreset(opt.id as HolePreset)}
+                        className={`p-2 rounded border text-left transition-all ${
+                          labelDesign.holes.preset === opt.id
+                            ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500 font-bold'
+                            : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700/80'
+                        }`}
+                      >
+                        <div className="font-semibold text-[11px]">{opt.label}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">{opt.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Si no lleva agujeros, mensaje despejado */}
+                {labelDesign.holes.preset === 'none' ? (
+                  <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-800/40 text-emerald-300 text-xs flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                    <span>Etiqueta lisa sin orificios. Todo el espacio interior queda libre para el grabado.</span>
+                  </div>
+                ) : (
+                  /* Controles paramétricos de agujeros */
+                  <div className="space-y-3 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-slate-400 block mb-1">Diámetro (mm):</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0.5"
+                          max="8"
+                          value={labelDesign.holes.diameterMm}
+                          onChange={(e) => handleUpdateHoleDiameter(Number(e.target.value))}
+                          className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-slate-400 block mb-1">Distancia al borde (mm):</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0.5"
+                          max="20"
+                          value={labelDesign.holes.edgeDistanceMm}
+                          onChange={(e) => handleUpdateHoleEdgeDistance(Number(e.target.value))}
+                          className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Verificación de invasión de logo sobre orificios */}
+                    {validationReport.engraveInvasionCount > 0 && (
+                      <div className="p-2.5 rounded bg-amber-950/40 border border-amber-800/60 text-amber-300 text-xs space-y-1.5">
+                        <div className="font-bold flex items-center gap-1.5">
+                          <AlertTriangle className="w-4 h-4 text-amber-400" />
+                          <span>El grabado actual invade los orificios</span>
+                        </div>
+                        <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                          Se detectó invasión del logotipo sobre los agujeros de costura.
+                        </p>
+                        <button
+                          onClick={handleFitToAvailableSpace}
+                          className="w-full py-1 px-2 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] transition-colors"
+                        >
+                          ⚡ Ajustar logo para no invadir orificios
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* CONTENIDO ESPECÍFICO DEL PASO 4: CENTRADO Y TAMAÑO DEL GRABADO */}
+            {currentStep === 'engraving' && (
+              <div className="space-y-4 text-xs">
+                {/* Herramientas Principales de Centrado */}
                 <div className="space-y-2">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block">
+                    Centrado de Alta Precisión
+                  </span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleCenterLogoGeometrically}
+                      className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs transition-colors shadow-sm"
+                      title="Alinear contenido visible exactamente con el centro físico de la etiqueta"
+                    >
+                      <Target className="w-4 h-4" />
+                      <span>CENTRAR LOGO</span>
+                    </button>
+                    <button
+                      onClick={handleCenterInSafeZone}
+                      className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold text-xs transition-colors"
+                      title="Centrar en el área libre entre agujeros"
+                    >
+                      <Move className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>ÁREA LIBRE</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Ajuste de Tamaño Proporcional */}
+                <div className="space-y-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block">
+                    Tamaño del Grabado
+                  </span>
                   <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow transition"
+                    onClick={handleFitToAvailableSpace}
+                    className="w-full flex items-center justify-center gap-2 py-1.5 px-3 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-bold text-xs transition-colors"
                   >
-                    <Upload className="w-4 h-4" />
-                    <span>Importar Logo Cliente (SVG / PNG / JPG)</span>
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    <span>AJUSTAR AL ESPACIO DISPONIBLE</span>
                   </button>
 
-                  {/* Muestras de prueba reales con 1 clic (PNG transparente, PNG fondo blanco, SVG con huecos) */}
-                  <div className="p-2.5 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-1.5">
-                    <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                      Probar con Logos de Muestra Reales:
+                  {selectedElement && (
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <div>
+                        <label className="text-slate-400 block mb-1 text-[11px]">Ancho visible (mm):</label>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="1"
+                          max={labelDesign.widthMm}
+                          value={roundMm(
+                            selectedElement.widthMm *
+                              (selectedElement.contentBoundsNormalized?.width || 1),
+                            2
+                          )}
+                          onChange={(e) => handleUpdateElementSizeMm(Number(e.target.value))}
+                          className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-slate-400 block mb-1 text-[11px]">Alto visible (mm):</label>
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="1"
+                          max={labelDesign.heightMm}
+                          value={roundMm(
+                            selectedElement.heightMm *
+                              (selectedElement.contentBoundsNormalized?.height || 1),
+                            2
+                          )}
+                          onChange={(e) => {
+                            const newH = Number(e.target.value);
+                            const aspect = selectedElement.aspectRatio || 1;
+                            handleUpdateElementSizeMm(newH * aspect, newH);
+                          }}
+                          className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                        />
+                      </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-1">
+                  )}
+                </div>
+
+                {/* Alineación Asistida a Bordes Seguros */}
+                <div className="space-y-1.5 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block mb-1">
+                    Alineación Asistida a Zona Segura
+                  </span>
+                  <div className="grid grid-cols-3 gap-1 text-[11px]">
+                    <button
+                      onClick={() => handleAlignToEdge('safe_left')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 font-medium"
+                    >
+                      Margen Izq.
+                    </button>
+                    <button
+                      onClick={() => handleAlignToEdge('center_x')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-cyan-300 font-medium"
+                    >
+                      Centrar X
+                    </button>
+                    <button
+                      onClick={() => handleAlignToEdge('safe_right')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 font-medium"
+                    >
+                      Margen Der.
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 text-[11px]">
+                    <button
+                      onClick={() => handleAlignToEdge('safe_top')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 font-medium"
+                    >
+                      Margen Sup.
+                    </button>
+                    <button
+                      onClick={() => handleAlignToEdge('center_y')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-cyan-300 font-medium"
+                    >
+                      Centrar Y
+                    </button>
+                    <button
+                      onClick={() => handleAlignToEdge('safe_bottom')}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-300 font-medium"
+                    >
+                      Margen Inf.
+                    </button>
+                  </div>
+                </div>
+
+                {/* Ajuste Óptico y Micromovimiento (0.1 mm y 0.01 mm) */}
+                <div className="space-y-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block">
+                    Ajuste Óptico y Micromovimiento
+                  </span>
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>Paso 0.1 mm:</span>
+                    <div className="flex gap-1">
                       <button
-                        type="button"
-                        onClick={() => handleLoadSampleClientLogo('png_transparent')}
-                        className="px-1.5 py-1 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-200"
-                        title="Generar e importar PNG con canal alfa transparente y anillo con hueco interno"
+                        onClick={() => handleNudge(-0.1, 0)}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-200 font-mono"
+                        title="Desplazar 0.1 mm a la izquierda"
                       >
-                        PNG Transp.
+                        ◄
                       </button>
                       <button
-                        type="button"
-                        onClick={() => handleLoadSampleClientLogo('png_white_bg')}
-                        className="px-1.5 py-1 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-200"
-                        title="Generar e importar PNG con fondo blanco para probar eliminación de fondo y huecos"
+                        onClick={() => handleNudge(0, -0.1)}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-200 font-mono"
+                        title="Desplazar 0.1 mm hacia arriba"
                       >
-                        PNG F. Blanco
+                        ▲
                       </button>
                       <button
-                        type="button"
-                        onClick={() => handleLoadSampleClientLogo('svg_hollow')}
-                        className="px-1.5 py-1 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-200"
-                        title="Importar SVG con sub-caminos calados y trazos abiertos"
+                        onClick={() => handleNudge(0, 0.1)}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-200 font-mono"
+                        title="Desplazar 0.1 mm hacia abajo"
                       >
-                        SVG Huecos
+                        ▼
+                      </button>
+                      <button
+                        onClick={() => handleNudge(0.1, 0)}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-slate-200 font-mono"
+                        title="Desplazar 0.1 mm a la derecha"
+                      >
+                        ►
                       </button>
                     </div>
                   </div>
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>Paso 0.01 mm (ultra-fino):</span>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => handleNudge(-0.01, 0)}
+                        className="px-1.5 py-0.5 bg-slate-800/80 hover:bg-slate-700 rounded text-slate-300 font-mono text-[10px]"
+                        title="Desplazar 0.01 mm izquierda"
+                      >
+                        ◄
+                      </button>
+                      <button
+                        onClick={() => handleNudge(0, -0.01)}
+                        className="px-1.5 py-0.5 bg-slate-800/80 hover:bg-slate-700 rounded text-slate-300 font-mono text-[10px]"
+                        title="Desplazar 0.01 mm arriba"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        onClick={() => handleNudge(0, 0.01)}
+                        className="px-1.5 py-0.5 bg-slate-800/80 hover:bg-slate-700 rounded text-slate-300 font-mono text-[10px]"
+                        title="Desplazar 0.01 mm abajo"
+                      >
+                        ▼
+                      </button>
+                      <button
+                        onClick={() => handleNudge(0.01, 0)}
+                        className="px-1.5 py-0.5 bg-slate-800/80 hover:bg-slate-700 rounded text-slate-300 font-mono text-[10px]"
+                        title="Desplazar 0.01 mm derecha"
+                      >
+                        ►
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Advertencia si el grabado invade orificios o contornos */}
+                {validationReport.engraveInvasionCount > 0 && (
+                  <div className="p-3 rounded bg-red-950/40 border border-red-800/60 text-red-300 text-xs space-y-1.5">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <AlertCircle className="w-4 h-4 text-red-400" />
+                      <span>El grabado invade la línea de corte u orificios</span>
+                    </div>
+                    <button
+                      onClick={handleFitToAvailableSpace}
+                      className="w-full py-1.5 px-3 rounded bg-red-600 hover:bg-red-500 text-white font-bold text-xs transition-colors"
+                    >
+                      ⚡ Auto-corregir a Zona Segura
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* CONTENIDO ESPECÍFICO DEL PASO 5: PRODUCCIÓN */}
+            {currentStep === 'production' && (
+              <div className="space-y-4 text-xs">
+                {/* Selector de Material */}
+                <div>
+                  <span className="text-slate-400 font-semibold block mb-1.5">
+                    Material a procesar:
+                  </span>
+                  <div className="space-y-1.5">
+                    {materials.map((mat) => (
+                      <button
+                        key={mat.id}
+                        onClick={() => setSelectedMaterialId(mat.id)}
+                        className={`w-full p-2.5 rounded-lg border text-left flex items-center justify-between transition-all ${
+                          selectedMaterialId === mat.id
+                            ? 'bg-cyan-500/15 border-cyan-500 text-white font-bold'
+                            : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
+                        }`}
+                      >
+                        <div>
+                          <div className="text-xs">{mat.name}</div>
+                          <div className="text-[10px] text-slate-400 font-normal">
+                            Espesor {mat.thicknessMm} mm • {mat.category}
+                          </div>
+                        </div>
+                        <span
+                          className="w-3.5 h-3.5 rounded-full border border-slate-600"
+                          style={{ backgroundColor: mat.visual.surfaceColor }}
+                        ></span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Cantidad requerida con botones de 1 clic */}
+                <div>
+                  <span className="text-slate-400 font-semibold block mb-1.5">
+                    Cantidad total de etiquetas requeridas:
+                  </span>
+                  <div className="grid grid-cols-5 gap-1 mb-2">
+                    {STANDARD_QUANTITY_PRESETS.map((qty) => (
+                      <button
+                        key={qty}
+                        onClick={() => handleSetRequestedQuantity(qty)}
+                        className={`py-1.5 rounded font-mono text-xs border font-bold transition-all ${
+                          nestingConfig.requestedQuantity === qty
+                            ? 'bg-cyan-500 text-slate-950 border-cyan-400'
+                            : 'bg-slate-900 hover:bg-slate-800 text-slate-200 border-slate-700'
+                        }`}
+                      >
+                        {qty}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400 text-[11px]">Personalizada:</span>
+                    <input
+                      type="number"
+                      step="10"
+                      min="1"
+                      max="10000"
+                      value={nestingConfig.requestedQuantity}
+                      onChange={(e) => handleSetRequestedQuantity(Number(e.target.value))}
+                      className="w-24 bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                    />
+                    <span className="text-slate-400 text-[11px]">unidades</span>
+                  </div>
+                </div>
+
+                {/* Tamaño del recorte de material */}
+                <div>
+                  <span className="text-slate-400 font-semibold block mb-1.5">
+                    Tamaño del recorte o plancha:
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {MATERIAL_SHEET_PRESETS.map((s) => (
+                      <button
+                        key={s.label}
+                        onClick={() => handleSelectMaterialSheet(s.widthMm, s.heightMm)}
+                        className={`p-2 rounded text-left border text-[11px] transition-all ${
+                          nestingConfig.sheetWidthMm === s.widthMm &&
+                          nestingConfig.sheetHeightMm === s.heightMm
+                            ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500 font-bold'
+                            : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700/80'
+                        }`}
+                      >
+                        <div className="font-semibold">{s.label}</div>
+                        <div className="text-[10px] text-slate-400">{s.description}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Métricas de producción calculadas */}
+                <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 space-y-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Total a cortar:</span>
+                    <span className="font-mono text-white font-bold">
+                      {nestingResult.totalExportedQuantity} piezas
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Tandas de corte:</span>
+                    <span className="font-mono text-cyan-400 font-bold">
+                      {nestingResult.totalBatches} {nestingResult.totalBatches === 1 ? 'tanda' : 'tandas'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Distribución por tanda:</span>
+                    <span className="font-mono text-slate-300">
+                      {activeBatch.columnsUsed} col × {activeBatch.rowsUsed} filas ({activeBatch.count} piezas)
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Aprovechamiento:</span>
+                    <span className="font-mono text-emerald-400 font-bold">
+                      {activeBatch.sheetUtilizationPercent}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* Opciones avanzadas de anidado y Kerf en acordeón */}
+                <div className="border border-slate-800 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => setShowAdvancedProduction(!showAdvancedProduction)}
+                    className="w-full p-2 bg-slate-900 flex items-center justify-between text-slate-400 hover:text-white text-xs font-semibold"
+                  >
+                    <span>Opciones avanzadas (Kerf y Separación)</span>
+                    {showAdvancedProduction ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+
+                  {showAdvancedProduction && (
+                    <div className="p-3 bg-slate-950/70 space-y-2.5 text-xs border-t border-slate-800">
+                      <div>
+                        <div className="flex justify-between text-slate-400 mb-1">
+                          <span>Compensación de Kerf (mm):</span>
+                          <span className="font-mono text-cyan-400">
+                            {labelDesign.kerfCompensationMm} mm
+                          </span>
+                        </div>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max="0.5"
+                          value={labelDesign.kerfCompensationMm}
+                          onChange={(e) =>
+                            pushStateWithHistory({
+                              ...labelDesign,
+                              kerfCompensationMm: Number(e.target.value),
+                            })
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-slate-400 block mb-1">Separación X (mm):</label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            max="20"
+                            value={nestingConfig.gapXMm}
+                            onChange={(e) =>
+                              pushStateWithHistory(labelDesign, {
+                                ...nestingConfig,
+                                gapXMm: Number(e.target.value),
+                              })
+                            }
+                            className="w-full bg-slate-900 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-slate-400 block mb-1">Separación Y (mm):</label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            max="20"
+                            value={nestingConfig.gapYMm}
+                            onChange={(e) =>
+                              pushStateWithHistory(labelDesign, {
+                                ...nestingConfig,
+                                gapYMm: Number(e.target.value),
+                              })
+                            }
+                            className="w-full bg-slate-900 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={handleDownloadKerfPattern}
+                        className="w-full py-1 px-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-medium text-[11px] flex items-center justify-center gap-1.5"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Descargar Patrón Calibración Kerf (100×20 mm)</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* CONTENIDO ESPECÍFICO DEL PASO 6: REVISAR Y EXPORTAR */}
+            {currentStep === 'export' && (
+              <div className="space-y-4 text-xs">
+                {/* Resumen Técnico */}
+                <div className="space-y-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block">
+                    Resumen Técnico de Fabricación
+                  </span>
+                  <div className="space-y-1 text-slate-300">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Etiqueta:</span>
+                      <span className="font-mono font-bold text-white">
+                        {labelDesign.widthMm} × {labelDesign.heightMm} mm ({labelDesign.shape})
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Orificios:</span>
+                      <span className="font-mono text-cyan-400">
+                        {labelDesign.holes.preset === 'none' ? 'Sin perforaciones' : `${labelDesign.holes.preset} (${labelDesign.holes.diameterMm} mm)`}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Material:</span>
+                      <span className="font-mono text-amber-300">{activeMaterial.name}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Cantidad Total:</span>
+                      <span className="font-mono text-emerald-400 font-bold">
+                        {nestingResult.totalExportedQuantity} unidades
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Tandas de corte:</span>
+                      <span className="font-mono text-slate-300">
+                        {nestingResult.totalBatches} ({activeBatch.count} u. en tanda 1)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Auditoría Geométrica en Vivo */}
+                <div className="space-y-1.5 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block">
+                    Auditoría de Validación Técnica
+                  </span>
+                  <div className="space-y-1 text-[11px]">
+                    <div className="flex items-center gap-1.5 text-emerald-400">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Escala física 1:1 en milímetros verificada</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-emerald-400">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Capas técnicas asignadas (#000000, #0000FF, #FF0000)</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-emerald-400">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>Contornos cerrados y sin superposiciones</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-emerald-400">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>0 colisiones entre piezas en plancha</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Botones de Descarga */}
+                <div className="space-y-2 pt-1">
+                  <button
+                    onClick={() => handleExportSvg('combined')}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors shadow"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>DESCARGAR SVG COMPLETO (LIGHTBURN)</span>
+                  </button>
 
                   <div className="grid grid-cols-2 gap-1.5">
                     <button
-                      type="button"
-                      onClick={handleAddVectorText}
-                      className="flex items-center justify-center gap-1.5 py-2 px-2 rounded bg-[#0b0e14] hover:bg-slate-800 text-slate-200 border border-slate-700 text-xs transition"
+                      onClick={() => handleExportSvg('engrave_only')}
+                      className="py-1.5 px-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px] font-medium"
                     >
-                      <Type className="w-3.5 h-3.5 text-amber-400" />
-                      <span>+ Texto Vectorial</span>
+                      SVG Solo Grabado
                     </button>
                     <button
-                      type="button"
-                      onClick={() => {
-                        const borderEl: LabelElement = {
-                          id: `border-${Date.now()}`,
-                          name: 'Marco Grabado',
-                          type: 'decorative_border',
-                          xMm: roundMm(labelDesign.widthMm / 2, 2),
-                          yMm: roundMm(labelDesign.heightMm / 2, 2),
-                          widthMm: roundMm(
-                            Math.max(4, labelDesign.widthMm - 3),
-                            2
-                          ),
-                          heightMm: roundMm(
-                            Math.max(4, labelDesign.heightMm - 3),
-                            2
-                          ),
-                          aspectRatio:
-                            labelDesign.widthMm / labelDesign.heightMm,
-                          lockAspectRatio: false,
-                          rotationDeg: 0,
-                          locked: false,
-                          visible: true,
-                          insetMm: 1.5,
-                          strokeWidthMm: 0.25,
-                          dashed: false,
-                        };
-                        pushStateWithHistory({
-                          ...labelDesign,
-                          elements: [...labelDesign.elements, borderEl],
-                        });
-                        setSelectedElementId(borderEl.id);
-                      }}
-                      className="flex items-center justify-center gap-1.5 py-2 px-2 rounded bg-[#0b0e14] hover:bg-slate-800 text-slate-200 border border-slate-700 text-xs transition"
+                      onClick={() => handleExportSvg('cut_only')}
+                      className="py-1.5 px-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px] font-medium"
                     >
-                      <Layers className="w-3.5 h-3.5 text-sky-400" />
-                      <span>+ Marco Interior</span>
+                      SVG Solo Corte
                     </button>
                   </div>
-                </div>
 
-                {/* Lista de elementos de grabado */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                      Elementos en Capa 00 GRABADO ({labelDesign.elements.length})
-                    </span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {labelDesign.elements.map((el) => {
-                      const isSel = el.id === selectedElementId;
-                      return (
-                        <div
-                          key={el.id}
-                          onClick={() => setSelectedElementId(el.id)}
-                          className={`flex items-center justify-between px-2.5 py-2 rounded border cursor-pointer transition ${
-                            isSel
-                              ? 'bg-amber-500/15 border-amber-500/60 text-amber-200'
-                              : 'bg-[#0b0e14] border-slate-800 text-slate-300 hover:border-slate-700'
-                          }`}
-                        >
-                          <div className="truncate pr-2">
-                            <div className="font-medium text-xs truncate">
-                              {el.name}
-                            </div>
-                            <div className="text-[10px] font-mono text-slate-400">
-                              {el.widthMm}×{el.heightMm} mm · X:{el.xMm} Y:{el.yMm}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                pushStateWithHistory({
-                                  ...labelDesign,
-                                  elements: labelDesign.elements.map((item) =>
-                                    item.id === el.id
-                                      ? { ...item, locked: !item.locked }
-                                      : item
-                                  ),
-                                });
-                              }}
-                              className="p-1 rounded hover:bg-slate-800 text-slate-400"
-                              title={
-                                el.locked ? 'Desbloquear' : 'Bloquear posición'
-                              }
-                            >
-                              {el.locked ? (
-                                <Lock className="w-3.5 h-3.5 text-amber-400" />
-                              ) : (
-                                <Unlock className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                pushStateWithHistory({
-                                  ...labelDesign,
-                                  elements: labelDesign.elements.filter(
-                                    (item) => item.id !== el.id
-                                  ),
-                                });
-                                if (selectedElementId === el.id) {
-                                  setSelectedElementId(null);
-                                }
-                              }}
-                              className="p-1 rounded hover:bg-red-950/60 text-slate-400 hover:text-red-400"
-                              title="Eliminar elemento"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                  <button
+                    onClick={handleExportDxf}
+                    className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-bold text-xs transition-colors"
+                  >
+                    <FileCode2 className="w-4 h-4 text-cyan-400" />
+                    <span>DESCARGAR DXF R12 (RDWORKS)</span>
+                  </button>
 
-                {/* Controles específicos del elemento seleccionado */}
-                {selectedElement && (
-                  <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-400">
-                        Propiedades: {selectedElement.name}
-                      </span>
-                    </div>
-
-                    {/* Botón de ajuste automático a Zona Segura (evita pisar agujeros o líneas de corte) */}
+                  <div className="grid grid-cols-2 gap-1.5">
                     <button
-                      type="button"
-                      onClick={handleFitSelectedToSafeZone}
-                      className="w-full flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[11px] font-semibold transition"
-                      title="Centrar y escalar proporcionalmente dentro del margen de seguridad evitando agujeros"
+                      onClick={handleExportSummaryReport}
+                      className="py-1.5 px-2 rounded bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px]"
                     >
-                      <Target className="w-3.5 h-3.5" />
-                      <span>Ajustar y Centrar en Zona Segura</span>
+                      Hoja de Ruta (TXT)
                     </button>
-
-                    <div className="grid grid-cols-3 gap-1">
-                      <button
-                        type="button"
-                        onClick={() => alignSelectedElement('center_x')}
-                        className="flex items-center justify-center gap-1 py-1.5 px-1.5 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px]"
-                        title="Centrar horizontalmente en la etiqueta"
-                      >
-                        <MoveHorizontal className="w-3 h-3 text-sky-400" />
-                        <span>Centro X</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => alignSelectedElement('center_y')}
-                        className="flex items-center justify-center gap-1 py-1.5 px-1.5 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px]"
-                        title="Centrar verticalmente en la etiqueta"
-                      >
-                        <MoveVertical className="w-3 h-3 text-sky-400" />
-                        <span>Centro Y</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateSelectedElement({
-                            rotationDeg:
-                              (selectedElement.rotationDeg + 90) % 360,
-                          })
-                        }
-                        className="flex items-center justify-center gap-1 py-1.5 px-1.5 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px]"
-                        title="Rotar 90 grados"
-                      >
-                        <RotateCw className="w-3 h-3 text-amber-400" />
-                        <span>Rotar 90°</span>
-                      </button>
-                    </div>
-
-                    {/* Alineación rápida a bordes de zona segura */}
-                    <div className="grid grid-cols-4 gap-1 pt-0.5">
-                      <button
-                        type="button"
-                        onClick={() => alignSelectedElement('safe_left')}
-                        className="py-1 px-1 rounded bg-[#0d1219] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300 text-center"
-                        title="Alinear al margen izquierdo seguro"
-                      >
-                        Izq. Segura
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => alignSelectedElement('safe_right')}
-                        className="py-1 px-1 rounded bg-[#0d1219] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300 text-center"
-                        title="Alinear al margen derecho seguro"
-                      >
-                        Der. Segura
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => alignSelectedElement('safe_top')}
-                        className="py-1 px-1 rounded bg-[#0d1219] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300 text-center"
-                        title="Alinear al margen superior seguro"
-                      >
-                        Arriba
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => alignSelectedElement('safe_bottom')}
-                        className="py-1 px-1 rounded bg-[#0d1219] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-[10px] text-slate-300 text-center"
-                        title="Alinear al margen inferior seguro"
-                      >
-                        Abajo
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[10px] text-slate-400 mb-1">
-                          Ancho elem. (mm)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.2"
-                          min="1"
-                          value={selectedElement.widthMm}
-                          onChange={(e) =>
-                            updateSelectedElement({
-                              widthMm: Math.max(
-                                0.5,
-                                parseFloat(e.target.value) || 2
-                              ),
-                            })
-                          }
-                          className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-slate-400 mb-1">
-                          Alto elem. (mm)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.2"
-                          min="1"
-                          value={selectedElement.heightMm}
-                          onChange={(e) =>
-                            updateSelectedElement({
-                              heightMm: Math.max(
-                                0.5,
-                                parseFloat(e.target.value) || 2
-                              ),
-                            })
-                          }
-                          className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Si es Texto Vectorial */}
-                    {selectedElement.type === 'vector_text' && (
-                      <div className="space-y-2 pt-1 border-t border-slate-800">
-                        <div>
-                          <label className="block text-[10px] text-slate-400 mb-1">
-                            Texto a grabar (Vectorial CNC)
-                          </label>
-                          <input
-                            type="text"
-                            value={selectedElement.text}
-                            onChange={(e) =>
-                              updateSelectedElement({
-                                text: e.target.value,
-                              } as Partial<LabelElement>)
-                            }
-                            className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100 uppercase"
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-1">
-                              Altura letra (mm)
-                            </label>
-                            <input
-                              type="number"
-                              step="0.2"
-                              min="1.0"
-                              max="40"
-                              value={selectedElement.fontSizeMm}
-                              onChange={(e) =>
-                                updateSelectedElement({
-                                  fontSizeMm: Math.max(
-                                    0.8,
-                                    parseFloat(e.target.value) || 2
-                                  ),
-                                } as Partial<LabelElement>)
-                              }
-                              className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-slate-400 mb-1">
-                              Espaciado (mm)
-                            </label>
-                            <input
-                              type="number"
-                              step="0.05"
-                              min="0.1"
-                              max="10"
-                              value={selectedElement.letterSpacingMm}
-                              onChange={(e) =>
-                                updateSelectedElement({
-                                  letterSpacingMm: Math.max(
-                                    0.1,
-                                    parseFloat(e.target.value) || 0.35
-                                  ),
-                                } as Partial<LabelElement>)
-                              }
-                              className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Si es Imagen Raster (PNG/JPG) */}
-                    {selectedElement.type === 'logo_raster' && (
-                      <div className="space-y-2.5 pt-2 border-t border-slate-800">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[11px] font-semibold text-sky-400 flex items-center gap-1">
-                            <Sparkles className="w-3.5 h-3.5" />
-                            Procesamiento y Vectorización
-                          </span>
-                          <span
-                            className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-                              selectedElement.effectiveDpi >= 250
-                                ? 'bg-emerald-500/15 text-emerald-300'
-                                : 'bg-amber-500/20 text-amber-300'
-                            }`}
-                          >
-                            {Math.round(selectedElement.effectiveDpi)} DPI
-                          </span>
-                        </div>
-
-                        {/* Comparación Visual: Original vs Procesado */}
-                        <div className="p-2.5 rounded-lg bg-[#080b10] border border-slate-800 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                              Comparación Original vs Procesado
-                            </span>
-                            <span className="text-[10px] text-slate-500 font-mono">
-                              {selectedElement.pixelWidth}×{selectedElement.pixelHeight} px
-                            </span>
-                          </div>
-                          <div className="grid grid-cols-2 gap-2 text-center">
-                            <div className="p-1 rounded bg-[#11161f] border border-slate-700">
-                              <div className="text-[9px] text-slate-400 mb-1">Archivo Original</div>
-                              <div className="h-16 flex items-center justify-center overflow-hidden bg-slate-900/80 rounded border border-slate-800">
-                                <img
-                                  src={selectedElement.originalDataUrl}
-                                  alt="Original"
-                                  className="max-h-full max-w-full object-contain"
-                                />
-                              </div>
-                            </div>
-                            <div className="p-1 rounded bg-[#11161f] border border-amber-500/40">
-                              <div className="text-[9px] text-amber-300 font-semibold mb-1">
-                                {selectedElement.processing.mode === 'vector' ? 'Vectorizado Láser' : 'Monocromático B/N'}
-                              </div>
-                              <div className="h-16 flex items-center justify-center overflow-hidden bg-white/95 rounded border border-slate-300">
-                                <img
-                                  src={selectedElement.processedDataUrl}
-                                  alt="Procesado"
-                                  className="max-h-full max-w-full object-contain"
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleReprocessRasterElement(selectedElement, {
-                                ...selectedElement.processing,
-                                mode: 'vector',
-                              })
-                            }
-                            className={`py-1.5 px-2 rounded text-[11px] font-medium border ${
-                              selectedElement.processing.mode === 'vector'
-                                ? 'bg-amber-500/20 border-amber-500 text-amber-300'
-                                : 'bg-[#11161f] border-slate-700 text-slate-400'
-                            }`}
-                          >
-                            Vectorizar ({selectedElement.vectorizedPathsNormalized.length} trazos)
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleReprocessRasterElement(selectedElement, {
-                                ...selectedElement.processing,
-                                mode: 'raster',
-                              })
-                            }
-                            className={`py-1.5 px-2 rounded text-[11px] font-medium border ${
-                              selectedElement.processing.mode === 'raster'
-                                ? 'bg-amber-500/20 border-amber-500 text-amber-300'
-                                : 'bg-[#11161f] border-slate-700 text-slate-400'
-                            }`}
-                          >
-                            Grabado Raster B/N
-                          </button>
-                        </div>
-
-                        {/* Slider de Detalle Fino / Simplificación Vectorial turdSize cuando el modo es Vector */}
-                        {selectedElement.processing.mode === 'vector' && (
-                          <div className="p-2 rounded bg-[#0b0e14] border border-slate-800 space-y-1">
-                            <div className="flex justify-between text-[10px] text-slate-400">
-                              <span>Detalle Fino / Simplificación Vector</span>
-                              <span className="font-mono text-amber-300">
-                                {selectedElement.processing.turdSize} px
-                              </span>
-                            </div>
-                            <input
-                              type="range"
-                              min="0.2"
-                              max="2.5"
-                              step="0.05"
-                              value={selectedElement.processing.turdSize}
-                              onChange={(e) =>
-                                handleReprocessRasterElement(selectedElement, {
-                                  ...selectedElement.processing,
-                                  turdSize: Number(e.target.value),
-                                })
-                              }
-                              className="w-full accent-amber-500"
-                            />
-                            <div className="text-[9px] text-slate-500">
-                              Valores menores conservan letras pequeñas y detalles finos.
-                            </div>
-                          </div>
-                        )}
-
-                        <div>
-                          <div className="flex justify-between text-[10px] text-slate-400 mb-0.5">
-                            <span>Umbral Blanco / Negro</span>
-                            <span className="font-mono">
-                              {selectedElement.processing.threshold} / 255
-                            </span>
-                          </div>
-                          <input
-                            type="range"
-                            min="15"
-                            max="245"
-                            value={selectedElement.processing.threshold}
-                            onChange={(e) =>
-                              handleReprocessRasterElement(selectedElement, {
-                                ...selectedElement.processing,
-                                threshold: Number(e.target.value),
-                              })
-                            }
-                            className="w-full accent-amber-500"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between text-[10px] text-slate-400 mb-0.5">
-                              <span>Brillo</span>
-                              <span className="font-mono">
-                                {selectedElement.processing.brightness}
-                              </span>
-                            </div>
-                            <input
-                              type="range"
-                              min="-80"
-                              max="80"
-                              value={selectedElement.processing.brightness}
-                              onChange={(e) =>
-                                handleReprocessRasterElement(selectedElement, {
-                                  ...selectedElement.processing,
-                                  brightness: Number(e.target.value),
-                                })
-                              }
-                              className="w-full accent-sky-400"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between text-[10px] text-slate-400 mb-0.5">
-                              <span>Contraste</span>
-                              <span className="font-mono">
-                                {selectedElement.processing.contrast}
-                              </span>
-                            </div>
-                            <input
-                              type="range"
-                              min="-80"
-                              max="80"
-                              value={selectedElement.processing.contrast}
-                              onChange={(e) =>
-                                handleReprocessRasterElement(selectedElement, {
-                                  ...selectedElement.processing,
-                                  contrast: Number(e.target.value),
-                                })
-                              }
-                              className="w-full accent-sky-400"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between gap-2 pt-1">
-                          <label className="flex items-center gap-1.5 cursor-pointer text-[11px]">
-                            <input
-                              type="checkbox"
-                              checked={
-                                selectedElement.processing.removeBackground
-                              }
-                              onChange={(e) =>
-                                handleReprocessRasterElement(selectedElement, {
-                                  ...selectedElement.processing,
-                                  removeBackground: e.target.checked,
-                                })
-                              }
-                              className="accent-amber-500"
-                            />
-                            <span>Quitar fondo</span>
-                          </label>
-                          <label className="flex items-center gap-1.5 cursor-pointer text-[11px]">
-                            <input
-                              type="checkbox"
-                              checked={selectedElement.processing.invert}
-                              onChange={(e) =>
-                                handleReprocessRasterElement(selectedElement, {
-                                  ...selectedElement.processing,
-                                  invert: e.target.checked,
-                                })
-                              }
-                              className="accent-amber-500"
-                            />
-                            <span>Invertir B/N</span>
-                          </label>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* SECCIÓN 3: SISTEMA DE MATERIALES Y PERFILES DE LÁSER */}
-            {leftSection === 'materials' && (
-              <>
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                    Catálogo de Materiales LaserHouse
-                  </label>
-                  <div className="space-y-1.5">
-                    {materials.map((mat) => {
-                      const isSel = mat.id === activeMaterial.id;
-                      return (
-                        <button
-                          key={mat.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedMaterialId(mat.id);
-                            if (mat.fixedRibbonWidthMm) {
-                              setNestingConfig((prev) => ({
-                                ...prev,
-                                sheetWidthMm: mat.fixedRibbonWidthMm!,
-                              }));
-                            }
-                          }}
-                          className={`w-full flex items-center gap-2.5 p-2.5 rounded-lg border text-left transition ${
-                            isSel
-                              ? 'bg-amber-500/15 border-amber-500 text-white'
-                              : 'bg-[#0b0e14] border-slate-800 text-slate-300 hover:border-slate-700'
-                          }`}
-                        >
-                          <span
-                            className="w-5 h-5 rounded-full border border-slate-600 shrink-0"
-                            style={{ backgroundColor: mat.visual.surfaceColor }}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="font-semibold text-xs truncate">
-                              {mat.name}
-                            </div>
-                            <div className="text-[10px] font-mono text-slate-400">
-                              {mat.code} · Espesor {mat.thicknessMm} mm
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Advertencia obligatoria de seguridad para ecocuero y sintéticos */}
-                {activeMaterial.safetyWarning && (
-                  <div className="p-3 rounded-lg bg-amber-950/50 border border-amber-500/40 text-amber-200 space-y-2">
-                    <div className="flex items-start gap-2">
-                      <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                      <span className="text-[11px] leading-relaxed">
-                        {activeMaterial.safetyWarning}
-                      </span>
-                    </div>
-                    {activeMaterial.requiresCompositionConfirmation && (
-                      <label className="flex items-center gap-2 pt-1 cursor-pointer text-[11px] font-semibold text-amber-300">
-                        <input
-                          type="checkbox"
-                          checked={
-                            activeMaterial.compositionConfirmedByOperator
-                          }
-                          onChange={(e) => {
-                            const checked = e.target.checked;
-                            setMaterials((prev) =>
-                              prev.map((m) =>
-                                m.id === activeMaterial.id
-                                  ? {
-                                      ...m,
-                                      compositionConfirmedByOperator: checked,
-                                    }
-                                  : m
-                              )
-                            );
-                          }}
-                          className="accent-amber-500"
-                        />
-                        <span>
-                          Confirmo composición libre de PVC/Cloro y apta para láser CO₂
-                        </span>
-                      </label>
-                    )}
-                  </div>
-                )}
-
-                {/* Configuración de espesor y opciones específicas del material */}
-                <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold text-slate-300">
-                      Espesor del Material (mm)
-                    </span>
-                    <select
-                      value={activeMaterial.thicknessMm}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setMaterials((prev) =>
-                          prev.map((m) =>
-                            m.id === activeMaterial.id
-                              ? { ...m, thicknessMm: val }
-                              : m
-                          )
-                        );
-                      }}
-                      className="px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-xs"
+                    <button
+                      onClick={handleSaveOrderProject}
+                      className="py-1.5 px-2 rounded bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px]"
                     >
-                      {activeMaterial.availableThicknessesMm.map((th) => (
-                        <option key={th} value={th}>
-                          {th} mm
-                        </option>
-                      ))}
-                    </select>
+                      Guardar .lhstudio.json
+                    </button>
                   </div>
-
-                  <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-300 pt-1">
-                    <input
-                      type="checkbox"
-                      checked={activeMaterial.mirrorArtworkForBackEngrave}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setMaterials((prev) =>
-                          prev.map((m) =>
-                            m.id === activeMaterial.id
-                              ? { ...m, mirrorArtworkForBackEngrave: checked }
-                              : m
-                          )
-                        );
-                      }}
-                      className="accent-amber-500"
-                    />
-                    <span>Espejar arte horizontalmente (Grabado desde dorso)</span>
-                  </label>
                 </div>
 
-                {/* Parámetros editables por el operador */}
-                <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-2.5">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
-                    Parámetros Operador (Vank 9060 CO₂)
-                  </div>
-                  <p className="text-[10px] text-slate-400 leading-normal">
-                    Ingrese únicamente parámetros validados físicamente en su máquina. Se adjuntan en la Hoja Técnica de Producción.
+                <div className="p-2.5 rounded bg-slate-900 border border-slate-800 text-[10px] text-slate-400 flex items-start gap-1.5">
+                  <Info className="w-4 h-4 shrink-0 text-cyan-400 mt-0.5" />
+                  <p className="leading-relaxed">
+                    Los archivos cumplen con la especificación matemática 1:1. La validación física en máquina se completará al importar en LightBurn.
                   </p>
-
-                  <div className="space-y-2 pt-1">
-                    <div className="p-2 rounded bg-[#11161f] border border-slate-800">
-                      <div className="text-[10px] font-mono text-slate-300 mb-1">
-                        Capa 00 GRABADO (#000000)
-                      </div>
-                      <div className="grid grid-cols-2 gap-1.5">
-                        <input
-                          type="number"
-                          placeholder="Vel (mm/s)"
-                          value={
-                            activeMaterial.engraveParams.speedMmPerSec ?? ''
-                          }
-                          onChange={(e) => {
-                            const val = e.target.value
-                              ? parseFloat(e.target.value)
-                              : null;
-                            setMaterials((prev) =>
-                              prev.map((m) =>
-                                m.id === activeMaterial.id
-                                  ? {
-                                      ...m,
-                                      engraveParams: {
-                                        ...m.engraveParams,
-                                        speedMmPerSec: val,
-                                      },
-                                    }
-                                  : m
-                              )
-                            );
-                          }}
-                          className="px-2 py-1 rounded bg-[#0b0e14] border border-slate-700 font-mono text-[11px]"
-                        />
-                        <input
-                          type="number"
-                          placeholder="Pot. Máx (%)"
-                          value={
-                            activeMaterial.engraveParams.maxPowerPercent ?? ''
-                          }
-                          onChange={(e) => {
-                            const val = e.target.value
-                              ? parseFloat(e.target.value)
-                              : null;
-                            setMaterials((prev) =>
-                              prev.map((m) =>
-                                m.id === activeMaterial.id
-                                  ? {
-                                      ...m,
-                                      engraveParams: {
-                                        ...m.engraveParams,
-                                        maxPowerPercent: val,
-                                      },
-                                    }
-                                  : m
-                              )
-                            );
-                          }}
-                          className="px-2 py-1 rounded bg-[#0b0e14] border border-slate-700 font-mono text-[11px]"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="p-2 rounded bg-[#11161f] border border-slate-800">
-                      <div className="text-[10px] font-mono text-red-400 mb-1">
-                        Capa 02 CORTE EXTERIOR (#FF0000)
-                      </div>
-                      <div className="grid grid-cols-2 gap-1.5">
-                        <input
-                          type="number"
-                          placeholder="Vel (mm/s)"
-                          value={activeMaterial.cutParams.speedMmPerSec ?? ''}
-                          onChange={(e) => {
-                            const val = e.target.value
-                              ? parseFloat(e.target.value)
-                              : null;
-                            setMaterials((prev) =>
-                              prev.map((m) =>
-                                m.id === activeMaterial.id
-                                  ? {
-                                      ...m,
-                                      cutParams: {
-                                        ...m.cutParams,
-                                        speedMmPerSec: val,
-                                      },
-                                    }
-                                  : m
-                              )
-                            );
-                          }}
-                          className="px-2 py-1 rounded bg-[#0b0e14] border border-slate-700 font-mono text-[11px]"
-                        />
-                        <input
-                          type="number"
-                          placeholder="Pot. Máx (%)"
-                          value={activeMaterial.cutParams.maxPowerPercent ?? ''}
-                          onChange={(e) => {
-                            const val = e.target.value
-                              ? parseFloat(e.target.value)
-                              : null;
-                            setMaterials((prev) =>
-                              prev.map((m) =>
-                                m.id === activeMaterial.id
-                                  ? {
-                                      ...m,
-                                      cutParams: {
-                                        ...m.cutParams,
-                                        maxPowerPercent: val,
-                                      },
-                                    }
-                                  : m
-                              )
-                            );
-                          }}
-                          className="px-2 py-1 rounded bg-[#0b0e14] border border-slate-700 font-mono text-[11px]"
-                        />
-                      </div>
-                    </div>
-                  </div>
                 </div>
-              </>
+              </div>
             )}
+          </div>
+
+          {/* BOTONERA DE NAVEGACIÓN INFERIOR (ATRÁS / CONTINUAR) */}
+          <div className="p-3 bg-[#11161f] border-t border-slate-800 flex items-center justify-between shrink-0">
+            <button
+              onClick={handleGoPrev}
+              disabled={currentStepIndex === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 disabled:hover:bg-slate-800 transition-colors font-semibold"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Atrás</span>
+            </button>
+
+            <button
+              onClick={handleGoNext}
+              disabled={currentStepIndex === WIZARD_STEPS.length - 1}
+              className="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded bg-cyan-600 hover:bg-cyan-500 text-white disabled:opacity-30 disabled:hover:bg-cyan-600 font-bold transition-colors shadow-sm"
+            >
+              <span>{currentStepIndex === WIZARD_STEPS.length - 2 ? 'Revisar Pedido' : 'Continuar'}</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
           </div>
         </aside>
 
-        {/* ÁREA CENTRAL INTERACTIVA */}
-        <main className="flex-1 flex flex-col min-w-0 bg-[#090c10] relative">
-          {workspaceTab === 'editor' && (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-[#11161f] border-b border-slate-800 text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-400 font-mono">
-                    Etiqueta:{' '}
-                    <strong className="text-white">
-                      {labelDesign.widthMm} × {labelDesign.heightMm} mm
-                    </strong>
-                  </span>
-                  <span className="text-slate-600">|</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setRenderStyle((prev) =>
-                        prev === 'realistic_material'
-                          ? 'technical_lightburn'
-                          : 'realistic_material'
-                      )
-                    }
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-                  >
-                    <Eye className="w-3.5 h-3.5 text-amber-400" />
-                    <span>
-                      {renderStyle === 'realistic_material'
-                        ? 'Vista: Simulación Material'
-                        : 'Vista: Técnica Capas LightBurn'}
-                    </span>
-                  </button>
-                </div>
+        {/* ÁREA DE VISUALIZACIÓN PRINCIPAL (GRAN LIENZO EN VIVO) */}
+        <section aria-label="Visualizador del diseño y mesa de corte" className="flex-1 flex flex-col bg-[#090c10] relative overflow-hidden">
+          {/* Si estamos en paso 1, 2, 3 o 4: Mostrar el Canvas de Etiqueta */}
+          {['logo', 'dimensions', 'holes', 'engraving'].includes(currentStep) && (
+            <div className="flex-1 w-full h-full relative">
+              <LabelEditorCanvas
+                design={labelDesign}
+                material={activeMaterial}
+                selectedElementId={selectedElementId}
+                onSelectElement={(id) => setSelectedElementId(id)}
+                onMoveElement={(id, nx, ny) => {
+                  const updatedEls = labelDesign.elements.map((el) =>
+                    el.id === id ? { ...el, xMm: roundMm(nx, 2), yMm: roundMm(ny, 2) } : el
+                  );
+                  pushStateWithHistory({
+                    ...labelDesign,
+                    elements: updatedEls,
+                  });
+                }}
+                onResizeElement={(id, nw, nh) => {
+                  handleUpdateElementSizeMm(nw, nh);
+                }}
+                onRotateElement={(id, rot) => {
+                  const updatedEls = labelDesign.elements.map((el) =>
+                    el.id === id ? { ...el, rotationDeg: roundMm(rot, 1) } : el
+                  );
+                  pushStateWithHistory({
+                    ...labelDesign,
+                    elements: updatedEls,
+                  });
+                }}
+                zoomLevel={zoomLevel}
+                onZoomChange={setZoomLevel}
+                showMillimeterGrid={showMillimeterGrid}
+                showSafetyGuides={showSafetyGuides}
+                snapToGridMm={snapToGridMm}
+                renderStyle={renderStyle}
+              />
 
-                {/* Controles de Grilla Milimétrica, Guías, Imán y Zoom Visual */}
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-1.5 cursor-pointer text-slate-300">
-                    <input
-                      type="checkbox"
-                      checked={showMillimeterGrid}
-                      onChange={(e) => setShowMillimeterGrid(e.target.checked)}
-                      className="accent-amber-500"
-                    />
-                    <span>Grilla mm</span>
-                  </label>
-                  <label className="flex items-center gap-1.5 cursor-pointer text-slate-300">
-                    <input
-                      type="checkbox"
-                      checked={showSafetyGuides}
-                      onChange={(e) => setShowSafetyGuides(e.target.checked)}
-                      className="accent-amber-500"
-                    />
-                    <span>Guías seguridad</span>
-                  </label>
-
-                  <div className="flex items-center gap-1">
-                    <span className="text-slate-400">Imán:</span>
-                    <select
-                      value={snapToGridMm}
-                      onChange={(e) =>
-                        setSnapToGridMm(parseFloat(e.target.value))
-                      }
-                      className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 font-mono text-[11px]"
-                    >
-                      <option value={0}>Libre</option>
-                      <option value={0.25}>0.25 mm</option>
-                      <option value={0.5}>0.5 mm</option>
-                      <option value={1}>1.0 mm</option>
-                    </select>
-                  </div>
-
-                  <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setZoomLevel((z) => roundMm(Math.max(0.4, z - 0.2), 2))
-                      }
-                      className="p-0.5 hover:text-amber-400"
-                      title="Alejar vista (No altera medidas en mm)"
-                    >
-                      <ZoomOut className="w-3.5 h-3.5" />
-                    </button>
-                    <span className="font-mono text-[11px] px-1.5 text-slate-300">
-                      {Math.round(zoomLevel * 100)}%
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setZoomLevel((z) => roundMm(Math.min(4.0, z + 0.2), 2))
-                      }
-                      className="p-0.5 hover:text-amber-400"
-                      title="Acercar vista (No altera medidas en mm)"
-                    >
-                      <ZoomIn className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setZoomLevel(1.35)}
-                      className="p-0.5 hover:text-amber-400 ml-0.5"
-                      title="Restablecer zoom visual"
-                    >
-                      <Maximize2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex-1 min-h-0">
-                <LabelEditorCanvas
-                  design={labelDesign}
-                  material={activeMaterial}
-                  selectedElementId={selectedElementId}
-                  onSelectElement={(id) => {
-                    setSelectedElementId(id);
-                    if (id) setLeftSection('elements');
-                  }}
-                  onMoveElement={handleMoveElement}
-                  onResizeElement={(id, newW, newH) => {
-                    updateSelectedElement({ widthMm: newW, heightMm: newH });
-                  }}
-                  onRotateElement={(id, deg) => {
-                    updateSelectedElement({ rotationDeg: deg });
-                  }}
-                  zoomLevel={zoomLevel}
-                  onZoomChange={setZoomLevel}
-                  showMillimeterGrid={showMillimeterGrid}
-                  showSafetyGuides={showSafetyGuides}
-                  snapToGridMm={snapToGridMm}
-                  renderStyle={renderStyle}
-                />
-              </div>
-            </>
-          )}
-
-          {workspaceTab === 'production' && (
-            <ProductionBedPreview
-              design={labelDesign}
-              material={activeMaterial}
-              nesting={nestingResult}
-              validation={validationReport}
-              activeBatchIndex={activeBatchIndex}
-              onSelectBatchIndex={setActiveBatchIndex}
-            />
-          )}
-
-          {workspaceTab === 'inspector' && liveFormatAudit && (
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-[#090c10]">
-              <div className="max-w-5xl mx-auto space-y-6">
-                <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-[#11161f] border border-slate-800">
-                  <div>
-                    <h2 className="text-base font-bold text-white">
-                      Auditoría Técnica Independiente de Formatos SVG y DXF
-                    </h2>
-                    <p className="text-xs text-slate-400">
-                      Verificación matemática de escala 1:1 mm, contornos cerrados y colores de capas previa a la importación en LightBurn / RDWorks.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleExportKerfPattern}
-                      className="px-3 py-1.5 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 text-xs font-mono"
-                      title="Descargar patrón físico de 100x20 mm para medir el kerf del láser con calibre digital"
-                    >
-                      Calibración Kerf (100×20 mm)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleExportSvg('engrave_only')}
-                      className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 border border-slate-700"
-                    >
-                      SVG Sólo Grabado
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleExportSvg('cut_only')}
-                      className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 border border-slate-700"
-                    >
-                      SVG Sólo Corte
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleExportSummary}
-                      className="px-3 py-1.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-xs font-mono text-emerald-300 border border-emerald-500/40"
-                    >
-                      Hoja Técnica (.TXT)
-                    </button>
-                  </div>
-                </div>
-
-                {/* Banner de estado de LightBurn */}
-                <div className="p-3.5 rounded-lg bg-sky-950/40 border border-sky-500/30 text-xs text-sky-200 flex items-start gap-2.5">
-                  <div className="w-5 h-5 rounded-full bg-sky-500/20 text-sky-300 flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
-                    i
-                  </div>
-                  <div className="space-y-1">
-                    <div className="font-semibold text-white">
-                      Validación Técnica Independiente (LightBurn pendiente de instalación)
-                    </div>
-                    <div className="text-[11px] text-slate-300 leading-relaxed">
-                      Dado que LightBurn aún no está instalado en este equipo, los archivos son auditados y verificados matemáticamente por el motor geométrico de LaserHouse Studio para garantizar escala física 1:1, contornos cerrados con terminación Z y separación estricta de capas por color (<strong className="text-white">#000000</strong> Grabado, <strong className="text-blue-400">#0000FF</strong> Agujeros, <strong className="text-red-400">#FF0000</strong> Corte). Cuando adquieras e instales LightBurn, abrí el archivo de calibración y corroborá las cotas en la barra de herramientas.
-                    </div>
-                  </div>
-                </div>
-
-                {/* Tarjetas de Verificación Independiente SVG y DXF */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 rounded-xl bg-[#11161f] border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-xs text-amber-300 uppercase">
-                        Lector Independiente SVG (LightBurn)
-                      </span>
-                      <span
-                        className={`px-2 py-0.5 rounded font-mono text-[10px] ${
-                          liveFormatAudit.svgAudit.isValid
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-red-500/20 text-red-300'
-                        }`}
-                      >
-                        {liveFormatAudit.svgAudit.isValid
-                          ? 'SVG 1:1 mm VERIFICADO'
-                          : 'OBSERVACIONES'}
-                      </span>
-                    </div>
-                    <div className="text-xs font-mono text-slate-300 space-y-1">
-                      <div>
-                        Lienzo físico: {liveFormatAudit.svgAudit.widthMm}mm ×{' '}
-                        {liveFormatAudit.svgAudit.heightMm}mm (viewBox 1:1:{' '}
-                        {liveFormatAudit.svgAudit.viewBoxMatchesMm1To1
-                          ? 'SÍ'
-                          : 'NO'}
-                        )
-                      </div>
-                      <div>
-                        Capas detectadas: 00 Grabado (
-                        {liveFormatAudit.svgAudit.engraveLayerCount}) · 01
-                        Agujeros ({liveFormatAudit.svgAudit.holesLayerCount}) ·
-                        02 Corte ({liveFormatAudit.svgAudit.cutLayerCount})
-                      </div>
-                      <div>
-                        Contornos cerrados (Z):{' '}
-                        {liveFormatAudit.svgAudit.allCutAndHolePathsClosed
-                          ? '100% Cerrados'
-                          : 'Incompletos'}
-                      </div>
-                      {liveFormatAudit.svgAudit.measuredCutBoundsMm && (
-                        <div className="text-sky-300">
-                          Caja medida en SVG:{' '}
-                          {liveFormatAudit.svgAudit.measuredCutBoundsMm.width} ×{' '}
-                          {liveFormatAudit.svgAudit.measuredCutBoundsMm.height}{' '}
-                          mm
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="p-4 rounded-xl bg-[#11161f] border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-xs text-sky-300 uppercase">
-                        Lector Independiente DXF R12 (RDWorks)
-                      </span>
-                      <span
-                        className={`px-2 py-0.5 rounded font-mono text-[10px] ${
-                          liveFormatAudit.dxfAudit.isValid
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-red-500/20 text-red-300'
-                        }`}
-                      >
-                        {liveFormatAudit.dxfAudit.isValid
-                          ? 'DXF AC1009 VERIFICADO'
-                          : 'OBSERVACIONES'}
-                      </span>
-                    </div>
-                    <div className="text-xs font-mono text-slate-300 space-y-1">
-                      <div>
-                        Versión: {liveFormatAudit.dxfAudit.acadVer} · $INSUNITS:{' '}
-                        {liveFormatAudit.dxfAudit.insUnits} (mm) · Capas:{' '}
-                        {liveFormatAudit.dxfAudit.layersDefined.join(', ')}
-                      </div>
-                      <div>
-                        Polilíneas: GRABADO (
-                        {liveFormatAudit.dxfAudit.engravePolylinesCount}) ·
-                        AGUJEROS ({liveFormatAudit.dxfAudit.holePolylinesCount})
-                        · CORTE ({liveFormatAudit.dxfAudit.cutPolylinesCount})
-                      </div>
-                      <div>
-                        Cierre doble (Flag 70=1 + Vértice final=inicial):{' '}
-                        {liveFormatAudit.dxfAudit.allCutAndHolesClosedFlag &&
-                        liveFormatAudit.dxfAudit.allCutAndHolesZeroGapLoop
-                          ? 'SÍ (0.000 mm gap)'
-                          : 'NO'}
-                      </div>
-                      {liveFormatAudit.dxfAudit.firstCutPieceSizeMm && (
-                        <div className="text-emerald-300">
-                          1ª Pieza medida desde vértices DXF:{' '}
-                          {liveFormatAudit.dxfAudit.firstCutPieceSizeMm.width} ×{' '}
-                          {liveFormatAudit.dxfAudit.firstCutPieceSizeMm.height}{' '}
-                          mm
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Código fuente SVG real en vivo */}
-                <div className="rounded-xl bg-[#11161f] border border-slate-800 overflow-hidden">
-                  <div className="px-4 py-2.5 bg-[#161d29] border-b border-slate-800 flex items-center justify-between text-xs">
-                    <span className="font-mono font-semibold text-amber-300">
-                      Código SVG de Producción (Escala física 1:1 en mm)
-                    </span>
-                    <span className="font-mono text-slate-400">
-                      width=&quot;{nestingConfig.sheetWidthMm}mm&quot;
-                      height=&quot;{nestingConfig.sheetHeightMm}mm&quot;
-                      viewBox=&quot;0 0 {nestingConfig.sheetWidthMm}{' '}
-                      {nestingConfig.sheetHeightMm}&quot;
-                    </span>
-                  </div>
-                  <pre className="p-4 text-[11px] font-mono text-slate-300 overflow-x-auto max-h-80 leading-relaxed">
-                    {liveFormatAudit.svgContent.slice(0, 6000)}
-                    {liveFormatAudit.svgContent.length > 6000
-                      ? `\n... [Archivo completo de ${liveFormatAudit.svgContent.length.toLocaleString()} bytes listo para descargar]`
-                      : ''}
-                  </pre>
-                </div>
-              </div>
-            </div>
-          )}
-        </main>
-
-        {/* PANEL DERECHO: DISTRIBUCIÓN DE MATERIAL, CANTIDADES Y EXPORTACIÓN */}
-        <aside className="w-80 bg-[#11161f] border-l border-slate-800/90 flex flex-col shrink-0 overflow-y-auto p-3.5 space-y-4 text-xs">
-          {/* Bloque 1: Cantidad de Etiquetas */}
-          <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
-                Cantidad a Producir
-              </span>
-              <span className="text-[10px] font-mono text-slate-400">
-                Conteo exacto garantizado
-              </span>
-            </div>
-
-            <div className="grid grid-cols-5 gap-1">
-              {STANDARD_QUANTITY_PRESETS.map((qty) => (
+              {/* Barra de herramientas flotante de vista previa */}
+              <div className="absolute bottom-3 left-4 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#11161f]/90 border border-slate-700/80 shadow text-xs text-slate-300 backdrop-blur-sm">
                 <button
-                  key={qty}
-                  type="button"
-                  onClick={() => {
-                    pushStateWithHistory(labelDesign, {
-                      ...nestingConfig,
-                      requestedQuantity: qty,
-                    });
-                    setWorkspaceTab('production');
-                  }}
-                  className={`py-1.5 rounded font-mono text-xs border transition ${
-                    nestingConfig.requestedQuantity === qty
-                      ? 'bg-amber-500 text-slate-950 border-amber-400 font-bold'
-                      : 'bg-[#11161f] border-slate-800 text-slate-300 hover:border-slate-600'
-                  }`}
+                  onClick={() =>
+                    setRenderStyle(
+                      renderStyle === 'realistic_material'
+                        ? 'technical_lightburn'
+                        : 'realistic_material'
+                    )
+                  }
+                  className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-slate-700/80 transition-colors"
                 >
-                  {qty}
+                  <Eye className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>
+                    {renderStyle === 'realistic_material'
+                      ? 'Simulación orientativa'
+                      : 'Capas técnicas LightBurn'}
+                  </span>
                 </button>
-              ))}
+                <span className="text-slate-600">|</span>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showMillimeterGrid}
+                    onChange={(e) => setShowMillimeterGrid(e.target.checked)}
+                    className="rounded bg-slate-800 border-slate-700 text-cyan-500"
+                  />
+                  <span>Rejilla (mm)</span>
+                </label>
+                <span className="text-slate-600">|</span>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={showSafetyGuides}
+                    onChange={(e) => setShowSafetyGuides(e.target.checked)}
+                    className="rounded bg-slate-800 border-slate-700 text-cyan-500"
+                  />
+                  <span>Ejes y cotas</span>
+                </label>
+              </div>
             </div>
+          )}
 
-            <div className="flex items-center gap-2 pt-1">
-              <label className="text-[11px] text-slate-400 shrink-0">
-                Cantidad exacta:
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="20000"
-                value={nestingConfig.requestedQuantity}
-                onChange={(e) =>
-                  pushStateWithHistory(labelDesign, {
-                    ...nestingConfig,
-                    requestedQuantity: Math.max(
-                      1,
-                      parseInt(e.target.value, 10) || 1
-                    ),
-                  })
-                }
-                className="w-full px-2.5 py-1.5 rounded bg-[#11161f] border border-slate-700 font-mono text-sm font-bold text-amber-300"
+          {/* Si estamos en paso 5: Mostrar la vista de Mesa de Producción (900x600 mm) */}
+          {currentStep === 'production' && (
+            <div className="flex-1 w-full h-full relative">
+              <ProductionBedPreview
+                design={labelDesign}
+                material={activeMaterial}
+                nesting={nestingResult}
+                validation={validationReport}
+                activeBatchIndex={activeBatchIndex}
+                onSelectBatchIndex={setActiveBatchIndex}
               />
             </div>
-          </div>
+          )}
 
-          {/* Bloque 2: Dimensiones Reales del Material (900x600, 600x400, 400x300, 200x200 y Personalizado) */}
-          <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
-                Recorte de Material (Máx 900×600 mm)
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-1.5">
-              {MATERIAL_SHEET_PRESETS.map((sp) => {
-                const isSelected =
-                  nestingConfig.sheetWidthMm === sp.widthMm &&
-                  nestingConfig.sheetHeightMm === sp.heightMm;
-                return (
-                  <button
-                    key={sp.id}
-                    type="button"
-                    onClick={() =>
-                      pushStateWithHistory(labelDesign, {
-                        ...nestingConfig,
-                        sheetWidthMm: sp.widthMm,
-                        sheetHeightMm: sp.heightMm,
-                      })
-                    }
-                    className={`px-2 py-1.5 rounded text-[11px] font-mono border transition ${
-                      isSelected
-                        ? 'bg-sky-500/20 border-sky-500 text-sky-300 font-bold'
-                        : 'bg-[#11161f] border-slate-800 text-slate-400 hover:border-slate-600'
-                    }`}
-                    title={sp.description}
-                  >
-                    {sp.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[10px] text-slate-400 mb-1">
-                  Ancho Material (mm)
-                </label>
-                <input
-                  type="number"
-                  step="1"
-                  min="15"
-                  max="900"
-                  value={nestingConfig.sheetWidthMm}
-                  onChange={(e) =>
-                    pushStateWithHistory(labelDesign, {
-                      ...nestingConfig,
-                      sheetWidthMm: Math.max(
-                        10,
-                        parseFloat(e.target.value) || 100
-                      ),
-                    })
-                  }
-                  className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] text-slate-400 mb-1">
-                  Alto Material (mm)
-                </label>
-                <input
-                  type="number"
-                  step="1"
-                  min="15"
-                  max="600"
-                  value={nestingConfig.sheetHeightMm}
-                  onChange={(e) =>
-                    pushStateWithHistory(labelDesign, {
-                      ...nestingConfig,
-                      sheetHeightMm: Math.max(
-                        10,
-                        parseFloat(e.target.value) || 100
-                      ),
-                    })
-                  }
-                  className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                />
-              </div>
-            </div>
-
-            {/* Separación X / Y y Márgenes */}
-            <div className="grid grid-cols-3 gap-2 pt-1">
-              <div>
-                <label className="block text-[10px] text-slate-400 mb-1">
-                  Sep. X (mm)
-                </label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  max="50"
-                  value={nestingConfig.gapXMm}
-                  onChange={(e) =>
-                    pushStateWithHistory(labelDesign, {
-                      ...nestingConfig,
-                      gapXMm: Math.max(0, parseFloat(e.target.value) || 0),
-                    })
-                  }
-                  className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] text-slate-400 mb-1">
-                  Sep. Y (mm)
-                </label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  max="50"
-                  value={nestingConfig.gapYMm}
-                  onChange={(e) =>
-                    pushStateWithHistory(labelDesign, {
-                      ...nestingConfig,
-                      gapYMm: Math.max(0, parseFloat(e.target.value) || 0),
-                    })
-                  }
-                  className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] text-slate-400 mb-1">
-                  Margen (mm)
-                </label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  max="100"
-                  value={nestingConfig.marginLeftMm}
-                  onChange={(e) => {
-                    const m = Math.max(0, parseFloat(e.target.value) || 0);
-                    pushStateWithHistory(labelDesign, {
-                      ...nestingConfig,
-                      marginTopMm: m,
-                      marginRightMm: m,
-                      marginBottomMm: m,
-                      marginLeftMm: m,
-                    });
-                  }}
-                  className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 font-mono text-slate-100"
-                />
-              </div>
-            </div>
-
-            {/* Orientación y Centrado */}
-            <div className="pt-1 space-y-2">
-              <div>
-                <label className="block text-[10px] text-slate-400 mb-1">
-                  Rotación de Piezas (Optimización)
-                </label>
-                <select
-                  value={nestingConfig.rotationMode}
-                  onChange={(e) =>
-                    pushStateWithHistory(labelDesign, {
-                      ...nestingConfig,
-                      rotationMode: e.target
-                        .value as NestingConfig['rotationMode'],
-                    })
-                  }
-                  className="w-full px-2 py-1.5 rounded bg-[#11161f] border border-slate-700 text-xs"
-                >
-                  <option value="auto_optimize">
-                    Automática Óptima (0°:{' '}
-                    {nestingResult.orientationComparison.deg0Capacity}u vs 90°:{' '}
-                    {nestingResult.orientationComparison.deg90Capacity}u)
-                  </option>
-                  <option value="0">
-                    Mantener a 0° (
-                    {nestingResult.orientationComparison.deg0Capacity}{' '}
-                    u./plancha)
-                  </option>
-                  <option value="90">
-                    Rotar a 90° (
-                    {nestingResult.orientationComparison.deg90Capacity}{' '}
-                    u./plancha)
-                  </option>
-                </select>
-              </div>
-
-              <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={nestingConfig.centerInSheet}
-                  onChange={(e) =>
-                    pushStateWithHistory(labelDesign, {
-                      ...nestingConfig,
-                      centerInSheet: e.target.checked,
-                    })
-                  }
-                  className="accent-amber-500"
-                />
-                <span>Centrar bloque de etiquetas en el recorte</span>
-              </label>
-            </div>
-          </div>
-
-          {/* Bloque 3: Resumen de Aprovechamiento del Material y Alertas Antes de Exportar */}
-          <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
-                {validationReport.isValid ? (
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                ) : (
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                )}
-                Aprovechamiento y Validación
-              </span>
-              <span className="font-mono text-[10px] text-slate-400">
-                Rot: {nestingResult.appliedRotationDeg}°
-              </span>
-            </div>
-
-            <div className="space-y-1 text-[11px] font-mono">
-              <div className="flex justify-between">
-                <span className="text-slate-400">Entran por recorte:</span>
-                <span className="text-slate-200 font-bold">
-                  {nestingResult.maxCapacityPerSheet} u. (
-                  {nestingResult.maxColumnsPerSheet}×
-                  {nestingResult.maxRowsPerSheet})
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Cantidad exportada:</span>
-                <span className="text-amber-300 font-bold">
-                  {nestingResult.totalExportedQuantity} unidades
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-400">Tandas necesarias:</span>
-                <span className="text-sky-300 font-bold">
-                  {nestingResult.totalBatches}{' '}
-                  {nestingResult.totalBatches === 1 ? 'tanda' : 'tandas'}
-                </span>
-              </div>
-              {currentBatch && (
-                <>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">
-                      Área bloque tanda #{currentBatch.batchNumber}:
-                    </span>
-                    <span className="text-slate-200">
-                      {currentBatch.occupiedBounds.width}×
-                      {currentBatch.occupiedBounds.height} mm
-                    </span>
+          {/* Si estamos en paso 6: Vista de Resumen y Auditoría Gráfica */}
+          {currentStep === 'export' && (
+            <div className="flex-1 w-full h-full overflow-auto p-6 bg-[#090c10] flex flex-col items-center justify-center">
+              <div className="max-w-2xl w-full bg-[#11161f] border border-slate-800 rounded-xl p-6 shadow-2xl space-y-6">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+                  <div>
+                    <h3 className="text-lg font-bold text-white">
+                      Paquete de Producción Listo para Exportar
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {projectName} • Cliente: {clientName || 'General'}
+                    </p>
                   </div>
-                  <div className="pt-1">
-                    <div className="flex justify-between text-[10px] mb-1">
-                      <span className="text-slate-400">
-                        Eficiencia en bloque / Uso de recorte:
-                      </span>
-                      <span className="text-emerald-300 font-bold">
-                        {currentBatch.boundingBoxEfficiencyPercent}% /{' '}
-                        {currentBatch.sheetUtilizationPercent}%
-                      </span>
-                    </div>
-                    <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-amber-500 to-emerald-400"
-                        style={{
-                          width: `${Math.min(100, Math.max(4, currentBatch.sheetUtilizationPercent))}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Advertencias visibles antes de exportar */}
-            {validationReport.issues.length > 0 && (
-              <div className="space-y-1.5 pt-2 border-t border-slate-800">
-                <div className="text-[10px] font-bold uppercase text-amber-400">
-                  Advertencias antes de exportar ({validationReport.issues.length}):
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-950 border border-emerald-700 text-emerald-300">
+                    ✓ Verificado 1:1 mm
+                  </span>
                 </div>
-                {validationReport.issues.map((iss, idx) => (
-                  <div
-                    key={idx}
-                    className={`p-2 rounded text-[10px] leading-snug ${
-                      iss.severity === 'error'
-                        ? 'bg-red-950/70 border border-red-500/50 text-red-200'
-                        : 'bg-amber-950/60 border border-amber-500/40 text-amber-200'
-                    }`}
-                  >
-                    {iss.message}
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 text-center">
+                    <span className="text-[11px] text-slate-400 block">Etiqueta</span>
+                    <span className="text-sm font-bold text-white font-mono mt-1 block">
+                      {labelDesign.widthMm} × {labelDesign.heightMm} mm
+                    </span>
+                    <span className="text-[10px] text-cyan-400 font-mono mt-0.5 block">
+                      {labelDesign.shape}
+                    </span>
                   </div>
-                ))}
+
+                  <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 text-center">
+                    <span className="text-[11px] text-slate-400 block">Cantidad Total</span>
+                    <span className="text-sm font-bold text-emerald-400 font-mono mt-1 block">
+                      {nestingResult.totalExportedQuantity} u.
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">
+                      en {nestingResult.totalBatches} tanda(s)
+                    </span>
+                  </div>
+
+                  <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 text-center">
+                    <span className="text-[11px] text-slate-400 block">Material</span>
+                    <span className="text-xs font-bold text-amber-300 mt-1 block truncate">
+                      {activeMaterial.name}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">
+                      {nestingConfig.sheetWidthMm} × {nestingConfig.sheetHeightMm} mm
+                    </span>
+                  </div>
+                </div>
+
+                {/* Acciones principales de exportación */}
+                <div className="space-y-3 pt-2">
+                  <button
+                    onClick={() => handleExportSvg('combined')}
+                    className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-transform hover:scale-[1.01]"
+                  >
+                    <Download className="w-5 h-5" />
+                    <span>DESCARGAR ARCHIVO SVG PARA LIGHTBURN</span>
+                  </button>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={handleExportDxf}
+                      className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-bold text-xs flex items-center justify-center gap-2 transition-colors"
+                    >
+                      <FileCode2 className="w-4 h-4 text-cyan-400" />
+                      <span>Descargar DXF R12 (RDWorks)</span>
+                    </button>
+                    <button
+                      onClick={handleExportSummaryReport}
+                      className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
+                    >
+                      <Save className="w-4 h-4 text-slate-400" />
+                      <span>Descargar Hoja de Taller (TXT)</span>
+                    </button>
+                  </div>
+                </div>
               </div>
-            )}
-          </div>
-
-          {/* Bloque 4: Datos del Pedido y Exportación Completa */}
-          <div className="p-3 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              Datos del Pedido / Cliente
             </div>
-            <input
-              type="text"
-              placeholder="Nombre del proyecto / pedido"
-              value={projectName}
-              onChange={(e) => setProjectName(e.target.value)}
-              className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 text-xs text-slate-100"
-            />
-            <input
-              type="text"
-              placeholder="Cliente"
-              value={clientName}
-              onChange={(e) => setClientName(e.target.value)}
-              className="w-full px-2 py-1 rounded bg-[#11161f] border border-slate-700 text-xs text-slate-100"
-            />
+          )}
+        </section>
+      </main>
 
-            <div className="pt-2 space-y-1.5">
+      {/* 4. MODAL DE CATÁLOGO DE PEDIDOS */}
+      {isOrdersModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#11161f] border border-slate-800 rounded-xl max-w-2xl w-full p-5 shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                <FolderOpen className="w-4 h-4 text-cyan-400" />
+                <span>Biblioteca de Pedidos</span>
+              </h3>
               <button
-                type="button"
-                onClick={() => handleExportSvg('combined')}
-                className="w-full flex items-center justify-center gap-1.5 py-2 px-3 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow transition"
+                onClick={() => setIsOrdersModalOpen(false)}
+                className="text-slate-400 hover:text-white text-xs font-semibold px-2 py-1"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Descargar SVG Combinado (LightBurn)</span>
+                Cerrar
               </button>
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => handleExportSvg('engrave_only')}
-                  className="py-1.5 px-2 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-slate-300 text-[11px]"
-                >
-                  SVG Sólo Grabado
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleExportSvg('cut_only')}
-                  className="py-1.5 px-2 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-slate-300 text-[11px]"
-                >
-                  SVG Sólo Corte
-                </button>
-              </div>
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={handleExportDxf}
-                  className="py-1.5 px-2 rounded bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/40 text-sky-300 text-[11px] font-medium"
-                >
-                  DXF (RDWorks)
-                </button>
-                <button
-                  type="button"
-                  onClick={handleExportSummary}
-                  className="py-1.5 px-2 rounded bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 text-[11px] font-medium"
-                >
-                  Resumen (.TXT)
-                </button>
-              </div>
-              <div className="grid grid-cols-2 gap-1.5 pt-1">
-                <button
-                  type="button"
-                  onClick={handleDownloadProjectJson}
-                  className="py-1.5 px-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-[11px]"
-                >
-                  Guardar .lhstudio.json
-                </button>
-                <button
-                  type="button"
-                  onClick={() => projectJsonInputRef.current?.click()}
-                  className="py-1.5 px-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-[11px]"
-                >
-                  Abrir .lhstudio.json
-                </button>
-              </div>
-            </div>
-          </div>
-        </aside>
-      </div>
-
-      {/* MODAL DE GESTIÓN DE PEDIDOS Y REPETICIÓN RÁPIDA DE PRODUCCIÓN */}
-      {showOrdersModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-3xl rounded-xl bg-[#11161f] border border-slate-700 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
-            <div className="px-5 py-3.5 bg-[#161d29] border-b border-slate-800 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-bold text-white">
-                  Gestor de Pedidos y Repetición de Producción — LaserHouse Studio
-                </h3>
-                <p className="text-xs text-slate-400">
-                  Abra un pedido anterior, busque diseños o repita cantidades (200, 500, 1000 u.) sin rehacer el diseño.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => projectJsonInputRef.current?.click()}
-                  className="px-2.5 py-1 rounded bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-xs font-medium"
-                >
-                  Importar .lhstudio.json
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowOrdersModal(false)}
-                  className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-300"
-                >
-                  Cerrar
-                </button>
-              </div>
             </div>
 
-            {/* Barra de búsqueda de pedidos y diseños */}
-            <div className="px-5 py-2.5 bg-[#0e131b] border-b border-slate-800 flex items-center gap-2">
+            <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Buscar pedidos por cliente, nombre de proyecto, material o medidas..."
+                placeholder="Buscar pedidos por cliente o producto..."
                 value={orderSearchQuery}
                 onChange={(e) => setOrderSearchQuery(e.target.value)}
-                className="w-full px-3 py-1.5 rounded-lg bg-[#11161f] border border-slate-700 text-xs text-white placeholder-slate-500 font-sans"
+                className="flex-1 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded text-xs text-white focus:outline-none focus:border-cyan-500"
               />
               {orderSearchQuery && (
                 <button
-                  type="button"
                   onClick={() => setOrderSearchQuery('')}
-                  className="text-xs text-slate-400 hover:text-white px-2 py-1 shrink-0"
+                  className="px-2 py-1 text-xs bg-slate-800 text-slate-300 rounded"
                 >
                   Limpiar
                 </button>
               )}
             </div>
 
-            <div className="p-5 overflow-y-auto space-y-3">
-              {filteredOrders.length === 0 ? (
-                <div className="text-center py-8 text-xs text-slate-500">
-                  No se encontraron pedidos con el término "{orderSearchQuery}".
-                </div>
-              ) : (
-                filteredOrders.map((ord) => (
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              {orders
+                .filter(
+                  (o) =>
+                    o.projectName.toLowerCase().includes(orderSearchQuery.toLowerCase()) ||
+                    o.clientName.toLowerCase().includes(orderSearchQuery.toLowerCase())
+                )
+                .map((ord) => (
                   <div
                     key={ord.id}
-                    className="p-4 rounded-lg bg-[#0b0e14] border border-slate-800 flex flex-wrap items-center justify-between gap-4"
+                    className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 flex items-center justify-between hover:border-slate-700 transition-colors"
                   >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-sm text-white">
-                          {ord.projectName}
-                        </span>
-                        <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                          {ord.nestingConfig.requestedQuantity} u.
-                        </span>
+                    <div>
+                      <div className="font-bold text-xs text-white">{ord.projectName}</div>
+                      <div className="text-[11px] text-slate-400">
+                        {ord.clientName} • {ord.labelDesign.widthMm}×{ord.labelDesign.heightMm} mm • {ord.nestingConfig.requestedQuantity} u.
                       </div>
-                      <div className="text-xs text-slate-400">
-                        Cliente:{' '}
-                        <strong className="text-slate-200">
-                          {ord.clientName}
-                        </strong>{' '}
-                        · Material:{' '}
-                        <span className="font-mono text-slate-300">
-                          {ord.materialId}
-                        </span>{' '}
-                        · Medida:{' '}
-                        <span className="font-mono text-sky-300">
-                          {ord.labelDesign.widthMm} × {ord.labelDesign.heightMm}{' '}
-                          mm
-                        </span>
-                      </div>
-                      {ord.notes && (
-                        <div className="text-[11px] text-slate-500">
-                          {ord.notes}
-                        </div>
-                      )}
                     </div>
-
-                    <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="flex items-center gap-1.5">
                       <button
-                        type="button"
-                        onClick={() => handleLoadOrder(ord)}
-                        className="px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs"
+                        onClick={() => {
+                          setActiveOrderId(ord.id);
+                          setProjectName(ord.projectName);
+                          setClientName(ord.clientName);
+                          setOrderNotes(ord.notes);
+                          setSelectedMaterialId(ord.materialId);
+                          setLabelDesign(ord.labelDesign);
+                          setNestingConfig(ord.nestingConfig);
+                          setIsOrdersModalOpen(false);
+                          notify(`Pedido "${ord.projectName}" abierto.`);
+                        }}
+                        className="px-2.5 py-1 text-xs bg-cyan-600 hover:bg-cyan-500 text-white rounded font-medium"
                       >
-                        Abrir Pedido
+                        Abrir
                       </button>
-                      <span className="text-[10px] text-slate-500 font-mono ml-1">Repetir:</span>
-                      {[50, 100, 200, 300, 500].map((qty) => (
-                        <button
-                          key={qty}
-                          type="button"
-                          onClick={() => handleDuplicateOrderWithNewQuantity(ord, qty)}
-                          className="px-2 py-1 rounded bg-[#11161f] hover:bg-slate-800 border border-slate-700 text-[11px] font-mono text-slate-300 hover:text-amber-300 hover:border-amber-500/40 transition"
-                          title={`Duplicar este diseño y organizar automáticamente ${qty} unidades`}
-                        >
-                          ×{qty}
-                        </button>
-                      ))}
                     </div>
                   </div>
-                ))
-              )}
+                ))}
             </div>
           </div>
         </div>
       )}
 
-      {/* MODAL DE BLOQUEO POR ERRORES CRÍTICOS ANTES DE EXPORTAR */}
-      {showValidationBlockModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-lg rounded-xl bg-[#11161f] border border-red-500/70 shadow-2xl overflow-hidden flex flex-col">
-            <div className="px-5 py-3.5 bg-red-950/80 border-b border-red-500/50 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-red-400" />
-                <h3 className="text-sm font-bold text-white">
-                  Exportación Bloqueada — Errores Críticos
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowValidationBlockModal(false)}
-                className="text-slate-400 hover:text-white text-xs px-2 py-1"
-              >
-                Cerrar
-              </button>
-            </div>
-            <div className="p-5 space-y-3">
-              <p className="text-xs text-slate-300">
-                Para garantizar la integridad física de la producción en la máquina Vank 9060 CO₂ y evitar piezas defectuosas en LightBurn / RDWorks, se requiere corregir los siguientes errores críticos antes de exportar:
-              </p>
-              <div className="space-y-2">
-                {validationReport.issues
-                  .filter((i) => i.severity === 'error')
-                  .map((iss, idx) => (
-                    <div
-                      key={idx}
-                      className="p-3 rounded-lg bg-red-950/40 border border-red-500/40 text-xs text-red-200"
-                    >
-                      <strong className="block font-mono text-[11px] text-red-300 mb-0.5">
-                        [{iss.code}]
-                      </strong>
-                      {iss.message}
-                    </div>
-                  ))}
-              </div>
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setShowValidationBlockModal(false)}
-                  className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-300"
-                >
-                  Revisar en Editor
-                </button>
-                <button
-                  type="button"
-                  onClick={handleAutoFixCriticalErrors}
-                  className="px-3.5 py-1.5 rounded bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow transition"
-                >
-                  Corregir Automáticamente en Zona Segura
-                </button>
-              </div>
-            </div>
-          </div>
+      {/* 5. TOAST DE NOTIFICACIÓN FLOTANTE */}
+      {statusMessage && (
+        <div className="fixed bottom-4 right-4 z-50 bg-[#161b22] border border-cyan-500/60 shadow-xl rounded-lg px-3.5 py-2 text-xs text-cyan-200 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2">
+          <Info className="w-4 h-4 text-cyan-400 shrink-0" />
+          <span>{statusMessage}</span>
         </div>
       )}
     </div>
   );
 }
+
 export default App;

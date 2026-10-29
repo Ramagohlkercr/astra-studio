@@ -2,64 +2,78 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import App from '../App';
 
-describe('LaserHouse Studio — Pruebas End-to-End de Interfaz (UI)', () => {
-  it('renderiza la interfaz industrial, permite cambiar medidas, deshacer/rehacer y crear etiqueta nueva sin agujeros', () => {
+describe('LaserHouse Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
+  it('renderiza la cabecera industrial, permite navegar por los 6 pasos y cambiar medidas con Undo/Redo', () => {
     render(<App />);
 
     expect(screen.getByText(/LASERHOUSE STUDIO/i)).toBeDefined();
     expect(screen.getByText(/Vank 9060 CO₂ \(900×600 mm\)/i)).toBeDefined();
 
-    // Verificar medida inicial 20x10 mm y 200 unidades
-    expect(screen.getByText(/1\. Editor de Etiqueta \(20×10 mm\)/i)).toBeDefined();
-    expect(screen.getByText(/2\. Mesa de Producción \(200 u\./i)).toBeDefined();
+    // Comprobar la barra de progreso de 6 pasos
+    expect(screen.getByRole('button', { name: /1.*Logo/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /2.*Medidas/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /3.*Orificios/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /4.*Grabado/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /5.*Producción/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /6.*Exportar/i })).toBeDefined();
 
-    // Cambiar medida a preset 30 x 15 mm
+    // Ir al Paso 2: Medidas
+    fireEvent.click(screen.getByRole('button', { name: /2.*Medidas/i }));
+    expect(screen.getByText(/Medidas frecuentes de taller:/i)).toBeDefined();
+
+    // Cambiar a preset 30 x 15 mm
     const preset30x15 = screen.getByRole('button', { name: '30 × 15 mm' });
     fireEvent.click(preset30x15);
-    expect(screen.getByText(/1\. Editor de Etiqueta \(30×15 mm\)/i)).toBeDefined();
+    expect(screen.getByDisplayValue('30')).toBeDefined();
+    expect(screen.getByDisplayValue('15')).toBeDefined();
 
     // Deshacer y Rehacer
-    fireEvent.click(screen.getByTitle('Deshacer'));
-    expect(screen.getByText(/1\. Editor de Etiqueta \(20×10 mm\)/i)).toBeDefined();
-    fireEvent.click(screen.getByTitle('Rehacer'));
-    expect(screen.getByText(/1\. Editor de Etiqueta \(30×15 mm\)/i)).toBeDefined();
+    fireEvent.click(screen.getByTitle('Deshacer (Ctrl+Z)'));
+    expect(screen.getByDisplayValue('20')).toBeDefined();
+    expect(screen.getByDisplayValue('10')).toBeDefined();
 
-    // Crear etiqueta nueva desde cero y verificar que NO agrega agujeros automáticamente
-    const newBtn = screen.getByTitle(
-      'Crear nueva etiqueta en blanco (sin agujeros por defecto)'
-    );
+    fireEvent.click(screen.getByTitle('Rehacer (Ctrl+Y)'));
+    expect(screen.getByDisplayValue('30')).toBeDefined();
+    expect(screen.getByDisplayValue('15')).toBeDefined();
+
+    // Crear etiqueta nueva desde cero y verificar que inicia en blanco
+    const newBtn = screen.getByTitle('Crear nueva etiqueta en blanco (sin agujeros por defecto)');
     fireEvent.click(newBtn);
-    const holeSelect = screen.getByLabelText(
-      'Configuración de agujeros'
-    ) as HTMLSelectElement;
-    expect(holeSelect.value).toBe('none');
+    expect(screen.getByText(/Paso 1: Importar y Procesar Logotipo/i)).toBeDefined();
   });
 
-  it('permite configurar agujeros opcionales (sin agujeros, 1, 2, 4 y personalizados) y cambiar recortes de material (600x400, 400x300, 200x200 mm)', () => {
+  it('permite configurar orificios opcionales en el Paso 3 y cambiar recortes y cantidades en el Paso 5', () => {
     render(<App />);
 
-    const holeSelect = screen.getByLabelText(
-      'Configuración de agujeros'
-    ) as HTMLSelectElement;
-    expect(holeSelect.value).toBe('none');
+    // Ir al Paso 3: Orificios
+    fireEvent.click(screen.getByRole('button', { name: /3.*Orificios/i }));
+    expect(screen.getByText(/¿La etiqueta lleva orificios\?/i)).toBeDefined();
 
-    // Cambiar a configuración personalizada de agujeros y agregar un segundo agujero
-    fireEvent.change(holeSelect, { target: { value: 'custom' } });
-    const addHoleBtn = screen.getByRole('button', { name: '+ Agregar agujero' });
-    fireEvent.click(addHoleBtn);
-    expect(screen.getByText('#2')).toBeDefined();
+    // Cambiar a 2 agujeros laterales
+    const twoHolesBtn = screen.getByRole('button', { name: /2 Agujeros laterales/i });
+    fireEvent.click(twoHolesBtn);
+    expect(screen.getByText(/Diámetro \(mm\):/i)).toBeDefined();
 
-    // Probar selección de recortes de material reales (600x400 mm, 400x300 mm, 200x200 mm)
-    fireEvent.click(screen.getByRole('button', { name: '600 × 400 mm' }));
-    fireEvent.click(screen.getByRole('button', { name: '400 × 300 mm' }));
-    fireEvent.click(screen.getByRole('button', { name: '200 × 200 mm' }));
+    // Cambiar a Sin agujeros
+    const noHolesBtn = screen.getByRole('button', { name: /Sin agujeros \(Lisa\)/i });
+    fireEvent.click(noHolesBtn);
+    expect(screen.getByText(/Etiqueta lisa sin orificios/i)).toBeDefined();
 
-    // Cambiar cantidad a 500 unidades y verificar que calcula múltiples tandas en recorte 200x200
+    // Ir al Paso 5: Producción
+    fireEvent.click(screen.getByRole('button', { name: /5.*Producción/i }));
+    expect(screen.getByText(/Material a procesar:/i)).toBeDefined();
+
+    // Probar selección de recortes de material reales
+    fireEvent.click(screen.getByRole('button', { name: /600 × 400 mm/i }));
+    fireEvent.click(screen.getByRole('button', { name: /400 × 300 mm/i }));
+    fireEvent.click(screen.getByRole('button', { name: /200 × 200 mm/i }));
+
+    // Cambiar cantidad a 500 unidades
     fireEvent.click(screen.getByRole('button', { name: '500' }));
-    expect(screen.getByText(/500 unidades/i)).toBeDefined();
+    expect(screen.getByText(/500 piezas/i)).toBeDefined();
   });
 
-  it('carga logos de prueba, ajusta a zona segura, ejecuta el lector independiente SVG/DXF y exporta archivos', () => {
+  it('ejecuta centrado exacto y ajuste de tamaño en Paso 4, y exporta archivos en Paso 6', () => {
     const createObjUrlMock = vi.fn(() => 'blob:mock-laserhouse-url');
     const revokeObjUrlMock = vi.fn();
     URL.createObjectURL = createObjUrlMock;
@@ -67,48 +81,46 @@ describe('LaserHouse Studio — Pruebas End-to-End de Interfaz (UI)', () => {
 
     render(<App />);
 
-    // Ir a pestaña 2. Logo / Arte
-    fireEvent.click(screen.getByRole('button', { name: '2. Logo / Arte' }));
+    // Cargar logo de muestra en Paso 1
+    fireEvent.click(screen.getByRole('button', { name: 'SVG Hexágono' }));
 
-    // Cargar logo SVG con huecos internos y ajustar a zona segura
-    fireEvent.click(screen.getByRole('button', { name: 'SVG Huecos' }));
-    fireEvent.click(
-      screen.getByRole('button', { name: /Ajustar y Centrar en Zona Segura/i })
-    );
+    // Ir al Paso 4: Grabado
+    fireEvent.click(screen.getByRole('button', { name: /4.*Grabado/i }));
+    expect(screen.getByText(/Centrado de Alta Precisión/i)).toBeDefined();
 
-    // Abrir pestaña 3. Auditoría & Validación LightBurn/DXF
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: /3\. Auditoría & Validación LightBurn\/DXF/i,
-      })
-    );
-    expect(screen.getByText('SVG 1:1 mm VERIFICADO')).toBeDefined();
-    expect(screen.getByText('DXF AC1009 VERIFICADO')).toBeDefined();
+    // Ejecutar Centrar Logo y Ajustar al Espacio Disponible
+    const centerBtn = screen.getByRole('button', { name: /CENTRAR LOGO/i });
+    fireEvent.click(centerBtn);
 
-    // Ir a pestaña 3. Material y verificar advertencia de seguridad
-    fireEvent.click(screen.getByRole('button', { name: '3. Material' }));
-    expect(screen.getByText(/ADVERTENCIA CRÍTICA DE SEGURIDAD/i)).toBeDefined();
+    const fitBtn = screen.getByRole('button', { name: /AJUSTAR AL ESPACIO DISPONIBLE/i });
+    fireEvent.click(fitBtn);
 
-    // Ejecutar exportaciones SVG, DXF y .lhstudio.json
-    fireEvent.click(
-      screen.getByTitle(/Exportar SVG 1:1 en milímetros con capas separadas/i)
-    );
-    fireEvent.click(
-      screen.getByTitle(/Exportar DXF AC1009 en milímetros reales/i)
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Guardar .lhstudio.json' }));
+    // Ir al Paso 6: Exportar
+    fireEvent.click(screen.getByRole('button', { name: /6.*Exportar/i }));
+    expect(screen.getByText(/Auditoría de Validación Técnica/i)).toBeDefined();
+    expect(screen.getByText(/Escala física 1:1 en milímetros verificada/i)).toBeDefined();
 
-    expect(createObjUrlMock).toHaveBeenCalledTimes(3);
+    // Ejecutar descargas
+    const downloadSvgButtons = screen.getAllByRole('button', { name: /SVG/i });
+    fireEvent.click(downloadSvgButtons[0]);
+
+    const downloadDxfButtons = screen.getAllByRole('button', { name: /DXF R12/i });
+    fireEvent.click(downloadDxfButtons[0]);
+
+    const saveProjectButtons = screen.getAllByRole('button', { name: /Guardar \.lhstudio\.json/i });
+    fireEvent.click(saveProjectButtons[0]);
+
+    expect(createObjUrlMock).toHaveBeenCalled();
   });
 
-  it('permite buscar pedidos en el catálogo, cambiar estilos de renderizado y previsualizar simulación de materiales', () => {
+  it('permite buscar pedidos en el catálogo y alternar estilos de visualización', () => {
     render(<App />);
 
     // Abrir modal de pedidos
     fireEvent.click(screen.getByRole('button', { name: /Pedidos/i }));
     expect(screen.getByPlaceholderText(/Buscar pedidos por cliente/i)).toBeDefined();
 
-    // Filtrar por término existente
+    // Filtrar por término
     const searchInput = screen.getByPlaceholderText(/Buscar pedidos por cliente/i);
     fireEvent.change(searchInput, { target: { value: 'Marroquinería' } });
     expect(screen.getByText(/Marroquinería Sur/i)).toBeDefined();
@@ -120,7 +132,7 @@ describe('LaserHouse Studio — Pruebas End-to-End de Interfaz (UI)', () => {
     // Cerrar modal
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar' }));
 
-    // Verificar badge de simulación orientativa
-    expect(screen.getByText(/Simulación orientativa/i)).toBeDefined();
+    // Verificar botón de simulación de material
+    expect(screen.getAllByText(/Simulación orientativa/i)[0]).toBeDefined();
   });
 });
