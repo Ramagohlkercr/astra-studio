@@ -123,15 +123,15 @@ const WIZARD_STEPS: WizardStepDef[] = [
     id: 'logo',
     number: 1,
     label: 'Logo',
-    title: 'Paso 1: Importar y Procesar Logotipo',
+    title: 'Tu logotipo',
     subtitle:
-      'Carga el logotipo de tu cliente (PNG, JPG o SVG). Se detectan los límites visibles reales ignorando márgenes transparentes.',
+      'Cargá un PNG, JPG o SVG para empezar a diseñar tu etiqueta.',
   },
   {
     id: 'dimensions',
     number: 2,
     label: 'Medidas',
-    title: 'Paso 2: Medidas y Forma de la Etiqueta',
+    title: 'Medidas y forma',
     subtitle:
       'Define las dimensiones físicas reales (mm) y la forma geométrica. El logo se adapta sin deformarse.',
   },
@@ -139,7 +139,7 @@ const WIZARD_STEPS: WizardStepDef[] = [
     id: 'holes',
     number: 3,
     label: 'Orificios',
-    title: 'Paso 3: Orificios para Costura o Sujeción',
+    title: 'Orificios de sujeción',
     subtitle:
       'Indicá si la etiqueta lleva orificios de fijación. Sin agujeros por defecto para una superficie limpia.',
   },
@@ -147,25 +147,25 @@ const WIZARD_STEPS: WizardStepDef[] = [
     id: 'engraving',
     number: 4,
     label: 'Grabado',
-    title: 'Paso 4: Centrado y Tamaño del Grabado',
+    title: 'Ajustar el grabado',
     subtitle:
-      'Alineación geométrica exacta con el centro físico de la etiqueta, ajuste proporcional a zona segura y micromovimiento.',
+      'Ajustá el tamaño, la posición y la orientación del logo sobre la etiqueta.',
   },
   {
     id: 'production',
     number: 5,
     label: 'Producción',
-    title: 'Paso 5: Material y Distribución en Plancha',
+    title: 'Preparar la producción',
     subtitle:
-      'Selecciona el material, cantidad requerida (50 a 500u) y recorte para calcular el anidado óptimo en la Vank 9060.',
+      'Elegí el material, la cantidad y el tamaño de plancha.',
   },
   {
     id: 'export',
     number: 6,
     label: 'Exportar',
-    title: 'Paso 6: Revisión y Exportación Final',
+    title: 'Revisar y exportar',
     subtitle:
-      'Auditoría matemática independiente y descarga de archivos técnicos para LightBurn (SVG 1:1) y RDWorks (DXF R12).',
+      'Revisá el pedido y descargá los archivos para tu software de corte.',
   },
 ];
 
@@ -1110,20 +1110,14 @@ export function App() {
   // ==========================================
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#090c10] text-slate-100 font-sans select-none overflow-hidden">
+    <div className="studio-shell flex flex-col h-screen w-screen bg-[#090c10] text-slate-100 font-sans select-none overflow-hidden">
       {/* 1. TOP HEADER INDUSTRIAL */}
-      <header className="h-13 bg-[#11161f] border-b border-slate-800 flex items-center justify-between px-4 z-20 shrink-0">
+      <header className="studio-header h-13 bg-[#11161f] border-b border-slate-800 flex items-center justify-between px-4 z-20 shrink-0">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-cyan-400 shadow-[0_0_8px_#06b6d4]"></span>
-            <h1 className="font-bold text-sm tracking-wide text-white uppercase flex items-center gap-1.5">
-              <span>LASERHOUSE STUDIO</span>
-              <span className="text-[10px] text-cyan-400 bg-cyan-950/70 border border-cyan-800/80 px-1.5 py-0.5 rounded font-mono">
-                CAD/CAM Láser
-              </span>
-              <span className="text-[10px] text-slate-400 font-mono hidden md:inline ml-1">
-                Vank 9060 CO₂ (900×600 mm)
-              </span>
+            <span className="studio-brand-mark"></span>
+            <h1 className="studio-brand font-semibold text-white flex items-center gap-1.5">
+              <span>LaserHouse Studio</span>
             </h1>
           </div>
           <span className="text-slate-600">|</span>
@@ -1209,7 +1203,7 @@ export function App() {
       </header>
 
       {/* 2. BARRA DE PROGRESO DEL ASISTENTE DE 6 PASOS */}
-      <nav aria-label="Progreso del asistente" className="h-11 bg-[#0d1117] border-b border-slate-800/90 flex items-center justify-between px-4 z-10 shrink-0">
+      <nav aria-label="Progreso del asistente" className="studio-steps h-11 bg-[#0d1117] border-b border-slate-800/90 flex items-center justify-between px-4 z-10 shrink-0">
         <div className="flex items-center gap-1 w-full max-w-5xl">
           {WIZARD_STEPS.map((step, idx) => {
             const isActive = currentStep === step.id;
@@ -1217,6 +1211,7 @@ export function App() {
             return (
               <React.Fragment key={step.id}>
                 <button
+                  aria-current={isActive ? 'step' : undefined}
                   onClick={() => setCurrentStep(step.id)}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                     isActive
@@ -1262,12 +1257,12 @@ export function App() {
       </nav>
 
       {/* 3. CONTENEDOR CENTRAL DEL ASISTENTE */}
-      <main className="flex-1 flex overflow-hidden">
+      <main className="studio-main flex-1 flex overflow-hidden">
         {/* PANEL LATERAL DE CONTROLES DEL PASO ACTIVO (Ancho ~400px) */}
-        <aside aria-label="Controles del paso actual" className="w-105 min-w-[360px] max-w-[440px] bg-[#0d1117] border-r border-slate-800 flex flex-col justify-between shrink-0 overflow-y-auto">
-          <div className="p-4 space-y-4">
+        <aside aria-label="Controles del paso actual" className="studio-sidebar w-105 min-w-[360px] max-w-[440px] bg-[#0d1117] border-r border-slate-800 flex flex-col justify-between shrink-0 overflow-y-auto">
+          <div className="studio-controls p-4 space-y-4" key={currentStep}>
             {/* Cabecera del paso */}
-            <div className="border-b border-slate-800/80 pb-3">
+            <div className="studio-step-heading border-b border-slate-800/80 pb-3">
               <span className="text-[10px] font-bold tracking-wider uppercase text-cyan-400 font-mono">
                 Paso {WIZARD_STEPS[currentStepIndex].number} de 6
               </span>
@@ -2040,34 +2035,16 @@ export function App() {
             {/* CONTENIDO ESPECÍFICO DEL PASO 5: PRODUCCIÓN */}
             {currentStep === 'production' && (
               <div className="space-y-4 text-xs">
-                {/* Selector de Material */}
-                <div>
-                  <span className="text-slate-400 font-semibold block mb-1.5">
-                    Material a procesar:
-                  </span>
-                  <div className="space-y-1.5">
-                    {materials.map((mat) => (
-                      <button
-                        key={mat.id}
-                        onClick={() => setSelectedMaterialId(mat.id)}
-                        className={`w-full p-2.5 rounded-lg border text-left flex items-center justify-between transition-all ${
-                          selectedMaterialId === mat.id
-                            ? 'bg-cyan-500/15 border-cyan-500 text-white font-bold'
-                            : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
-                        }`}
-                      >
-                        <div>
-                          <div className="text-xs">{mat.name}</div>
-                          <div className="text-[10px] text-slate-400 font-normal">
-                            Espesor {mat.thicknessMm} mm • {mat.category}
-                          </div>
-                        </div>
-                        <span
-                          className="w-3.5 h-3.5 rounded-full border border-slate-600"
-                          style={{ backgroundColor: mat.visual.surfaceColor }}
-                        ></span>
-                      </button>
-                    ))}
+                <div className="studio-material">
+                  <label htmlFor="production-material" className="block text-slate-300 font-semibold mb-2">Material</label>
+                  <select id="production-material" value={selectedMaterialId}
+                    onChange={(e) => setSelectedMaterialId(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded text-slate-200">
+                    {materials.map((mat) => <option key={mat.id} value={mat.id}>{mat.name}</option>)}
+                  </select>
+                  <div className="flex items-center gap-2 mt-2 text-slate-400">
+                    <span className="w-3 h-3 rounded-full border border-slate-600" style={{ backgroundColor: activeMaterial.visual.surfaceColor }} />
+                    Espesor {activeMaterial.thicknessMm} mm
                   </div>
                 </div>
 
@@ -2383,7 +2360,7 @@ export function App() {
           </div>
 
           {/* BOTONERA DE NAVEGACIÓN INFERIOR (ATRÁS / CONTINUAR) */}
-          <div className="p-3 bg-[#11161f] border-t border-slate-800 flex items-center justify-between shrink-0">
+          <div className="studio-step-footer p-3 bg-[#11161f] border-t border-slate-800 flex items-center justify-between shrink-0">
             <button
               onClick={handleGoPrev}
               disabled={currentStepIndex === 0}
@@ -2405,7 +2382,7 @@ export function App() {
         </aside>
 
         {/* ÁREA DE VISUALIZACIÓN PRINCIPAL (GRAN LIENZO EN VIVO) */}
-        <section aria-label="Visualizador del diseño y mesa de corte" className="flex-1 flex flex-col bg-[#090c10] relative overflow-hidden">
+        <section aria-label="Visualizador del diseño y mesa de corte" className="studio-workspace flex-1 flex flex-col bg-[#090c10] relative overflow-hidden">
           {/* Si estamos en paso 1, 2, 3 o 4: Mostrar el Canvas de Etiqueta */}
           {['logo', 'dimensions', 'holes', 'engraving'].includes(currentStep) && (
             <div className="flex-1 w-full h-full relative">

@@ -72,45 +72,45 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
       : null;
 
   return (
-    <div className="flex flex-col w-full h-full bg-[#090c10]">
+    <div className="production-preview flex flex-col w-full h-full bg-[#090c10]">
       {/* Barra de controles de Vista de Producción */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-[#11161f] border-b border-slate-800 text-xs">
+      <div className="production-toolbar flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-[#11161f] border-b border-slate-800 text-xs">
         <div className="flex items-center gap-2">
           <span className="font-semibold text-slate-300 uppercase tracking-wider">
-            Encuadre Mesa:
+            Vista
           </span>
           <button
             type="button"
             onClick={() => setCameraMode('focus_occupied')}
             className={`px-2.5 py-1 rounded font-medium transition ${
               cameraMode === 'focus_occupied'
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
+                ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/40'
                 : 'bg-slate-800/70 text-slate-400 hover:text-slate-200'
             }`}
           >
-            Enfocar Lote ({batch ? `${batch.occupiedBounds.width}×${batch.occupiedBounds.height} mm` : '0'})
+            Lote
           </button>
           <button
             type="button"
             onClick={() => setCameraMode('full_sheet')}
             className={`px-2.5 py-1 rounded font-medium transition ${
               cameraMode === 'full_sheet'
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
+                ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/40'
                 : 'bg-slate-800/70 text-slate-400 hover:text-slate-200'
             }`}
           >
-            Material ({nesting.config.sheetWidthMm}×{nesting.config.sheetHeightMm} mm)
+            Plancha
           </button>
           <button
             type="button"
             onClick={() => setCameraMode('full_machine')}
             className={`px-2.5 py-1 rounded font-medium transition ${
               cameraMode === 'full_machine'
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
+                ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/40'
                 : 'bg-slate-800/70 text-slate-400 hover:text-slate-200'
             }`}
           >
-            Mesa Vank 9060 ({nesting.config.machineBedWidthMm}×{nesting.config.machineBedHeightMm} mm)
+            Mesa completa
           </button>
         </div>
 
@@ -171,7 +171,7 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
       </div>
 
       {/* Lienzo Vectorial de Mesa de Producción */}
-      <div className="relative flex-1 flex items-center justify-center overflow-hidden p-3">
+      <div className="relative min-h-0 flex-1 flex items-center justify-center overflow-hidden p-3">
         <svg
           className="w-full h-full max-h-full rounded border border-slate-800 bg-[#0b0f17]"
           viewBox={`${vbMinX} ${vbMinY} ${vbWidth} ${vbHeight}`}
@@ -346,11 +346,11 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
                 x={batch.occupiedBounds.minX}
                 y={batch.occupiedBounds.minY - 1.5}
                 fill="#38bdf8"
-                fontSize={Math.max(2.2, vbWidth * 0.014)}
+                fontSize={Math.max(2.2, vbWidth * 0.011)}
                 fontFamily="monospace"
                 fontWeight="bold"
               >
-                Bloque Tanda #{batch.batchNumber}: {batch.occupiedBounds.width} ×{' '}
+                Tanda {batch.batchNumber} · {batch.occupiedBounds.width} ×{' '}
                 {batch.occupiedBounds.height} mm ({batch.count} u. | {batch.columnsUsed} col ×{' '}
                 {batch.rowsUsed} filas | Sep: {nesting.config.gapXMm}×{nesting.config.gapYMm} mm)
               </text>
@@ -360,7 +360,7 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
       </div>
 
       {/* Inspector inferior de pieza bajo el cursor y estado de validación */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-[#11161f] border-t border-slate-800 text-xs shrink-0">
+      <div className="production-status flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-[#11161f] border-t border-slate-800 text-xs shrink-0">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
             <span
@@ -370,7 +370,7 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
             />
             <span className="font-semibold text-slate-200">
               {validation.isValid
-                ? 'Geometría Verificada 1:1 mm (Listo para LightBurn / RDWorks)'
+                ? 'Geometría verificada · Escala 1:1'
                 : 'Atención: Revisar advertencias geométricas'}
             </span>
           </div>
@@ -394,7 +394,7 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
             </span>
           ) : (
             <span className="text-slate-500">
-              Pase el cursor sobre cualquier etiqueta para inspeccionar su coordenada exacta en mm
+              Pasá sobre una etiqueta para ver su posición.
             </span>
           )}
         </div>

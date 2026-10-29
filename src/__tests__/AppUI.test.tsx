@@ -7,7 +7,7 @@ describe('LaserHouse Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
     render(<App />);
 
     expect(screen.getByText(/LASERHOUSE STUDIO/i)).toBeDefined();
-    expect(screen.getByText(/Vank 9060 CO₂ \(900×600 mm\)/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: /1.*Logo/i }).getAttribute('aria-current')).toBe('step');
 
     // Comprobar la barra de progreso de 6 pasos
     expect(screen.getByRole('button', { name: /1.*Logo/i })).toBeDefined();
@@ -39,7 +39,7 @@ describe('LaserHouse Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
     // Crear etiqueta nueva desde cero y verificar que inicia en blanco
     const newBtn = screen.getByTitle('Crear nueva etiqueta en blanco (sin agujeros por defecto)');
     fireEvent.click(newBtn);
-    expect(screen.getByText(/Paso 1: Importar y Procesar Logotipo/i)).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Tu logotipo' })).toBeDefined();
   });
 
   it('permite configurar orificios opcionales en el Paso 3 y cambiar recortes y cantidades en el Paso 5', () => {
@@ -61,7 +61,7 @@ describe('LaserHouse Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
 
     // Ir al Paso 5: Producción
     fireEvent.click(screen.getByRole('button', { name: /5.*Producción/i }));
-    expect(screen.getByText(/Material a procesar:/i)).toBeDefined();
+    expect(screen.getByRole('combobox', { name: 'Material' })).toBeDefined();
 
     // Probar selección de recortes de material reales
     fireEvent.click(screen.getByRole('button', { name: /600 × 400 mm/i }));

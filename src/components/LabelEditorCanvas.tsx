@@ -279,7 +279,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
           {isTechnical ? 'Modo Técnico LightBurn' : material.name}
         </span>
         <span className="text-[10px] text-slate-400 font-mono">
-          {!isTechnical && '· Simulación orientativa (Exportación vectorial 1:1)'}
+          {!isTechnical && '· Vista de material'}
         </span>
       </div>
 
@@ -288,7 +288,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
         width={displayWidthPx}
         height={displayHeightPx}
         viewBox={`${viewMinX} ${viewMinY} ${viewWidthMm} ${viewHeightMm}`}
-        className="shadow-2xl rounded border border-slate-800/80 bg-[#0d1219]"
+        className="editor-artboard shadow-2xl rounded border border-slate-800/80 bg-[#0d1219]"
       >
         <defs>
           <pattern
