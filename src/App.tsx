@@ -50,14 +50,18 @@ import { exportProductionSvg, SvgExportMode } from './core/exporters/svgExporter
 import {
   centerAllElementsGeometrically,
   centerElementGeometrically,
+  checkElementsFitSafeZone,
   compileLabelGeometry,
   computeSafeEngravingZone,
+  DimensionUnit,
   fitAllElementsToAvailableSpace,
   fitElementIntoSafeZone,
   fitElementToAvailableSpace,
+  formatDimensionValue,
   getElementNormalizedContentBounds,
   getElementVisibleBoundingBoxMm,
   nudgeElementMm,
+  parseDimensionValue,
   roundMm,
   validateLabelAndBatchGeometry,
 } from './core/geometry/geometryEngine';
@@ -216,6 +220,32 @@ export function App() {
   const [isOrdersModalOpen, setIsOrdersModalOpen] = useState<boolean>(false);
   const [orderSearchQuery, setOrderSearchQuery] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  // Unidad de visualización de medidas (mm o cm) - Las medidas se almacenan internamente siempre en mm
+  const [dimensionUnit, setDimensionUnit] = useState<DimensionUnit>('mm');
+  const [inputWidthStr, setInputWidthStr] = useState<string>(() =>
+    formatDimensionValue(initialOrder.labelDesign.widthMm, 'mm')
+  );
+  const [inputHeightStr, setInputHeightStr] = useState<string>(() =>
+    formatDimensionValue(initialOrder.labelDesign.heightMm, 'mm')
+  );
+
+  // Sincronizar inputs locales con el estado del diseño respetando la edición del usuario
+  useEffect(() => {
+    const parsedW = parseDimensionValue(inputWidthStr, dimensionUnit);
+    if (!parsedW.valid || Math.abs(parsedW.valueMm - labelDesign.widthMm) > 0.001) {
+      setInputWidthStr(formatDimensionValue(labelDesign.widthMm, dimensionUnit));
+    }
+    const parsedH = parseDimensionValue(inputHeightStr, dimensionUnit);
+    if (!parsedH.valid || Math.abs(parsedH.valueMm - labelDesign.heightMm) > 0.001) {
+      setInputHeightStr(formatDimensionValue(labelDesign.heightMm, dimensionUnit));
+    }
+  }, [labelDesign.widthMm, labelDesign.heightMm, dimensionUnit]);
+
+  // Chequeo de área segura para el diseño actual
+  const safeZoneCheck = useMemo(() => {
+    return checkElementsFitSafeZone(labelDesign.elements, labelDesign);
+  }, [labelDesign]);
 
   // Acordeón de opciones avanzadas
   const [showAdvancedProduction, setShowAdvancedProduction] = useState<boolean>(false);
@@ -567,42 +597,75 @@ export function App() {
   // PASO 2: FORMA Y MEDIDAS DE LA ETIQUETA
   // ==========================================
 
-  const handleApplyDimensionPreset = (w: number, h: number) => {
-    const updated: LabelDesign = {
-      ...labelDesign,
-      widthMm: w,
-      heightMm: h,
-    };
-    // Re-adaptar elementos proporcionalmente para que no queden fuera de la nueva etiqueta
-    const adaptedElements = fitAllElementsToAvailableSpace(
-      labelDesign.elements,
-      updated,
-      0.85
-    );
-    pushStateWithHistory({
-      ...updated,
-      elements: adaptedElements,
-    });
-    notify(`Medida actualizada a ${w} × ${h} mm.`);
-  };
+  const applyDimensionUpdate = (wMm: number, hMm: number) => {
+    const safeW = roundMm(Math.max(1, Math.min(900, wMm)), 3);
+    const safeH = roundMm(Math.max(1, Math.min(600, hMm)), 3);
 
-  const handleUpdateLabelDimensions = (w: number, h: number) => {
-    const safeW = Math.max(5, Math.min(600, w));
-    const safeH = Math.max(5, Math.min(400, h));
     const updated: LabelDesign = {
       ...labelDesign,
       widthMm: safeW,
       heightMm: safeH,
     };
-    const adaptedElements = fitAllElementsToAvailableSpace(
+
+    // Centrar los elementos geométricamente manteniendo intacto tamaño y relación de aspecto
+    const centeredElements = centerAllElementsGeometrically(
       labelDesign.elements,
       updated,
-      0.85
+      'label_center'
     );
+
     pushStateWithHistory({
       ...updated,
+      elements: centeredElements,
+    });
+  };
+
+  const handleApplyDimensionPreset = (w: number, h: number) => {
+    applyDimensionUpdate(w, h);
+    notify(`Medida actualizada a ${w} × ${h} mm.`);
+  };
+
+  const handleWidthInputChange = (val: string) => {
+    setInputWidthStr(val);
+    const parsed = parseDimensionValue(val, dimensionUnit);
+    if (parsed.valid) {
+      applyDimensionUpdate(parsed.valueMm, labelDesign.heightMm);
+    }
+  };
+
+  const handleWidthInputBlur = () => {
+    const parsed = parseDimensionValue(inputWidthStr, dimensionUnit);
+    if (!parsed.valid) {
+      setInputWidthStr(formatDimensionValue(labelDesign.widthMm, dimensionUnit));
+    }
+  };
+
+  const handleHeightInputChange = (val: string) => {
+    setInputHeightStr(val);
+    const parsed = parseDimensionValue(val, dimensionUnit);
+    if (parsed.valid) {
+      applyDimensionUpdate(labelDesign.widthMm, parsed.valueMm);
+    }
+  };
+
+  const handleHeightInputBlur = () => {
+    const parsed = parseDimensionValue(inputHeightStr, dimensionUnit);
+    if (!parsed.valid) {
+      setInputHeightStr(formatDimensionValue(labelDesign.heightMm, dimensionUnit));
+    }
+  };
+
+  const handleFitLogoToSafeZone = () => {
+    const adaptedElements = fitAllElementsToAvailableSpace(
+      labelDesign.elements,
+      labelDesign,
+      0.88
+    );
+    pushStateWithHistory({
+      ...labelDesign,
       elements: adaptedElements,
     });
+    notify('Diseño ajustado proporcionalmente al área segura.');
   };
 
   const handleUpdateLabelShape = (shape: LabelShapeType) => {
@@ -610,14 +673,14 @@ export function App() {
       ...labelDesign,
       shape,
     };
-    const adaptedElements = fitAllElementsToAvailableSpace(
+    const centeredElements = centerAllElementsGeometrically(
       labelDesign.elements,
       updated,
-      0.85
+      'label_center'
     );
     pushStateWithHistory({
       ...updated,
-      elements: adaptedElements,
+      elements: centeredElements,
     });
     notify(`Forma cambiada a ${shape}.`);
   };
@@ -1412,59 +1475,158 @@ export function App() {
             {/* CONTENIDO ESPECÍFICO DEL PASO 2: MEDIDAS Y FORMA */}
             {currentStep === 'dimensions' && (
               <div className="space-y-4 text-xs">
+                {/* Selector de unidad mm / cm */}
+                <div className="flex items-center justify-between bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
+                  <span className="text-slate-300 font-semibold text-xs">Unidad de medida:</span>
+                  <div className="flex gap-1 bg-slate-950 p-1 rounded border border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setDimensionUnit('mm')}
+                      className={`px-3 py-1 rounded text-xs font-semibold transition-all ${
+                        dimensionUnit === 'mm'
+                          ? 'bg-cyan-500 text-slate-950 shadow-sm font-bold'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Milímetros (mm)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDimensionUnit('cm')}
+                      className={`px-3 py-1 rounded text-xs font-semibold transition-all ${
+                        dimensionUnit === 'cm'
+                          ? 'bg-cyan-500 text-slate-950 shadow-sm font-bold'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Centímetros (cm)
+                    </button>
+                  </div>
+                </div>
+
                 {/* Presets frecuentes de taller */}
                 <div>
-                  <span className="text-slate-400 font-semibold block mb-1.5">
-                    Medidas frecuentes de taller:
-                  </span>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-slate-400 font-semibold">
+                      Medidas frecuentes de taller:
+                    </span>
+                    {STANDARD_DIMENSION_PRESETS.some(
+                      (p) =>
+                        Math.abs(p.widthMm - labelDesign.widthMm) < 0.05 &&
+                        Math.abs(p.heightMm - labelDesign.heightMm) < 0.05
+                    ) ? (
+                      <span className="text-[10px] text-cyan-400 font-mono">Preset sugerido</span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                        Personalizada
+                      </span>
+                    )}
+                  </div>
                   <div className="grid grid-cols-3 gap-1.5">
-                    {STANDARD_DIMENSION_PRESETS.map((p) => (
-                      <button
-                        key={p.label}
-                        onClick={() => handleApplyDimensionPreset(p.widthMm, p.heightMm)}
-                        className={`px-2 py-1.5 rounded font-mono text-[11px] border transition-all ${
-                          labelDesign.widthMm === p.widthMm && labelDesign.heightMm === p.heightMm
-                            ? 'bg-cyan-500 text-slate-950 font-bold border-cyan-400'
-                            : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700'
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
+                    {STANDARD_DIMENSION_PRESETS.map((p) => {
+                      const isSelected =
+                        Math.abs(labelDesign.widthMm - p.widthMm) < 0.05 &&
+                        Math.abs(labelDesign.heightMm - p.heightMm) < 0.05;
+                      return (
+                        <button
+                          key={p.label}
+                          type="button"
+                          onClick={() => handleApplyDimensionPreset(p.widthMm, p.heightMm)}
+                          className={`px-2 py-1.5 rounded font-mono text-[11px] border transition-all ${
+                            isSelected
+                              ? 'bg-cyan-500 text-slate-950 font-bold border-cyan-400 shadow-sm'
+                              : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700'
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
                 {/* Dimensiones físicas personalizadas */}
-                <div className="grid grid-cols-2 gap-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
-                  <div>
-                    <label className="text-slate-400 block mb-1">Ancho físico (mm):</label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="5"
-                      max="600"
-                      value={labelDesign.widthMm}
-                      onChange={(e) =>
-                        handleUpdateLabelDimensions(Number(e.target.value), labelDesign.heightMm)
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 px-2.5 py-1.5 rounded text-white font-mono text-xs focus:border-cyan-500"
-                    />
+                <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between text-slate-300 font-semibold">
+                    <span>Medidas personalizadas:</span>
+                    <span className="text-[11px] text-cyan-400 font-mono font-bold">
+                      {labelDesign.widthMm} × {labelDesign.heightMm} mm
+                      {` (${roundMm(labelDesign.widthMm / 10, 2)} × ${roundMm(labelDesign.heightMm / 10, 2)} cm)`}
+                    </span>
                   </div>
-                  <div>
-                    <label className="text-slate-400 block mb-1">Alto físico (mm):</label>
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="5"
-                      max="400"
-                      value={labelDesign.heightMm}
-                      onChange={(e) =>
-                        handleUpdateLabelDimensions(labelDesign.widthMm, Number(e.target.value))
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 px-2.5 py-1.5 rounded text-white font-mono text-xs focus:border-cyan-500"
-                    />
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="text-slate-400 text-xs">
+                          Ancho ({dimensionUnit}):
+                        </label>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {dimensionUnit === 'cm'
+                            ? `${labelDesign.widthMm} mm`
+                            : `${roundMm(labelDesign.widthMm / 10, 2)} cm`}
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={inputWidthStr}
+                        onChange={(e) => handleWidthInputChange(e.target.value)}
+                        onBlur={handleWidthInputBlur}
+                        placeholder={dimensionUnit === 'cm' ? '4' : '40'}
+                        className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 px-2.5 py-1.5 rounded text-white font-mono text-xs outline-none"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="text-slate-400 text-xs">
+                          Alto ({dimensionUnit}):
+                        </label>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {dimensionUnit === 'cm'
+                            ? `${labelDesign.heightMm} mm`
+                            : `${roundMm(labelDesign.heightMm / 10, 2)} cm`}
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={inputHeightStr}
+                        onChange={(e) => handleHeightInputChange(e.target.value)}
+                        onBlur={handleHeightInputBlur}
+                        placeholder={dimensionUnit === 'cm' ? '2' : '20'}
+                        className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 px-2.5 py-1.5 rounded text-white font-mono text-xs outline-none"
+                      />
+                    </div>
                   </div>
+
+                  <p className="text-[10px] text-slate-400 leading-tight">
+                    * Acepta coma o punto decimal libremente (ej. 4 × 2 cm = 40 × 20 mm, 3,5 × 1,5 cm = 35 × 15 mm).
+                  </p>
                 </div>
+
+                {/* Alerta visible si el logo excede la nueva zona segura */}
+                {!safeZoneCheck.fits && (
+                  <div className="bg-amber-500/10 border border-amber-500/30 p-2.5 rounded-lg flex flex-col gap-2">
+                    <div className="flex items-start gap-2 text-amber-300 text-xs font-semibold">
+                      <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                      <div>
+                        <span>El diseño excede el área segura para {labelDesign.widthMm} × {labelDesign.heightMm} mm.</span>
+                        <p className="text-[11px] text-amber-300/80 font-normal mt-0.5">
+                          El logo se mantiene centrado con su escala original. Podés adaptarlo automáticamente:
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleFitLogoToSafeZone}
+                      className="px-2.5 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-xs rounded border border-amber-500/40 font-semibold transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Ajustar logo al área disponible con 1 clic
+                    </button>
+                  </div>
+                )}
 
                 {/* Selector de Forma */}
                 <div>

@@ -135,4 +135,46 @@ describe('LaserHouse Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
     // Verificar botón de simulación de material
     expect(screen.getAllByText(/Simulación orientativa/i)[0]).toBeDefined();
   });
+
+  it('permite ingresar libremente medidas personalizadas en mm y cm, aceptando coma decimal sin bloqueo', () => {
+    render(<App />);
+
+    // Ir al Paso 2: Medidas
+    fireEvent.click(screen.getByRole('button', { name: /2.*Medidas/i }));
+    expect(screen.getByText(/Unidad de medida:/i)).toBeDefined();
+
+    // Ingresar medida 40 x 20 mm manualmente
+    const widthInput = screen.getByPlaceholderText('40');
+    const heightInput = screen.getByPlaceholderText('20');
+
+    fireEvent.change(widthInput, { target: { value: '40' } });
+    fireEvent.change(heightInput, { target: { value: '20' } });
+
+    expect(screen.getAllByText(/40 × 20 mm/i).length).toBeGreaterThan(0);
+
+    // Alternar a Centímetros (cm)
+    const cmButton = screen.getByRole('button', { name: /Centímetros \(cm\)/i });
+    fireEvent.click(cmButton);
+
+    // En modo cm debe mostrar 4 y 2
+    expect(screen.getByDisplayValue('4')).toBeDefined();
+    expect(screen.getByDisplayValue('2')).toBeDefined();
+
+    // Ingresar medidas con coma decimal en cm (3,5 × 1,5 cm)
+    const widthInputCm = screen.getByDisplayValue('4');
+    const heightInputCm = screen.getByDisplayValue('2');
+
+    fireEvent.change(widthInputCm, { target: { value: '3,5' } });
+    fireEvent.change(heightInputCm, { target: { value: '1,5' } });
+
+    // Debe actualizarse internamente a 35 × 15 mm
+    expect(screen.getAllByText(/35 × 15 mm/i).length).toBeGreaterThan(0);
+
+    // Alternar de vuelta a Milímetros (mm)
+    const mmButton = screen.getByRole('button', { name: /Milímetros \(mm\)/i });
+    fireEvent.click(mmButton);
+
+    expect(screen.getByDisplayValue('35')).toBeDefined();
+    expect(screen.getByDisplayValue('15')).toBeDefined();
+  });
 });

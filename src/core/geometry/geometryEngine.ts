@@ -1805,3 +1805,137 @@ export function validateLabelAndBatchGeometry(
     issues,
   };
 }
+
+// ============================================================================
+// PARSEO, CONVERSIÓN Y VALIDACIÓN DE MEDIDAS PERSONALIZADAS (MM / CM)
+// ============================================================================
+
+export type DimensionUnit = 'mm' | 'cm';
+
+export interface DimensionParseResult {
+  valid: boolean;
+  valueMm: Millimeters;
+  error?: string;
+}
+
+/**
+ * Parsea y valida una medida introducida por el operador en milímetros o centímetros.
+ * Admite de manera indistinta coma (,) o punto (.) como separador decimal.
+ * Internamente convierte todo a milímetros exactos redondeados.
+ */
+export function parseDimensionValue(
+  rawInput: string | number,
+  unit: DimensionUnit,
+  maxAllowedMm = 900
+): DimensionParseResult {
+  if (typeof rawInput === 'number') {
+    if (!Number.isFinite(rawInput) || rawInput <= 0) {
+      return { valid: false, valueMm: 0, error: 'La medida debe ser un número positivo mayor a 0.' };
+    }
+    const valMm = roundMm(unit === 'cm' ? rawInput * 10 : rawInput, 3);
+    if (valMm < 1) {
+      return { valid: false, valueMm: 0, error: 'La medida mínima de fabricación es 1 mm (0.1 cm).' };
+    }
+    if (valMm > maxAllowedMm) {
+      return {
+        valid: false,
+        valueMm: 0,
+        error: `La medida no puede superar el área máxima útil (${maxAllowedMm} mm).`,
+      };
+    }
+    return { valid: true, valueMm: valMm };
+  }
+
+  if (typeof rawInput !== 'string') {
+    return { valid: false, valueMm: 0, error: 'Valor inválido.' };
+  }
+
+  const cleaned = rawInput.trim();
+  if (!cleaned) {
+    return { valid: false, valueMm: 0, error: 'El campo no puede estar vacío.' };
+  }
+
+  // Soporte universal para coma o punto decimal
+  const normalized = cleaned.replace(',', '.');
+
+  if (!/^\d+(\.\d+)?$/.test(normalized)) {
+    return {
+      valid: false,
+      valueMm: 0,
+      error: 'Formato inválido. Use números enteros o decimales (ej. 4, 3,5 o 2.75).',
+    };
+  }
+
+  const num = parseFloat(normalized);
+  if (!Number.isFinite(num) || num <= 0) {
+    return { valid: false, valueMm: 0, error: 'La medida debe ser mayor a 0.' };
+  }
+
+  const valMm = roundMm(unit === 'cm' ? num * 10 : num, 3);
+  if (valMm < 1) {
+    return { valid: false, valueMm: 0, error: 'La medida mínima de fabricación es 1 mm (0.1 cm).' };
+  }
+  if (valMm > maxAllowedMm) {
+    return {
+      valid: false,
+      valueMm: 0,
+      error: `La medida excede el área máxima de trabajo permitida (${maxAllowedMm} mm).`,
+    };
+  }
+
+  return { valid: true, valueMm: valMm };
+}
+
+/**
+ * Formatea un valor en milímetros para visualización en los inputs según la unidad activa.
+ */
+export function formatDimensionValue(valMm: Millimeters, unit: DimensionUnit): string {
+  if (!Number.isFinite(valMm) || valMm <= 0) return '0';
+  const displayVal = unit === 'cm' ? roundMm(valMm / 10, 3) : roundMm(valMm, 3);
+  return String(displayVal);
+}
+
+/**
+ * Verifica si los elementos gráficos visibles caben dentro del área segura de grabado
+ * para las dimensiones y geometría actuales de la etiqueta.
+ */
+export function checkElementsFitSafeZone(
+  elements: LabelElement[],
+  design: LabelDesign
+): {
+  fits: boolean;
+  overflowingElements: string[];
+  safeZone: BoundingBox;
+  groupBoundingBox: BoundingBox;
+} {
+  const visibleEls = elements.filter((e) => e.visible);
+  const safeZone = computeSafeEngravingZone(design);
+  const groupBoundingBox = computeGroupVisibleBoundingBox(elements);
+
+  if (visibleEls.length === 0) {
+    return { fits: true, overflowingElements: [], safeZone, groupBoundingBox };
+  }
+
+  const overflowingElements: string[] = [];
+  const tolerance = 0.05; // 50 micrones de tolerancia
+
+  for (const el of visibleEls) {
+    const box = getElementVisibleBoundingBoxMm(el);
+    if (
+      box.minX < safeZone.minX - tolerance ||
+      box.maxX > safeZone.maxX + tolerance ||
+      box.minY < safeZone.minY - tolerance ||
+      box.maxY > safeZone.maxY + tolerance
+    ) {
+      overflowingElements.push(el.id);
+    }
+  }
+
+  return {
+    fits: overflowingElements.length === 0,
+    overflowingElements,
+    safeZone,
+    groupBoundingBox,
+  };
+}
+

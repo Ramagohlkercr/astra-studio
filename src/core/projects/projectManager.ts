@@ -76,6 +76,30 @@ export const STANDARD_DIMENSION_PRESETS: DimensionPreset[] = [
     recommendedShape: 'rounded_rect',
     recommendedCornerRadiusMm: 2.0,
   },
+  {
+    id: '40x20',
+    label: '40 × 20 mm (4×2 cm)',
+    widthMm: 40,
+    heightMm: 20,
+    recommendedShape: 'rounded_rect',
+    recommendedCornerRadiusMm: 2.0,
+  },
+  {
+    id: '50x25',
+    label: '50 × 25 mm',
+    widthMm: 50,
+    heightMm: 25,
+    recommendedShape: 'rounded_rect',
+    recommendedCornerRadiusMm: 2.5,
+  },
+  {
+    id: '60x40',
+    label: '60 × 40 mm (6×4 cm)',
+    widthMm: 60,
+    heightMm: 40,
+    recommendedShape: 'rounded_rect',
+    recommendedCornerRadiusMm: 3.0,
+  },
 ];
 
 export const MATERIAL_SHEET_PRESETS: SheetSizePreset[] = [
