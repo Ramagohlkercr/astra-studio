@@ -437,7 +437,7 @@ export function loadOrdersFromStorage(): OrderProject[] {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
+      return parsed.map(item => deserializeOrderProjectFromJson(JSON.stringify(item)));
     }
     return createInitialOrdersCatalog();
   } catch {
@@ -445,15 +445,17 @@ export function loadOrdersFromStorage(): OrderProject[] {
   }
 }
 
-export function saveOrdersToStorage(orders: OrderProject[]): void {
+export function saveOrdersToStorage(orders: OrderProject[]): boolean {
   try {
     const storage = (globalThis as { localStorage?: MinimalStorage }).localStorage;
     if (storage) {
       storage.setItem(STORAGE_KEY, JSON.stringify(orders));
+      return true;
     }
   } catch {
-    // Ignorar errores de cuota en entornos restringidos
+    return false;
   }
+  return false;
 }
 
 export function upsertOrderProject(
@@ -470,7 +472,7 @@ export function upsertOrderProject(
     idx >= 0
       ? orders.map((o, i) => (i === idx ? orderWithTimestamp : o))
       : [orderWithTimestamp, ...orders];
-  saveOrdersToStorage(next);
+  if (!saveOrdersToStorage(next)) throw new Error('No se pudo guardar el catálogo local (almacenamiento no disponible o cuota excedida).');
   return next;
 }
 
@@ -496,7 +498,8 @@ export function serializeOrderProjectToJson(order: OrderProject): string {
  */
 export function deserializeOrderProjectFromJson(jsonString: string): OrderProject {
   const parsed = JSON.parse(jsonString);
-  const candidate: OrderProject = parsed.order ? parsed.order : parsed;
+  if (parsed?.schemaVersion && parsed.schemaVersion !== '1.0.0') throw new Error('Versión de proyecto no compatible.');
+  const candidate: OrderProject = parsed?.order ? parsed.order : parsed;
 
   if (
     !candidate ||
@@ -512,6 +515,20 @@ export function deserializeOrderProjectFromJson(jsonString: string): OrderProjec
     );
   }
 
+  const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
+  const d = candidate.labelDesign;
+  const n = candidate.nestingConfig;
+  if (!finite(d.widthMm) || !finite(d.heightMm) || !Array.isArray(d.elements) ||
+      !['rectangle','square','rounded_rect','circle','oval','capsule','octagon_tag','custom_polygon'].includes(d.shape) ||
+      !finite(n.sheetWidthMm) || !finite(n.sheetHeightMm) || n.sheetWidthMm <= 0 || n.sheetHeightMm <= 0 ||
+      !finite(n.requestedQuantity) || n.requestedQuantity < 1 ||
+      (d.holes?.customHoles !== undefined && !Array.isArray(d.holes.customHoles)) ||
+      d.elements.some(el => !el || !['logo_svg','logo_raster','vector_text','decorative_border'].includes(el.type) || !finite(el.xMm) || !finite(el.yMm) || !finite(el.widthMm) || !finite(el.heightMm) || el.widthMm <= 0 || el.heightMm <= 0 || !finite(el.rotationDeg) ||
+        (el.type === 'logo_svg' && (!Array.isArray(el.normalizedPaths) || !el.originalViewBox || !finite(el.originalViewBox.width) || el.originalViewBox.width <= 0 || !finite(el.originalViewBox.height) || el.originalViewBox.height <= 0)) ||
+        (el.type === 'logo_raster' && (!el.processing || !Array.isArray(el.vectorizedPathsNormalized) || typeof el.originalDataUrl !== 'string')))) {
+    throw new Error('El proyecto contiene geometría o estructura inválida.');
+  }
+
   return {
     ...candidate,
     labelDesign: {
@@ -519,7 +536,7 @@ export function deserializeOrderProjectFromJson(jsonString: string): OrderProjec
       widthMm: roundMm(candidate.labelDesign.widthMm, 4),
       heightMm: roundMm(candidate.labelDesign.heightMm, 4),
       cornerRadiusMm: roundMm(candidate.labelDesign.cornerRadiusMm || 0, 4),
-      safetyMarginMm: roundMm(candidate.labelDesign.safetyMarginMm || 1.2, 4),
+      safetyMarginMm: roundMm(candidate.labelDesign.safetyMarginMm ?? 1.2, 4),
       kerfCompensationMm: roundMm(candidate.labelDesign.kerfCompensationMm || 0, 4),
       holes: {
         preset: candidate.labelDesign.holes?.preset || 'none',

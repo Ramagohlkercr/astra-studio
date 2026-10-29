@@ -1,4 +1,4 @@
-import { compileLabelGeometry, roundMm } from '../geometry/geometryEngine';
+import { assertProductionGeometry, compileLabelGeometry, roundMm } from '../geometry/geometryEngine';
 import {
   LabelDesign,
   LIGHTBURN_LAYERS,
@@ -34,6 +34,11 @@ export function exportProductionDxf(
   nesting: NestingResult,
   batchIndex = 0
 ): DxfExportArtifact {
+  if (design.elements.some(el => el.visible && el.type === 'logo_raster' &&
+    (el.processing.mode !== 'vector' || el.vectorizedPathsNormalized.length === 0))) {
+    throw new Error('DXF R12 no admite grabado raster. Exporte SVG o vectorice el logo antes de exportar DXF.');
+  }
+  assertProductionGeometry(design, nesting, batchIndex);
   const batch = nesting.batches[batchIndex] || nesting.batches[0];
   const sheetW = roundMm(nesting.config.sheetWidthMm);
   const sheetH = roundMm(nesting.config.sheetHeightMm);

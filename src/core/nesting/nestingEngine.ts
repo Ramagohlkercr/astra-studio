@@ -61,6 +61,16 @@ export function computeNestingLayout(
   const warnings: string[] = [];
   const errors: string[] = [];
 
+  const positive = [label.widthMm, label.heightMm, config.sheetWidthMm, config.sheetHeightMm, config.machineBedWidthMm, config.machineBedHeightMm];
+  const nonnegative = [config.gapXMm, config.gapYMm, config.marginTopMm, config.marginRightMm, config.marginBottomMm, config.marginLeftMm, label.kerfCompensationMm];
+  if (positive.some(n => !Number.isFinite(n) || n <= 0) || nonnegative.some(n => !Number.isFinite(n) || n < 0) ||
+      !Number.isSafeInteger(config.requestedQuantity) || config.requestedQuantity < 1 || config.requestedQuantity > 100000) {
+    return {config, appliedRotationDeg:0, pieceWidthMm:0, pieceHeightMm:0, maxColumnsPerSheet:0, maxRowsPerSheet:0,
+      maxCapacityPerSheet:0,totalRequestedQuantity:config.requestedQuantity,totalExportedQuantity:0,totalBatches:0,batches:[],
+      orientationComparison:{deg0Capacity:0,deg0Cols:0,deg0Rows:0,deg90Capacity:0,deg90Cols:0,deg90Rows:0},warnings,
+      errors:['Configuración inválida: dimensiones positivas finitas, márgenes y separaciones no negativos y cantidad entera de 1 a 100000.']};
+  }
+
   const requestedQty = Math.max(1, Math.floor(config.requestedQuantity || 1));
   const kerf = Math.max(0, label.kerfCompensationMm || 0);
 
@@ -214,8 +224,8 @@ export function computeNestingLayout(
         indexInBatch: i,
         row,
         col,
-        xMm,
-        yMm,
+        xMm: roundMm(xMm + kerf / 2),
+        yMm: roundMm(yMm + kerf / 2),
         widthMm: pieceW,
         heightMm: pieceH,
         rotated90,

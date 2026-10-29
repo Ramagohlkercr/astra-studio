@@ -82,7 +82,9 @@ export function buildShapeClosedContour(params: {
     widthMm: w,
     heightMm: h,
   } = params;
-  const segs = params.arcSegmentsPerQuarter ?? 12;
+  const maxRadius = Math.max(w, h) / 2;
+  const adaptiveQuarter = Math.ceil((Math.PI / 2) / (2 * Math.acos(Math.max(-1, 1 - 0.005 / Math.max(0.005, maxRadius)))));
+  const segs = params.arcSegmentsPerQuarter ?? Math.max(12, Math.min(4096, adaptiveQuarter));
 
   if (shape === 'rectangle' || shape === 'square') {
     const pts: Point2D[] = [
@@ -196,7 +198,7 @@ export function buildShapeClosedContour(params: {
   }
 
   if (shape === 'circle' || shape === 'oval') {
-    const rx = roundMm(w / 2);
+    const rx = roundMm((shape === 'circle' ? Math.min(w, h) : w) / 2);
     const ry = shape === 'circle' ? roundMm(Math.min(w, h) / 2) : roundMm(h / 2);
     const cx = roundMm(x0 + w / 2);
     const cy = roundMm(y0 + h / 2);
@@ -406,7 +408,7 @@ export function buildCircularHoleContour(params: {
   const r = roundMm(effectiveDiameter / 2);
   const cx = roundMm(params.centerXMm);
   const cy = roundMm(params.centerYMm);
-  const segs = params.segments ?? 24;
+  const segs = params.segments ?? Math.max(24, Math.ceil(Math.PI / Math.acos(Math.max(-1, 1 - 0.005 / Math.max(0.005, r)))));
 
   const pts: Point2D[] = [];
   for (let i = 0; i < segs; i++) {
@@ -527,6 +529,8 @@ function sampleSvgArcPoints(
     dTheta += 2 * Math.PI;
   }
 
+  const chordSteps = Math.ceil(Math.abs(dTheta) / (2 * Math.acos(Math.max(-1, 1 - 0.002 / Math.max(0.002, rx, ry)))));
+  segments = Math.min(8192, Math.max(segments, chordSteps));
   const pts: Point2D[] = [];
   for (let i = 1; i <= segments; i++) {
     const t = i / segments;
@@ -601,6 +605,8 @@ export function transformNormalizedPathToMillimeters(
     activeSubpathClosed = false;
   };
 
+  let previousCurve = '';
+  let controlX = 0, controlY = 0;
   let i = 0;
   let currentCmd = 'M';
   let curX = origBox.minX;
@@ -646,7 +652,7 @@ export function transformNormalizedPathToMillimeters(
         // Coordenadas subsiguientes tras M se tratan como L/l según especificación SVG
         currentCmd = isRel ? 'l' : 'L';
       }
-    } else if (upper === 'L' || upper === 'T') {
+    } else if (upper === 'L') {
       const xVal = readNum();
       const yVal = readNum();
       if (Number.isFinite(xVal) && Number.isFinite(yVal)) {
@@ -675,37 +681,40 @@ export function transformNormalizedPathToMillimeters(
         activeSubpath.push(pt);
         outTokens.push(`L ${pt.x} ${pt.y}`);
       }
-    } else if (upper === 'C') {
-      const x1 = readNum();
-      const y1 = readNum();
-      const x2 = readNum();
-      const y2 = readNum();
-      const x = readNum();
-      const y = readNum();
-      if ([x1, y1, x2, y2, x, y].every(Number.isFinite)) {
-        const p1 = mapPoint(isRel ? curX + x1 : x1, isRel ? curY + y1 : y1);
-        const p2 = mapPoint(isRel ? curX + x2 : x2, isRel ? curY + y2 : y2);
-        curX = isRel ? curX + x : x;
-        curY = isRel ? curY + y : y;
-        const p = mapPoint(curX, curY);
-        sampledPoints.push(p1, p2, p);
-        activeSubpath.push(p1, p2, p);
-        outTokens.push(`C ${p1.x} ${p1.y} ${p2.x} ${p2.y} ${p.x} ${p.y}`);
+    } else if (['C', 'S', 'Q', 'T'].includes(upper)) {
+      const startX = curX, startY = curY;
+      const absolutePair = (): [number, number] => {
+        const x = readNum(), y = readNum();
+        return [isRel ? startX + x : x, isRel ? startY + y : y];
+      };
+      let c1x: number, c1y: number, c2x = 0, c2y = 0, endX: number, endY: number;
+      if (upper === 'C') {
+        [c1x, c1y] = absolutePair(); [c2x, c2y] = absolutePair(); [endX, endY] = absolutePair();
+      } else if (upper === 'S') {
+        c1x = ['C', 'S'].includes(previousCurve) ? 2 * startX - controlX : startX;
+        c1y = ['C', 'S'].includes(previousCurve) ? 2 * startY - controlY : startY;
+        [c2x, c2y] = absolutePair(); [endX, endY] = absolutePair();
+      } else if (upper === 'Q') {
+        [c1x, c1y] = absolutePair(); [endX, endY] = absolutePair();
+      } else {
+        c1x = ['Q', 'T'].includes(previousCurve) ? 2 * startX - controlX : startX;
+        c1y = ['Q', 'T'].includes(previousCurve) ? 2 * startY - controlY : startY;
+        [endX, endY] = absolutePair();
       }
-    } else if (upper === 'Q' || upper === 'S') {
-      const x1 = readNum();
-      const y1 = readNum();
-      const x = readNum();
-      const y = readNum();
-      if ([x1, y1, x, y].every(Number.isFinite)) {
-        const p1 = mapPoint(isRel ? curX + x1 : x1, isRel ? curY + y1 : y1);
-        curX = isRel ? curX + x : x;
-        curY = isRel ? curY + y : y;
-        const p = mapPoint(curX, curY);
-        sampledPoints.push(p1, p);
-        activeSubpath.push(p1, p);
-        outTokens.push(`${upper} ${p1.x} ${p1.y} ${p.x} ${p.y}`);
+      if (![c1x, c1y, c2x, c2y, endX, endY].every(Number.isFinite)) throw new Error('Trazado SVG incompleto.');
+      const cubic = upper === 'C' || upper === 'S';
+      // Both SVG and DXF use the same sampled curve, never the control polygon.
+      const length = Math.hypot((c1x-startX)*scaleX,(c1y-startY)*scaleY) +
+        (cubic ? Math.hypot((c2x-c1x)*scaleX,(c2y-c1y)*scaleY) + Math.hypot((endX-c2x)*scaleX,(endY-c2y)*scaleY) : Math.hypot((endX-c1x)*scaleX,(endY-c1y)*scaleY));
+      const steps = Math.min(4096, Math.max(32, Math.ceil(length / 0.1)));
+      for (let step = 1; step <= steps; step++) {
+        const t = step / steps, u = 1-t;
+        const x = cubic ? u*u*u*startX + 3*u*u*t*c1x + 3*u*t*t*c2x + t*t*t*endX : u*u*startX + 2*u*t*c1x + t*t*endX;
+        const y = cubic ? u*u*u*startY + 3*u*u*t*c1y + 3*u*t*t*c2y + t*t*t*endY : u*u*startY + 2*u*t*c1y + t*t*endY;
+        const p = mapPoint(x,y); sampledPoints.push(p); activeSubpath.push(p); outTokens.push(`L ${p.x} ${p.y}`);
       }
+      controlX = cubic ? c2x : c1x; controlY = cubic ? c2y : c1y;
+      curX = endX; curY = endY;
     } else if (upper === 'A') {
       const rx = readNum();
       const ry = readNum();
@@ -741,6 +750,7 @@ export function transformNormalizedPathToMillimeters(
     } else {
       i++;
     }
+    previousCurve = upper;
   }
   flushSubpath(activeSubpathClosed);
 
@@ -770,8 +780,8 @@ export function computeSafeEngravingZone(design: LabelDesign): BoundingBox {
 
   // Para etiquetas circulares u ovaladas, inscribir un rectángulo seguro dentro de la elipse interior
   if (design.shape === 'circle' || design.shape === 'oval') {
-    const rx = Math.max(1, design.widthMm / 2 - margin);
-    const ry = Math.max(1, design.heightMm / 2 - margin);
+    const rx = Math.max(0.001, (design.shape === 'circle' ? Math.min(design.widthMm, design.heightMm) : design.widthMm) / 2 - margin);
+    const ry = Math.max(0.001, (design.shape === 'circle' ? Math.min(design.widthMm, design.heightMm) : design.heightMm) / 2 - margin);
     // Rectángulo inscrito geométrico exacto a 45° (cos 45° = 1 / sqrt(2) ≈ 0.7071)
     const factor = 0.7071;
     const cx = design.widthMm / 2;
@@ -841,42 +851,14 @@ export function getElementNormalizedContentBounds(el: LabelElement): ContentBoun
   }
 
   if (el.type === 'logo_svg') {
-    let bx0 = Infinity,
-      by0 = Infinity,
-      bx1 = -Infinity,
-      by1 = -Infinity;
-    const allNums = el.normalizedPaths
-      .join(' ')
-      .match(/[-+]?(?:\d+\.?\d*|\.\d+)/g)
-      ?.map(Number)
-      .filter(Number.isFinite);
-
-    const vb = el.originalViewBox;
-    if (allNums && allNums.length >= 4 && vb.width > 0 && vb.height > 0) {
-      for (let i = 0; i + 1 < allNums.length; i += 2) {
-        const vx = allNums[i];
-        const vy = allNums[i + 1];
-        if (vx < bx0) bx0 = vx;
-        if (vx > bx1) bx1 = vx;
-        if (vy < by0) by0 = vy;
-        if (vy > by1) by1 = vy;
-      }
-      if (bx1 > bx0 && by1 > by0) {
-        const normMinX = Math.max(0, Math.min(1, (bx0 - vb.minX) / vb.width));
-        const normMinY = Math.max(0, Math.min(1, (by0 - vb.minY) / vb.height));
-        const normMaxX = Math.max(normMinX, Math.min(1, (bx1 - vb.minX) / vb.width));
-        const normMaxY = Math.max(normMinY, Math.min(1, (by1 - vb.minY) / vb.height));
-        return {
-          minX: roundMm(normMinX, 5),
-          minY: roundMm(normMinY, 5),
-          maxX: roundMm(normMaxX, 5),
-          maxY: roundMm(normMaxY, 5),
-          width: Math.max(0.001, roundMm(normMaxX - normMinX, 5)),
-          height: Math.max(0.001, roundMm(normMaxY - normMinY, 5)),
-          centerNormX: roundMm((normMinX + normMaxX) / 2, 5),
-          centerNormY: roundMm((normMinY + normMaxY) / 2, 5),
-        };
-      }
+    const points = el.normalizedPaths.flatMap(path => transformNormalizedPathToMillimeters(
+      path, el.originalViewBox, 0.5, 0.5, 1, 1
+    ).sampledPoints);
+    if (points.length) {
+      const b = computeBoundingBox(points);
+      return { minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY,
+        width: Math.max(0.001,b.width), height: Math.max(0.001,b.height),
+        centerNormX: (b.minX+b.maxX)/2, centerNormY: (b.minY+b.maxY)/2 };
     }
   }
 
@@ -897,20 +879,20 @@ export function getElementNormalizedContentBounds(el: LabelElement): ContentBoun
  * ignorando márgenes transparentes o espacios vacíos del lienzo original.
  */
 export function getElementVisibleBoundingBoxMm(el: LabelElement): BoundingBox {
+  if (el.type === 'vector_text' || el.type === 'decorative_border') {
+    const compiled = compileDesignElement(el);
+    if (compiled) return compiled.boundingBox;
+  }
   const norm = getElementNormalizedContentBounds(el);
-  const visW = roundMm(el.widthMm * norm.width, 3);
-  const visH = roundMm(el.heightMm * norm.height, 3);
-  const visCx = roundMm(el.xMm + (norm.centerNormX - 0.5) * el.widthMm, 3);
-  const visCy = roundMm(el.yMm + (norm.centerNormY - 0.5) * el.heightMm, 3);
-
-  return {
-    minX: roundMm(visCx - visW / 2, 3),
-    minY: roundMm(visCy - visH / 2, 3),
-    maxX: roundMm(visCx + visW / 2, 3),
-    maxY: roundMm(visCy + visH / 2, 3),
-    width: visW,
-    height: visH,
-  };
+  const angle = el.rotationDeg * Math.PI / 180;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  return computeBoundingBox([
+    [norm.minX, norm.minY], [norm.maxX, norm.minY],
+    [norm.maxX, norm.maxY], [norm.minX, norm.maxY],
+  ].map(([x, y]) => {
+    const dx = (x - 0.5) * el.widthMm, dy = (y - 0.5) * el.heightMm;
+    return { x: el.xMm + dx * cos - dy * sin, y: el.yMm + dx * sin + dy * cos };
+  }));
 }
 
 /**
@@ -962,9 +944,9 @@ export function centerElementGeometrically(
       ? roundMm(design.heightMm / 2, 4)
       : roundMm((safeZone.minY + safeZone.maxY) / 2, 4);
 
-  const norm = getElementNormalizedContentBounds(el);
-  const newXMm = roundMm(targetCx - (norm.centerNormX - 0.5) * el.widthMm, 3);
-  const newYMm = roundMm(targetCy - (norm.centerNormY - 0.5) * el.heightMm, 3);
+  const box = getElementVisibleBoundingBoxMm(el);
+  const newXMm = roundMm(el.xMm + targetCx - (box.minX + box.maxX) / 2, 3);
+  const newYMm = roundMm(el.yMm + targetCy - (box.minY + box.maxY) / 2, 3);
 
   return {
     ...el,
@@ -1027,38 +1009,23 @@ export function fitElementToAvailableSpace(
   alignTo: 'label_center' | 'safe_zone_center' = 'label_center'
 ): LabelElement {
   const safeZone = computeSafeEngravingZone(design);
-  const norm = getElementNormalizedContentBounds(el);
-
-  const maxVisW = Math.max(1.0, safeZone.width * fillRatio);
-  const maxVisH = Math.max(1.0, safeZone.height * fillRatio);
-
-  const visAspect =
-    el.aspectRatio > 0
-      ? el.aspectRatio
-      : Math.max(
-          0.001,
-          (el.widthMm * norm.width) / Math.max(0.001, el.heightMm * norm.height)
-        );
-
-  let nextVisW = maxVisW;
-  let nextVisH = nextVisW / visAspect;
-  if (nextVisH > maxVisH) {
-    nextVisH = maxVisH;
-    nextVisW = nextVisH * visAspect;
-  }
-
-  const nextWidthMm = roundMm(Math.max(1.0, nextVisW / Math.max(0.01, norm.width)), 2);
-  const nextHeightMm = roundMm(Math.max(1.0, nextVisH / Math.max(0.01, norm.height)), 2);
+  const box = getElementVisibleBoundingBoxMm(el);
+  const maxVisW = Math.max(0.001, safeZone.width * fillRatio);
+  const maxVisH = Math.max(0.001, safeZone.height * fillRatio);
+  const scale = Math.min(maxVisW / Math.max(0.001, box.width), maxVisH / Math.max(0.001, box.height));
+  const nextWidthMm = roundMm(el.widthMm * scale, 4);
+  const nextHeightMm = roundMm(el.heightMm * scale, 4);
 
   let updatedEl: LabelElement;
   if (el.type === 'vector_text') {
     const scaleFactor = el.heightMm > 0 ? nextHeightMm / el.heightMm : 1;
-    const nextFontSize = roundMm(Math.max(1.0, Math.min(maxVisH, el.fontSizeMm * scaleFactor)), 2);
+    const nextFontSize = roundMm(Math.max(0.01, el.fontSizeMm * scaleFactor), 2);
     updatedEl = {
       ...el,
       widthMm: nextWidthMm,
       heightMm: nextHeightMm,
       fontSizeMm: nextFontSize,
+      letterSpacingMm: roundMm(el.letterSpacingMm * scaleFactor, 4),
     };
   } else {
     updatedEl = {
@@ -1127,7 +1094,8 @@ export function fitAllElementsToAvailableSpace(
         yMm: newY,
         widthMm: newW,
         heightMm: newH,
-        fontSizeMm: roundMm(Math.max(1.0, el.fontSizeMm * scale), 2),
+        fontSizeMm: roundMm(Math.max(0.01, el.fontSizeMm * scale), 4),
+        letterSpacingMm: roundMm(el.letterSpacingMm * scale, 4),
       };
     }
     return {
@@ -1341,18 +1309,6 @@ export function compileDesignElement(
   // Grabado raster monocromático real (calcular boundingBox real rotado)
   const xMm = roundMm(cx - el.widthMm / 2);
   const yMm = roundMm(cy - el.heightMm / 2);
-  const rad = ((el.rotationDeg || 0) * Math.PI) / 180;
-  const cosA = Math.cos(rad);
-  const sinA = Math.sin(rad);
-  const corners: Point2D[] = [
-    { x: -el.widthMm / 2, y: -el.heightMm / 2 },
-    { x: el.widthMm / 2, y: -el.heightMm / 2 },
-    { x: el.widthMm / 2, y: el.heightMm / 2 },
-    { x: -el.widthMm / 2, y: el.heightMm / 2 },
-  ].map((c) => ({
-    x: roundMm(cx + c.x * cosA - c.y * sinA),
-    y: roundMm(cy + c.x * sinA + c.y * cosA),
-  }));
 
   return {
     id: el.id,
@@ -1363,7 +1319,7 @@ export function compileDesignElement(
     widthMm: roundMm(el.widthMm),
     heightMm: roundMm(el.heightMm),
     rotationDeg: el.rotationDeg,
-    boundingBox: computeBoundingBox(corners),
+    boundingBox: getElementVisibleBoundingBoxMm({ ...el, xMm: cx, yMm: cy }),
   };
 }
 
@@ -1402,7 +1358,9 @@ export function compileLabelGeometry(
     widthMm: effectiveW,
     heightMm: effectiveH,
     cornerRadiusMm: design.cornerRadiusMm > 0 ? roundMm(design.cornerRadiusMm + kerfHalf) : 0,
-    customPolygonNormalized: design.customPolygonNormalized,
+    customPolygonNormalized: rotated90
+      ? design.customPolygonNormalized?.map(p => ({ x: 1 - p.y, y: p.x }))
+      : design.customPolygonNormalized,
   });
 
   const safetyMargin = Math.max(
@@ -1544,6 +1502,10 @@ export function validateLabelAndBatchGeometry(
     });
   }
 
+  if (design.shape === 'circle' && Math.abs(design.widthMm - design.heightMm) > 0.0001) {
+    issues.push({severity:'error', code:'CIRCLE_REQUIRES_EQUAL_DIMENSIONS', message:'Una etiqueta circular requiere ancho y alto iguales. Use forma ovalada para medidas diferentes.'});
+  }
+
   // 2. Validar tamaño de plancha respecto a la máquina Vank 9060 (900 x 600 mm)
   const { sheetWidthMm, sheetHeightMm, machineBedWidthMm, machineBedHeightMm } =
     nestingResult.config;
@@ -1573,7 +1535,14 @@ export function validateLabelAndBatchGeometry(
       hb.maxY > singleCompiled.nominalHeightMm - minWallMm;
     const centerInsideOuter = pointInPolygon(centerPt, singleCompiled.outerCutContour.points);
 
-    if (outsideBox || !centerInsideOuter) {
+    const radius = hb.width / 2;
+    const edgeDistance = Math.min(...singleCompiled.outerCutContour.points.map((p, idx, pts) => {
+      const q = pts[(idx + 1) % pts.length];
+      const dx = q.x - p.x, dy = q.y - p.y;
+      const t = Math.max(0, Math.min(1, ((centerPt.x - p.x) * dx + (centerPt.y - p.y) * dy) / (dx * dx + dy * dy || 1)));
+      return Math.hypot(centerPt.x - p.x - t * dx, centerPt.y - p.y - t * dy);
+    }));
+    if (outsideBox || !centerInsideOuter || edgeDistance < radius + minWallMm) {
       invalidHolesCount++;
       issues.push({
         severity: 'error',
@@ -1632,11 +1601,12 @@ export function validateLabelAndBatchGeometry(
       eb.minX < safetyBox.minX - 0.05 ||
       eb.minY < safetyBox.minY - 0.05 ||
       eb.maxX > safetyBox.maxX + 0.05 ||
-      eb.maxY > safetyBox.maxY + 0.05
+      eb.maxY > safetyBox.maxY + 0.05 ||
+      sampleCorners.some(pt => !pointInPolygon(pt, singleCompiled.safetyGuideContour.points))
     ) {
       engraveSafetyWarningCount++;
       issues.push({
-        severity: 'warning',
+        severity: 'error',
         code: 'ENGRAVE_OUTSIDE_SAFETY_MARGIN',
         message: `El grabado "${eng.id}" supera el margen de seguridad interior (${design.safetyMarginMm} mm).`,
       });
@@ -1939,3 +1909,10 @@ export function checkElementsFitSafeZone(
   };
 }
 
+
+/** Enforce production validation at the API boundary as well as in the UI. */
+export function assertProductionGeometry(design: LabelDesign, nesting: NestingResult, batchIndex: number): void {
+  if (!nesting.batches[batchIndex]) throw new Error('No existe la tanda seleccionada.');
+  const report = validateLabelAndBatchGeometry(design, nesting, batchIndex);
+  if (!report.isValid) throw new Error(report.issues.filter(i => i.severity === 'error').map(i => i.message).join(' ') || 'Geometría de producción inválida.');
+}

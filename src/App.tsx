@@ -365,7 +365,9 @@ export function App() {
 
     if (ext === 'svg' || file.type === 'image/svg+xml') {
       const text = await file.text();
-      const parsed = parseSvgLogoString(text);
+      let parsed: ReturnType<typeof parseSvgLogoString>;
+      try { parsed = parseSvgLogoString(text); }
+      catch (err) { notify(`Error al importar SVG: ${(err as Error).message}`); return; }
 
       const rawEl: SvgLogoElement = {
         id: `logo-svg-${Date.now()}`,
@@ -642,7 +644,7 @@ export function App() {
 
   const handleHeightInputChange = (val: string) => {
     setInputHeightStr(val);
-    const parsed = parseDimensionValue(val, dimensionUnit);
+    const parsed = parseDimensionValue(val, dimensionUnit, 600);
     if (parsed.valid) {
       applyDimensionUpdate(labelDesign.widthMm, parsed.valueMm);
     }
@@ -672,6 +674,7 @@ export function App() {
     const updated: LabelDesign = {
       ...labelDesign,
       shape,
+      ...(shape === 'circle' ? { widthMm: Math.min(labelDesign.widthMm, labelDesign.heightMm), heightMm: Math.min(labelDesign.widthMm, labelDesign.heightMm) } : {}),
     };
     const centeredElements = centerAllElementsGeometrically(
       labelDesign.elements,
@@ -944,7 +947,7 @@ export function App() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleExportSvg = (mode: SvgExportMode = 'combined') => {
@@ -997,6 +1000,18 @@ export function App() {
     }
   };
 
+  const openProject = (ord: OrderProject) => {
+    setActiveOrderId(ord.id); setProjectName(ord.projectName); setClientName(ord.clientName);
+    setOrderNotes(ord.notes); setSelectedMaterialId(ord.materialId);
+    if (ord.materialProfileSnapshot) setMaterials(prev => [...prev.filter(m => m.id !== ord.materialId), ord.materialProfileSnapshot]);
+    setSelectedElementId(ord.labelDesign.elements[0]?.id ?? null);
+    setLabelDesign(structuredClone(ord.labelDesign)); setNestingConfig(structuredClone(ord.nestingConfig));
+    setActiveBatchIndex(0);
+    setHistory([{labelDesign: structuredClone(ord.labelDesign), nestingConfig: structuredClone(ord.nestingConfig), materialId: ord.materialId}]);
+    setHistoryIndex(0); setIsOrdersModalOpen(false); setCurrentStep('logo');
+    notify(`Pedido "${ord.projectName}" abierto.`);
+  };
+
   const handleSaveOrderProject = () => {
     const project: OrderProject = {
       id: activeOrderId || `order-${Date.now()}`,
@@ -1012,10 +1027,11 @@ export function App() {
       exportedFilesHistory: [],
     };
     const jsonStr = serializeOrderProjectToJson(project);
-    const updatedCatalog = upsertOrderProject(orders, project);
-    setOrders(updatedCatalog);
+    let catalogSaved = true;
+    try { setOrders(upsertOrderProject(orders, project)); }
+    catch { catalogSaved = false; }
     triggerDownload(`${projectName.replace(/\s+/g, '_')}.lhstudio.json`, jsonStr, 'application/json');
-    notify(`Proyecto guardado y descargado.`);
+    notify(catalogSaved ? 'Proyecto guardado y descargado.' : 'Archivo descargado; el catálogo local NO se guardó (cuota o permisos). Conservá el archivo JSON.');
   };
 
   const handleDownloadKerfPattern = () => {
@@ -1148,6 +1164,17 @@ export function App() {
             <span>Pedidos</span>
           </button>
 
+          <label className="px-2.5 py-1 text-xs bg-slate-800 border border-slate-700 rounded text-slate-200 cursor-pointer">
+            Abrir archivo
+            <input type="file" aria-label="Abrir archivo de proyecto" accept=".json,.lhstudio.json" className="hidden"
+              onChange={async e => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                try { openProject(deserializeOrderProjectFromJson(await file.text())); }
+                catch (err) { notify(`Error al abrir proyecto: ${(err as Error).message}`); }
+                e.target.value = '';
+              }} />
+          </label>
           <button
             onClick={handleSaveOrderProject}
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded text-slate-200 transition-colors"
@@ -2241,7 +2268,7 @@ export function App() {
                     <div className="flex justify-between">
                       <span className="text-slate-400">Tandas de corte:</span>
                       <span className="font-mono text-slate-300">
-                        {nestingResult.totalBatches} ({activeBatch.count} u. en tanda 1)
+                        {nestingResult.totalBatches} ({activeBatch?.count ?? 0} u. en tanda {activeBatchIndex + 1})
                       </span>
                     </div>
                   </div>
@@ -2263,15 +2290,16 @@ export function App() {
                     </div>
                     <div className="flex items-center gap-1.5 text-emerald-400">
                       <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                      <span>Contornos cerrados y sin superposiciones</span>
+                      <span>{validationReport.isValid ? 'Contornos cerrados y sin superposiciones' : 'Hay errores geométricos: revisar antes de exportar'}</span>
                     </div>
                     <div className="flex items-center gap-1.5 text-emerald-400">
                       <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                      <span>0 colisiones entre piezas en plancha</span>
+                      <span>{validationReport.overlappingPiecesCount} colisiones entre piezas en plancha</span>
                     </div>
                   </div>
                 </div>
 
+                {validationReport.issues.map((issue, idx) => <p key={idx} className={issue.severity === 'error' ? 'text-red-400' : 'text-amber-400'}>{issue.message}</p>)}
                 {/* Botones de Descarga */}
                 <div className="space-y-2 pt-1">
                   <button
@@ -2456,14 +2484,14 @@ export function App() {
                 <div className="flex items-center justify-between border-b border-slate-800 pb-4">
                   <div>
                     <h3 className="text-lg font-bold text-white">
-                      Paquete de Producción Listo para Exportar
+                      {validationReport.isValid ? 'Paquete de Producción Listo para Exportar' : 'Exportación bloqueada: corregí la geometría'}
                     </h3>
                     <p className="text-xs text-slate-400 mt-0.5">
                       {projectName} • Cliente: {clientName || 'General'}
                     </p>
                   </div>
                   <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-950 border border-emerald-700 text-emerald-300">
-                    ✓ Verificado 1:1 mm
+                    {validationReport.isValid ? '✓ Geometría verificada' : '⚠ Geometría inválida'}
                   </span>
                 </div>
 
@@ -2588,15 +2616,7 @@ export function App() {
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => {
-                          setActiveOrderId(ord.id);
-                          setProjectName(ord.projectName);
-                          setClientName(ord.clientName);
-                          setOrderNotes(ord.notes);
-                          setSelectedMaterialId(ord.materialId);
-                          setLabelDesign(ord.labelDesign);
-                          setNestingConfig(ord.nestingConfig);
-                          setIsOrdersModalOpen(false);
-                          notify(`Pedido "${ord.projectName}" abierto.`);
+                          openProject(ord);
                         }}
                         className="px-2.5 py-1 text-xs bg-cyan-600 hover:bg-cyan-500 text-white rounded font-medium"
                       >

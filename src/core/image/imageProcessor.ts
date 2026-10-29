@@ -1,4 +1,4 @@
-import { roundMm } from '../geometry/geometryEngine';
+import { roundMm, transformNormalizedPathToMillimeters } from '../geometry/geometryEngine';
 import {
   ContentBoundsNormalized,
   ImageProcessingOptions,
@@ -418,6 +418,9 @@ export function parseSvgLogoString(svgText: string): {
   aspectRatio: number;
   contentBoundsNormalized: ContentBoundsNormalized;
 } {
+  if (!/<svg\b/i.test(svgText) || /\btransform\s*=|<(?:text|use|image|script|foreignObject|clipPath|mask|style)\b/i.test(svgText)) {
+    throw new Error('SVG no compatible: convierta texto, transformaciones y efectos a trazados simples antes de importar.');
+  }
   let minX = 0;
   let minY = 0;
   let width = 100;
@@ -548,9 +551,7 @@ export function parseSvgLogoString(svgText: string): {
   }
 
   if (normalizedPaths.length === 0) {
-    normalizedPaths.push(
-      `M ${minX + width * 0.15} ${minY + height * 0.2} L ${minX + width * 0.85} ${minY + height * 0.2} L ${minX + width * 0.85} ${minY + height * 0.8} L ${minX + width * 0.15} ${minY + height * 0.8} Z`
-    );
+    throw new Error('El SVG no contiene trazados compatibles. No se importó geometría.');
   }
 
   // Extraer envolvente real de todos los números presentes en los paths para detectar centrado y límites visibles reales
@@ -560,28 +561,15 @@ export function parseSvgLogoString(svgText: string): {
   let by1 = -Infinity;
 
   if (normalizedPaths.length > 0) {
-    const allNums = normalizedPaths
-      .join(' ')
-      .match(/[-+]?(?:\d+\.?\d*|\.\d+)/g)
-      ?.map(Number)
-      .filter(Number.isFinite);
-    if (allNums && allNums.length >= 4) {
-      for (let i = 0; i + 1 < allNums.length; i += 2) {
-        const vx = allNums[i];
-        const vy = allNums[i + 1];
-        if (vx < bx0) bx0 = vx;
-        if (vx > bx1) bx1 = vx;
-        if (vy < by0) by0 = vy;
-        if (vy > by1) by1 = vy;
-      }
-      if (bx1 > bx0 && by1 > by0) {
-        if (!hasExplicitBox) {
-          minX = bx0;
-          minY = by0;
-          width = bx1 - bx0;
-          height = by1 - by0;
-        }
-      }
+    const points = normalizedPaths.flatMap(path => transformNormalizedPathToMillimeters(
+      path, { minX: 0, minY: 0, width: 1, height: 1 }, 0.5, 0.5, 1, 1
+    ).sampledPoints);
+    for (const p of points) {
+      bx0 = Math.min(bx0, p.x); by0 = Math.min(by0, p.y);
+      bx1 = Math.max(bx1, p.x); by1 = Math.max(by1, p.y);
+    }
+    if (!hasExplicitBox && bx1 > bx0 && by1 > by0) {
+      minX = bx0; minY = by0; width = bx1 - bx0; height = by1 - by0;
     }
   }
 

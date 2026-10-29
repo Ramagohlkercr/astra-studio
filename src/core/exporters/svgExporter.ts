@@ -1,10 +1,14 @@
-import { compileLabelGeometry, roundMm } from '../geometry/geometryEngine';
+import { assertProductionGeometry, compileLabelGeometry, roundMm } from '../geometry/geometryEngine';
 import {
   LabelDesign,
   LIGHTBURN_LAYERS,
   MaterialProfile,
   NestingResult,
 } from '../types';
+
+function xml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;').replace(/--/g, '—');
+}
 
 export type SvgExportMode = 'combined' | 'engrave_only' | 'cut_only';
 
@@ -49,6 +53,7 @@ export function exportProductionSvg(
   material: MaterialProfile,
   options: SvgExportOptions = { mode: 'combined', batchIndex: 0 }
 ): SvgExportArtifact {
+  assertProductionGeometry(design, nesting, options.batchIndex ?? 0);
   const bIdx = options.batchIndex ?? 0;
   const batch = nesting.batches[bIdx] || nesting.batches[0];
 
@@ -101,12 +106,12 @@ export function exportProductionSvg(
           engravePathCount++;
           if (eng.filled) {
             engraveNodes.push(
-              `    <path id="${eng.id}" d="${eng.svgPathD}" fill="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" fill-rule="${eng.fillRule || 'evenodd'}" stroke="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" stroke-width="0.05" />`
+              `    <path id="${xml(eng.id)}" d="${eng.svgPathD}" fill="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" fill-rule="${eng.fillRule || 'evenodd'}" stroke="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" stroke-width="0.05" />`
             );
           } else {
             const sw = roundMm(eng.strokeWidthMm || 0.3);
             engraveNodes.push(
-              `    <path id="${eng.id}" d="${eng.svgPathD}" fill="none" stroke="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`
+              `    <path id="${xml(eng.id)}" d="${eng.svgPathD}" fill="none" stroke="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`
             );
           }
         } else if (eng.kind === 'raster_image' && eng.dataUrl) {
@@ -115,7 +120,7 @@ export function exportProductionSvg(
             ? ` transform="rotate(${eng.rotationDeg} ${roundMm((eng.xMm || 0) + (eng.widthMm || 0) / 2)} ${roundMm((eng.yMm || 0) + (eng.heightMm || 0) / 2)})"`
             : '';
           engraveNodes.push(
-            `    <image id="${eng.id}" x="${eng.xMm}" y="${eng.yMm}" width="${eng.widthMm}" height="${eng.heightMm}" preserveAspectRatio="none" href="${eng.dataUrl}"${rotAttr} />`
+            `    <image id="${xml(eng.id)}" x="${eng.xMm}" y="${eng.yMm}" width="${eng.widthMm}" height="${eng.heightMm}" preserveAspectRatio="none" href="${xml(eng.dataUrl)}"${rotAttr} />`
           );
         }
       }
@@ -125,13 +130,13 @@ export function exportProductionSvg(
       for (const hole of compiled.holeContours) {
         holeContourCount++;
         holeNodes.push(
-          `    <path id="${hole.id}" d="${hole.svgPathD}" fill="none" stroke="${LIGHTBURN_LAYERS.HOLES.hexColor}" stroke-width="0.1" />`
+          `    <path id="${xml(hole.id)}" d="${hole.svgPathD}" fill="none" stroke="${LIGHTBURN_LAYERS.HOLES.hexColor}" stroke-width="0.1" />`
         );
       }
 
       cutContourCount++;
       cutNodes.push(
-        `    <path id="${compiled.outerCutContour.id}" d="${compiled.outerCutContour.svgPathD}" fill="none" stroke="${LIGHTBURN_LAYERS.CUT.hexColor}" stroke-width="0.1" />`
+        `    <path id="${xml(compiled.outerCutContour.id)}" d="${compiled.outerCutContour.svgPathD}" fill="none" stroke="${LIGHTBURN_LAYERS.CUT.hexColor}" stroke-width="0.1" />`
       );
     }
   }
@@ -151,9 +156,9 @@ export function exportProductionSvg(
     `  =============================================================================`,
     `  Máquina destino : Vank 9060 CO2 (Área útil máx: 900 x 600 mm | Controladora Ruida RDC8445S)`,
     `  Software destino: LightBurn Pro / RDWorks`,
-    `  Diseño etiqueta : ${design.name} (${design.widthMm} x ${design.heightMm} mm | Forma: ${design.shape})`,
+    `  Diseño etiqueta : ${xml(design.name)} (${design.widthMm} x ${design.heightMm} mm | Forma: ${design.shape})`,
     `  Compensación Kerf: ${design.kerfCompensationMm} mm`,
-    `  Material        : ${material.name} (${material.code}, Espesor: ${material.thicknessMm} mm)`,
+    `  Material        : ${xml(material.name)} (${xml(material.code)}, Espesor: ${material.thicknessMm} mm)`,
     `  Tanda           : ${batch.batchNumber} de ${batch.totalBatches}`,
     `  Cantidad en archivo: ${batch.count} unidades (Total pedido: ${nesting.totalRequestedQuantity} u.)`,
     `  Dimensiones lienzo : ${canvasWidthMm} mm x ${canvasHeightMm} mm (1 unidad SVG = 1.0000 mm)`,
