@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import App from '../App';
+
+beforeAll(() => { HTMLDialogElement.prototype.showModal = function() { this.setAttribute('open', ''); }; });
 
 describe('Astra Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
   it('renderiza la cabecera industrial, permite navegar por los 6 pasos y cambiar medidas con Undo/Redo', () => {
@@ -81,18 +83,19 @@ describe('Astra Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
 
     render(<App />);
 
+    fireEvent.click(screen.getByText('Probar con un logo de ejemplo'));
     // Cargar logo de muestra en Paso 1
     fireEvent.click(screen.getByRole('button', { name: 'SVG Hexágono' }));
 
     // Ir al Paso 4: Grabado
     fireEvent.click(screen.getByRole('button', { name: /4.*Grabado/i }));
-    expect(screen.getByText(/Centrado de Alta Precisión/i)).toBeDefined();
+    expect(screen.getByText(/Posición del logo/i)).toBeDefined();
 
     // Ejecutar Centrar Logo y Ajustar al Espacio Disponible
     const centerBtn = screen.getByRole('button', { name: /CENTRAR LOGO/i });
     fireEvent.click(centerBtn);
 
-    const fitBtn = screen.getByRole('button', { name: /AJUSTAR AL ESPACIO DISPONIBLE/i });
+    const fitBtn = screen.getByRole('button', { name: /Ajustar al área segura/i });
     fireEvent.click(fitBtn);
 
     // Ir al Paso 6: Exportar

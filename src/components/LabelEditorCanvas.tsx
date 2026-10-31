@@ -72,10 +72,10 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
 
   const compiled = compileLabelGeometry(design);
   const paddingMm = Math.max(6, Math.max(design.widthMm, design.heightMm) * 0.32);
-  const viewMinX = -paddingMm;
-  const viewMinY = -paddingMm;
-  const viewWidthMm = design.widthMm + paddingMm * 2;
-  const viewHeightMm = design.heightMm + paddingMm * 2;
+  const viewWidthMm = (design.widthMm + paddingMm * 2) / zoomLevel;
+  const viewHeightMm = (design.heightMm + paddingMm * 2) / zoomLevel;
+  const viewMinX = (design.widthMm - viewWidthMm) / 2;
+  const viewMinY = (design.heightMm - viewHeightMm) / 2;
 
   const clientToMillimeters = (clientX: number, clientY: number): Point2D => {
     const svg = svgRef.current;
@@ -231,9 +231,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
     ticksY.push(y);
   }
 
-  const baseScalePx = 18 * zoomLevel;
-  const displayWidthPx = Math.max(380, Math.round(viewWidthMm * baseScalePx));
-  const displayHeightPx = Math.max(280, Math.round(viewHeightMm * baseScalePx));
+
 
   const isTechnical = renderStyle === 'technical_lightburn';
   const surfaceFill = isTechnical ? '#FFFFFF' : material.visual.surfaceColor;
@@ -256,7 +254,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
 
   return (
     <div
-      className="relative w-full h-full flex flex-col items-center justify-center overflow-auto bg-[#090c10] select-none"
+      className="studio-canvas relative w-full h-full flex flex-col items-center justify-center overflow-hidden bg-[#090c10] select-none"
       onWheel={(e) => {
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
@@ -285,8 +283,8 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
 
       <svg
         ref={svgRef}
-        width={displayWidthPx}
-        height={displayHeightPx}
+        width="100%"
+        height="100%"
         viewBox={`${viewMinX} ${viewMinY} ${viewWidthMm} ${viewHeightMm}`}
         className="editor-artboard shadow-2xl rounded border border-slate-800/80 bg-[#0d1219]"
       >

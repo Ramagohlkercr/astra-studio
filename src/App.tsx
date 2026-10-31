@@ -1,3 +1,4 @@
+import { alignArtwork, artworkDpi, mergeProcessedArtwork, EdgeAlignment } from './core/geometry/editorActions';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
@@ -118,6 +119,9 @@ interface WizardStepDef {
   subtitle: string;
 }
 
+const SHAPE_LABELS: Record<LabelShapeType, string> = { rounded_rect: 'Esquinas redondeadas', rectangle: 'Rectangular', square: 'Cuadrada', circle: 'Circular', oval: 'Ovalada', capsule: 'Cápsula', octagon_tag: 'Octágono', custom_polygon: 'Personalizada' };
+const HOLE_LABELS: Record<HolePreset, string> = { none: 'Sin perforaciones', single_left: 'Uno lateral', single_top: 'Uno superior', two_horizontal: 'Dos laterales', two_vertical: 'Dos verticales', four_corners: 'Cuatro esquinas', custom: 'Personalizados' };
+
 const WIZARD_STEPS: WizardStepDef[] = [
   {
     id: 'logo',
@@ -192,7 +196,7 @@ export function App() {
   const [clientName, setClientName] = useState<string>(initialOrder.clientName);
   const [orderNotes, setOrderNotes] = useState<string>(initialOrder.notes);
 
-  const [materials, setMaterials] = useState<MaterialProfile[]>(INITIAL_MATERIALS_CATALOG);
+  const [materials, setMaterials] = useState<MaterialProfile[]>(() => initialOrder.materialProfileSnapshot ? [...INITIAL_MATERIALS_CATALOG.filter(m => m.id !== initialOrder.materialId), initialOrder.materialProfileSnapshot] : INITIAL_MATERIALS_CATALOG);
   const [selectedMaterialId, setSelectedMaterialId] = useState<string>(
     initialOrder.materialId
   );
@@ -218,6 +222,10 @@ export function App() {
   );
   const [activeBatchIndex, setActiveBatchIndex] = useState<number>(0);
   const [isOrdersModalOpen, setIsOrdersModalOpen] = useState<boolean>(false);
+  const ordersDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (isOrdersModalOpen) ordersDialog.current?.showModal?.();
+  }, [isOrdersModalOpen]);
   const [orderSearchQuery, setOrderSearchQuery] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
@@ -255,7 +263,7 @@ export function App() {
   const [history, setHistory] = useState<HistorySnapshot[]>([
     {
       labelDesign: structuredClone(initialOrder.labelDesign),
-      nestingConfig: structuredClone(initialOrder.nestingConfig),
+      nestingConfig: {...structuredClone(initialOrder.nestingConfig), layoutMode: initialOrder.nestingConfig.layoutMode ?? 'blocks'},
       materialId: initialOrder.materialId,
     },
   ]);
@@ -275,6 +283,12 @@ export function App() {
     return validateLabelAndBatchGeometry(labelDesign, nestingResult, activeBatchIndex);
   }, [labelDesign, nestingResult, activeBatchIndex]);
 
+  useEffect(() => {
+    setActiveBatchIndex(index => Math.min(index, Math.max(0, nestingResult.batches.length - 1)));
+  }, [nestingResult.batches.length]);
+
+  const hasRasterExport = labelDesign.elements.some(el => el.visible && el.type === 'logo_raster' &&
+    (el.processing.mode !== 'vector' || el.vectorizedPathsNormalized.length === 0));
   const activeBatch = nestingResult.batches[activeBatchIndex] || nestingResult.batches[0];
 
   const notify = (msg: string) => {
@@ -285,6 +299,10 @@ export function App() {
   };
 
   const canvasInteraction = useRef(false);
+  const latestDesign = useRef(labelDesign);
+  latestDesign.current = labelDesign;
+  const imageRequest = useRef(0);
+  const [isProcessingImage, setIsProcessingImage] = useState(false);
   const pushStateWithHistory = (
     nextDesign: LabelDesign,
     nextNesting?: NestingConfig,
@@ -332,6 +350,8 @@ export function App() {
   // Atajos de teclado para Undo / Redo
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.matches('input, textarea, select') || target.isContentEditable) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         if (e.shiftKey) {
           e.preventDefault();
@@ -571,7 +591,10 @@ export function App() {
   const handleUpdateImageProcessing = async (
     updates: Partial<ImageProcessingOptions>
   ) => {
-    if (!selectedElement || selectedElement.type !== 'logo_raster') return;
+    if (!selectedElement || selectedElement.type !== 'logo_raster' || isProcessingImage) return;
+    const request = ++imageRequest.current;
+    const sourceDesign = labelDesign;
+    setIsProcessingImage(true);
     const newOptions: ImageProcessingOptions = {
       ...selectedElement.processing,
       ...updates,
@@ -588,8 +611,9 @@ export function App() {
         existingId: selectedElement.id,
       });
 
+      if (request !== imageRequest.current || latestDesign.current !== sourceDesign) return;
       const updatedEls = labelDesign.elements.map((el) =>
-        el.id === selectedElement.id ? reprocessed : el
+        el.id === selectedElement.id ? mergeProcessedArtwork(selectedElement, reprocessed) : el
       );
       pushStateWithHistory({
         ...labelDesign,
@@ -597,6 +621,8 @@ export function App() {
       });
     } catch (err) {
       notify(`Error al procesar parámetros de imagen: ${(err as Error).message}`);
+    } finally {
+      if (request === imageRequest.current) setIsProcessingImage(false);
     }
   };
 
@@ -818,58 +844,10 @@ export function App() {
   };
 
   // 5. Alineación rápida a bordes seguros
-  const handleAlignToEdge = (
-    alignment:
-      | 'safe_left'
-      | 'safe_right'
-      | 'safe_top'
-      | 'safe_bottom'
-      | 'center_x'
-      | 'center_y'
-  ) => {
+  const handleAlignToEdge = (alignment: EdgeAlignment) => {
     if (!selectedElement) return;
-    const safeZone = computeSafeEngravingZone(labelDesign);
-    const norm = getElementNormalizedContentBounds(selectedElement);
-    const visW = selectedElement.widthMm * norm.width;
-    const visH = selectedElement.heightMm * norm.height;
-
-    let nextX = selectedElement.xMm;
-    let nextY = selectedElement.yMm;
-
-    switch (alignment) {
-      case 'safe_left':
-        nextX = roundMm(safeZone.minX + visW / 2 - (norm.centerNormX - 0.5) * selectedElement.widthMm, 3);
-        break;
-      case 'safe_right':
-        nextX = roundMm(safeZone.maxX - visW / 2 - (norm.centerNormX - 0.5) * selectedElement.widthMm, 3);
-        break;
-      case 'center_x':
-        nextX = roundMm(labelDesign.widthMm / 2 - (norm.centerNormX - 0.5) * selectedElement.widthMm, 3);
-        break;
-      case 'safe_top':
-        nextY = roundMm(safeZone.minY + visH / 2 - (norm.centerNormY - 0.5) * selectedElement.heightMm, 3);
-        break;
-      case 'safe_bottom':
-        nextY = roundMm(safeZone.maxY - visH / 2 - (norm.centerNormY - 0.5) * selectedElement.heightMm, 3);
-        break;
-      case 'center_y':
-        nextY = roundMm(labelDesign.heightMm / 2 - (norm.centerNormY - 0.5) * selectedElement.heightMm, 3);
-        break;
-    }
-
-    const updated = {
-      ...selectedElement,
-      xMm: nextX,
-      yMm: nextY,
-    };
-    const updatedEls = labelDesign.elements.map((el) =>
-      el.id === selectedElement.id ? updated : el
-    );
-    pushStateWithHistory({
-      ...labelDesign,
-      elements: updatedEls,
-    });
-    notify(`Alineado a ${alignment}.`);
+    const updated = alignArtwork(selectedElement, labelDesign, alignment);
+    pushStateWithHistory({...labelDesign, elements: labelDesign.elements.map(el => el.id === updated.id ? updated : el)});
   };
 
   // 6. Cambio manual de tamaño en milímetros
@@ -929,7 +907,7 @@ export function App() {
   // ==========================================
 
   const handleSetRequestedQuantity = (qty: number) => {
-    const safeQty = Math.max(1, Math.min(10000, qty));
+    const safeQty = Math.max(1, Math.min(10000, Math.round(Number.isFinite(qty) ? qty : 1)));
     pushStateWithHistory(labelDesign, {
       ...nestingConfig,
       requestedQuantity: safeQty,
@@ -1019,7 +997,7 @@ export function App() {
     setSelectedElementId(ord.labelDesign.elements[0]?.id ?? null);
     setLabelDesign(structuredClone(ord.labelDesign)); setNestingConfig({...structuredClone(ord.nestingConfig), layoutMode: ord.nestingConfig.layoutMode ?? 'blocks'});
     setActiveBatchIndex(0);
-    setHistory([{labelDesign: structuredClone(ord.labelDesign), nestingConfig: structuredClone(ord.nestingConfig), materialId: ord.materialId}]);
+    setHistory([{labelDesign: structuredClone(ord.labelDesign), nestingConfig: {...structuredClone(ord.nestingConfig), layoutMode: ord.nestingConfig.layoutMode ?? 'blocks'}, materialId: ord.materialId}]);
     setHistoryIndex(0); setIsOrdersModalOpen(false); setCurrentStep('logo');
     notify(`Pedido "${ord.projectName}" abierto.`);
   };
@@ -1029,14 +1007,14 @@ export function App() {
       id: activeOrderId || `order-${Date.now()}`,
       projectName,
       clientName,
-      createdAt: new Date().toISOString(),
+      createdAt: orders.find(order => order.id === activeOrderId)?.createdAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       notes: orderNotes,
       materialId: selectedMaterialId,
       materialProfileSnapshot: activeMaterial,
       labelDesign,
       nestingConfig,
-      exportedFilesHistory: [],
+      exportedFilesHistory: orders.find(order => order.id === activeOrderId)?.exportedFilesHistory ?? [],
     };
     const jsonStr = serializeOrderProjectToJson(project);
     let catalogSaved = true;
@@ -1071,6 +1049,8 @@ export function App() {
       },
       exportedFilesHistory: [],
     };
+    setSelectedElementId(null);
+    setActiveBatchIndex(0);
     setActiveOrderId(newOrder.id);
     setProjectName(newOrder.projectName);
     setClientName(newOrder.clientName);
@@ -1091,6 +1071,8 @@ export function App() {
   };
 
   // Navegación secuencial Atrás / Continuar
+  const filteredOrders = orders.filter(order =>
+    `${order.projectName} ${order.clientName}`.toLowerCase().includes(orderSearchQuery.trim().toLowerCase()));
   const currentStepIndex = WIZARD_STEPS.findIndex((s) => s.id === currentStep);
 
   const handleGoNext = () => {
@@ -1121,23 +1103,23 @@ export function App() {
             </h1>
           </div>
           <span className="text-slate-600">|</span>
-          <div className="flex items-center gap-2">
-            <input
+          <div className="studio-project-fields flex items-center gap-2">
+            <label><span>Pedido</span><input
               type="text"
               value={projectName}
               onChange={(e) => setProjectName(e.target.value)}
               className="bg-slate-900/80 border border-slate-700/80 text-xs px-2 py-1 rounded text-slate-200 focus:outline-none focus:border-cyan-500 font-medium"
               placeholder="Nombre del pedido"
               title="Nombre del proyecto"
-            />
-            <input
+            /></label>
+            <label><span>Cliente</span><input
               type="text"
               value={clientName}
               onChange={(e) => setClientName(e.target.value)}
               className="bg-slate-900/80 border border-slate-700/80 text-xs px-2 py-1 rounded text-slate-400 focus:outline-none focus:border-cyan-500 font-medium"
               placeholder="Cliente"
               title="Cliente"
-            />
+            /></label>
           </div>
         </div>
 
@@ -1230,7 +1212,7 @@ export function App() {
                           : 'bg-slate-800 text-slate-400'
                     }`}
                   >
-                    {isCompleted ? '✓' : step.number}
+                    {step.number}
                   </span>
                   <span className="hidden sm:inline font-semibold">{step.label}</span>
                 </button>
@@ -1316,9 +1298,7 @@ export function App() {
 
                 {/* Logos de Prueba Rápidos */}
                 <div>
-                  <span className="text-[11px] text-slate-400 font-semibold block mb-1.5">
-                    O cargar logotipo de muestra para probar:
-                  </span>
+                  <details className="studio-disclosure"><summary>Probar con un logo de ejemplo</summary>
                   <div className="grid grid-cols-3 gap-1.5">
                     <button
                       onClick={() => handleLoadSampleLogo('svg_hex')}
@@ -1338,7 +1318,7 @@ export function App() {
                     >
                       PNG Emblema
                     </button>
-                  </div>
+                  </div></details>
                 </div>
 
                 {/* Si hay un elemento seleccionado, mostrar diagnósticos y controles de ajuste */}
@@ -1375,28 +1355,28 @@ export function App() {
                     )}
 
                     {/* Advertencia de Resolución / Calidad (DPI) para imágenes Raster */}
-                    {selectedElement.type === 'logo_raster' && (
+                    {selectedElement.type === 'logo_raster' && selectedElement.processing.mode === 'raster' && (
                       <div
                         className={`p-2 rounded border text-[11px] flex items-start gap-1.5 ${
-                          selectedElement.effectiveDpi >= 200
+                          artworkDpi(selectedElement) >= 200
                             ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-300'
                             : 'bg-amber-950/30 border-amber-800/40 text-amber-300'
                         }`}
                       >
-                        {selectedElement.effectiveDpi >= 200 ? (
+                        {artworkDpi(selectedElement) >= 200 ? (
                           <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
                         ) : (
                           <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
                         )}
                         <div>
                           <div className="font-bold">
-                            {selectedElement.effectiveDpi >= 200
-                              ? `Resolución óptima (${Math.round(selectedElement.effectiveDpi)} DPI)`
-                              : `Calidad baja (${Math.round(selectedElement.effectiveDpi)} DPI)`}
+                            {artworkDpi(selectedElement) >= 200
+                              ? `Resolución óptima (${Math.round(artworkDpi(selectedElement))} DPI)`
+                              : `Calidad baja (${Math.round(artworkDpi(selectedElement))} DPI)`}
                           </div>
                           <div className="text-[10px] opacity-90">
-                            {selectedElement.effectiveDpi >= 200
-                              ? 'La imagen cuenta con suficiente densidad para un grabado láser nítido.'
+                            {artworkDpi(selectedElement) >= 200
+                              ? 'Resolución de la imagen procesada al tamaño actual. Revisá una muestra antes de producir.'
                               : 'Recomendado ≥ 200 DPI para evitar bordes pixelados.'}
                           </div>
                         </div>
@@ -1405,7 +1385,7 @@ export function App() {
 
                     {/* Controles de procesado si es imagen raster */}
                     {selectedElement.type === 'logo_raster' && (
-                      <div className="space-y-2 pt-2 border-t border-slate-800 text-xs">
+                      <fieldset disabled={isProcessingImage} aria-busy={isProcessingImage} className="space-y-2 pt-2 border-t border-slate-800 text-xs min-w-0">
                         <div className="flex items-center justify-between">
                           <label className="text-slate-300 flex items-center gap-2 cursor-pointer">
                             <input
@@ -1434,13 +1414,13 @@ export function App() {
                         {/* Sliders de Umbral y Contraste */}
                         <div>
                           <div className="flex justify-between text-[11px] text-slate-400 mb-1">
-                            <span>Umbral de grabado (Threshold):</span>
+                            <span>Umbral de grabado:</span>
                             <span className="font-mono text-cyan-400">
                               {selectedElement.processing.threshold}
                             </span>
                           </div>
                           <input
-                            type="range"
+                            aria-label="Umbral de grabado" type="range"
                             min="40"
                             max="220"
                             value={selectedElement.processing.threshold}
@@ -1459,7 +1439,7 @@ export function App() {
                             </span>
                           </div>
                           <input
-                            type="range"
+                            aria-label="Contraste" type="range"
                             min="-50"
                             max="80"
                             value={selectedElement.processing.contrast}
@@ -1496,7 +1476,8 @@ export function App() {
                             </button>
                           </div>
                         </div>
-                      </div>
+                        {isProcessingImage && <p role="status">Procesando imagen…</p>}
+                      </fieldset>
                     )}
                   </div>
                 ) : (
@@ -1769,7 +1750,7 @@ export function App() {
                           step="0.1"
                           min="0.5"
                           max="8"
-                          value={labelDesign.holes.diameterMm}
+                          aria-label="Diámetro de orificios (mm)" value={labelDesign.holes.diameterMm}
                           onChange={(e) => handleUpdateHoleDiameter(Number(e.target.value))}
                           className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
                         />
@@ -1811,13 +1792,14 @@ export function App() {
               </div>
             )}
 
-            {/* CONTENIDO ESPECÍFICO DEL PASO 4: CENTRADO Y TAMAÑO DEL GRABADO */}
+            {/* CONTENIDO ESPECÍFICO DEL PASO 4: CENTRADO Y Tamaño del grabado */}
             {currentStep === 'engraving' && (
-              <div className="space-y-4 text-xs">
+              <fieldset disabled={!selectedElement} className="space-y-4 text-xs min-w-0">
+                {!selectedElement && <p className="studio-notice">Cargá un logo en el primer paso para ajustar el grabado.</p>}
                 {/* Herramientas Principales de Centrado */}
                 <div className="space-y-2">
                   <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block">
-                    Centrado de Alta Precisión
+                    Posición del logo
                   </span>
                   <div className="grid grid-cols-2 gap-2">
                     <button
@@ -1826,7 +1808,7 @@ export function App() {
                       title="Alinear contenido visible exactamente con el centro físico de la etiqueta"
                     >
                       <Target className="w-4 h-4" />
-                      <span>CENTRAR LOGO</span>
+                      <span>Centrar logo</span>
                     </button>
                     <button
                       onClick={handleCenterInSafeZone}
@@ -1834,7 +1816,7 @@ export function App() {
                       title="Centrar en el área libre entre agujeros"
                     >
                       <Move className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>ÁREA LIBRE</span>
+                      <span>Entre orificios</span>
                     </button>
                   </div>
                 </div>
@@ -1849,7 +1831,7 @@ export function App() {
                     className="w-full flex items-center justify-center gap-2 py-1.5 px-3 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-bold text-xs transition-colors"
                   >
                     <Maximize2 className="w-3.5 h-3.5" />
-                    <span>AJUSTAR AL ESPACIO DISPONIBLE</span>
+                    <span>Ajustar al área segura</span>
                   </button>
 
                   {selectedElement && (
@@ -1894,10 +1876,20 @@ export function App() {
                   )}
                 </div>
 
+                <div className="studio-control-card">
+                  <label htmlFor="logo-angle" className="block text-slate-300 mb-2">Rotación del logo</label>
+                  <div className="flex items-center gap-2">
+                    <input id="logo-angle" aria-label="Rotación del logo (grados)" type="number" min="-360" max="360" step="1" className="w-24 bg-slate-950 border border-slate-700" disabled={!selectedElement} value={selectedElement?.rotationDeg ?? 0}
+                      onChange={e => { if (selectedElement && Number.isFinite(e.target.valueAsNumber)) pushStateWithHistory({...labelDesign, elements: labelDesign.elements.map(el => el.id === selectedElement.id ? {...el, rotationDeg: e.target.valueAsNumber % 360} : el)}); }} />
+                    <span className="text-slate-400">grados</span>
+                    <button disabled={!selectedElement} className="ml-auto bg-slate-800 px-3" onClick={() => { if(selectedElement) pushStateWithHistory({...labelDesign, elements: labelDesign.elements.map(el => el.id === selectedElement.id ? {...el, rotationDeg: 0} : el)}); }}>Restablecer</button>
+                  </div>
+                </div>
+
                 {/* Alineación Asistida a Bordes Seguros */}
                 <div className="space-y-1.5 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
                   <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block mb-1">
-                    Alineación Asistida a Zona Segura
+                    Alinear con los márgenes
                   </span>
                   <div className="grid grid-cols-3 gap-1 text-[11px]">
                     <button
@@ -1941,10 +1933,10 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Ajuste Óptico y Micromovimiento (0.1 mm y 0.01 mm) */}
+                {/* Ajuste fino (0.1 mm y 0.01 mm) */}
                 <div className="space-y-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
                   <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block">
-                    Ajuste Óptico y Micromovimiento
+                    Ajuste fino
                   </span>
                   <div className="flex items-center justify-between text-[11px] text-slate-400">
                     <span>Paso 0.1 mm:</span>
@@ -2029,7 +2021,7 @@ export function App() {
                     </button>
                   </div>
                 )}
-              </div>
+              </fieldset>
             )}
 
             {/* CONTENIDO ESPECÍFICO DEL PASO 5: PRODUCCIÓN */}
@@ -2038,7 +2030,7 @@ export function App() {
                 <div className="studio-material">
                   <label htmlFor="production-material" className="block text-slate-300 font-semibold mb-2">Material</label>
                   <select id="production-material" value={selectedMaterialId}
-                    onChange={(e) => setSelectedMaterialId(e.target.value)}
+                    onChange={(e) => pushStateWithHistory(labelDesign, nestingConfig, e.target.value)}
                     className="w-full bg-slate-900 border border-slate-700 rounded text-slate-200">
                     {materials.map((mat) => <option key={mat.id} value={mat.id}>{mat.name}</option>)}
                   </select>
@@ -2061,7 +2053,7 @@ export function App() {
                 {/* Cantidad requerida con botones de 1 clic */}
                 <div>
                   <span className="text-slate-400 font-semibold block mb-1.5">
-                    Cantidad total de etiquetas requeridas:
+                    Cantidad de etiquetas
                   </span>
                   <div className="grid grid-cols-5 gap-1 mb-2">
                     {STANDARD_QUANTITY_PRESETS.map((qty) => (
@@ -2085,7 +2077,7 @@ export function App() {
                       step="10"
                       min="1"
                       max="10000"
-                      value={nestingConfig.requestedQuantity}
+                      aria-label="Cantidad personalizada" value={nestingConfig.requestedQuantity}
                       onChange={(e) => handleSetRequestedQuantity(Number(e.target.value))}
                       className="w-24 bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
                     />
@@ -2096,7 +2088,7 @@ export function App() {
                 {/* Tamaño del recorte de material */}
                 <div>
                   <span className="text-slate-400 font-semibold block mb-1.5">
-                    Tamaño del recorte o plancha:
+                    Tamaño de plancha
                   </span>
                   <div className="grid grid-cols-2 gap-1.5">
                     {MATERIAL_SHEET_PRESETS.map((s) => (
@@ -2192,7 +2184,7 @@ export function App() {
                             step="0.5"
                             min="0.5"
                             max="20"
-                            value={nestingConfig.gapXMm}
+                            aria-label="Separación horizontal (mm)" value={nestingConfig.gapXMm}
                             onChange={(e) =>
                               pushStateWithHistory(labelDesign, {
                                 ...nestingConfig,
@@ -2209,7 +2201,7 @@ export function App() {
                             step="0.5"
                             min="0.5"
                             max="20"
-                            value={nestingConfig.gapYMm}
+                            aria-label="Separación vertical (mm)" value={nestingConfig.gapYMm}
                             onChange={(e) =>
                               pushStateWithHistory(labelDesign, {
                                 ...nestingConfig,
@@ -2246,13 +2238,13 @@ export function App() {
                     <div className="flex justify-between">
                       <span className="text-slate-400">Etiqueta:</span>
                       <span className="font-mono font-bold text-white">
-                        {labelDesign.widthMm} × {labelDesign.heightMm} mm ({labelDesign.shape})
+                        {labelDesign.widthMm} × {labelDesign.heightMm} mm ({SHAPE_LABELS[labelDesign.shape] ?? labelDesign.shape})
                       </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-400">Orificios:</span>
                       <span className="font-mono text-cyan-400">
-                        {labelDesign.holes.preset === 'none' ? 'Sin perforaciones' : `${labelDesign.holes.preset} (${labelDesign.holes.diameterMm} mm)`}
+                        {labelDesign.holes.preset === 'none' ? 'Sin perforaciones' : `${HOLE_LABELS[labelDesign.holes.preset]} (${labelDesign.holes.diameterMm} mm)`}
                       </span>
                     </div>
                     <div className="flex justify-between">
@@ -2288,8 +2280,8 @@ export function App() {
                       <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                       <span>Capas técnicas asignadas (#000000, #0000FF, #FF0000)</span>
                     </div>
-                    <div className="flex items-center gap-1.5 text-emerald-400">
-                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <div className={`flex items-center gap-1.5 ${validationReport.isValid ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {validationReport.isValid ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0" />}
                       <span>{validationReport.isValid ? 'Contornos cerrados y sin superposiciones' : 'Hay errores geométricos: revisar antes de exportar'}</span>
                     </div>
                     <div className="flex items-center gap-1.5 text-emerald-400">
@@ -2300,59 +2292,17 @@ export function App() {
                 </div>
 
                 {validationReport.issues.map((issue, idx) => <p key={idx} className={issue.severity === 'error' ? 'text-red-400' : 'text-amber-400'}>{issue.message}</p>)}
-                {/* Botones de Descarga */}
-                <div className="space-y-2 pt-1">
-                  <button
-                    onClick={() => handleExportSvg('combined')}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors shadow"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>DESCARGAR SVG COMPLETO (LIGHTBURN)</span>
-                  </button>
-
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <button
-                      onClick={() => handleExportSvg('engrave_only')}
-                      className="py-1.5 px-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px] font-medium"
-                    >
-                      SVG Solo Grabado
-                    </button>
-                    <button
-                      onClick={() => handleExportSvg('cut_only')}
-                      className="py-1.5 px-2 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px] font-medium"
-                    >
-                      SVG Solo Corte
-                    </button>
-                  </div>
-
-                  <button
-                    onClick={handleExportDxf}
-                    className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-bold text-xs transition-colors"
-                  >
-                    <FileCode2 className="w-4 h-4 text-cyan-400" />
-                    <span>DESCARGAR DXF R12 (RDWORKS)</span>
-                  </button>
-
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <button
-                      onClick={handleExportSummaryReport}
-                      className="py-1.5 px-2 rounded bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px]"
-                    >
-                      Hoja de Ruta (TXT)
-                    </button>
-                    <button
-                      onClick={handleSaveOrderProject}
-                      className="py-1.5 px-2 rounded bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px]"
-                    >
-                      Guardar .lhstudio.json
-                    </button>
-                  </div>
-                </div>
-
+                {hasRasterExport && <p className="studio-notice">El logo contiene una imagen: usá SVG para conservar el grabado. DXF requiere vectorizarla en el paso Logo.</p>}
+                <label className="block space-y-2">Tanda a exportar
+                  <select aria-label="Tanda a exportar" className="w-full bg-slate-900 border border-slate-700" value={activeBatchIndex} onChange={e => setActiveBatchIndex(Number(e.target.value))}>
+                    {nestingResult.batches.map((batch, index) => <option value={index} key={index}>Tanda {index + 1} · {batch.count} etiquetas</option>)}
+                  </select>
+                </label>
+                <p className="text-slate-400">Cada archivo de corte contiene la tanda seleccionada. Descargá todas las tandas para completar el pedido.</p>
                 <div className="p-2.5 rounded bg-slate-900 border border-slate-800 text-[10px] text-slate-400 flex items-start gap-1.5">
                   <Info className="w-4 h-4 shrink-0 text-cyan-400 mt-0.5" />
                   <p className="leading-relaxed">
-                    Los archivos cumplen con la especificación matemática 1:1. La validación física en máquina se completará al importar en LightBurn.
+                    Revisá escala, capas y parámetros en tu software de corte. La vista previa no sustituye una prueba física en el material.
                   </p>
                 </div>
               </div>
@@ -2371,11 +2321,10 @@ export function App() {
             </button>
 
             <button
-              onClick={handleGoNext}
-              disabled={currentStepIndex === WIZARD_STEPS.length - 1}
+              onClick={() => currentStep === 'export' ? setCurrentStep('engraving') : handleGoNext()}
               className="flex items-center gap-1.5 px-4 py-1.5 text-xs rounded bg-cyan-600 hover:bg-cyan-500 text-white disabled:opacity-30 disabled:hover:bg-cyan-600 font-bold transition-colors shadow-sm"
             >
-              <span>{currentStepIndex === WIZARD_STEPS.length - 2 ? 'Revisar Pedido' : 'Continuar'}</span>
+              <span>{currentStep === 'export' ? 'Volver al diseño' : currentStepIndex === WIZARD_STEPS.length - 2 ? 'Revisar Pedido' : 'Continuar'}</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -2383,9 +2332,14 @@ export function App() {
 
         {/* ÁREA DE VISUALIZACIÓN PRINCIPAL (GRAN LIENZO EN VIVO) */}
         <section aria-label="Visualizador del diseño y mesa de corte" className="studio-workspace flex-1 flex flex-col bg-[#090c10] relative overflow-hidden">
+          <div className="studio-workspace-heading">
+            <div><span className="studio-eyebrow">{currentStep === 'production' ? 'Distribución' : currentStep === 'export' ? 'Entrega' : 'Diseño'}</span>
+              <h3>{currentStep === 'production' ? 'Mesa de producción' : currentStep === 'export' ? 'Archivos del pedido' : 'Vista previa de la etiqueta'}</h3></div>
+            <span className="studio-dimension-chip">{labelDesign.widthMm} × {labelDesign.heightMm} mm</span>
+          </div>
           {/* Si estamos en paso 1, 2, 3 o 4: Mostrar el Canvas de Etiqueta */}
           {['logo', 'dimensions', 'holes', 'engraving'].includes(currentStep) && (
-            <div className="flex-1 w-full h-full relative">
+            <div className="flex-1 min-h-0 w-full relative">
               <LabelEditorCanvas
                 design={labelDesign}
                 material={activeMaterial}
@@ -2423,7 +2377,12 @@ export function App() {
               />
 
               {/* Barra de herramientas flotante de vista previa */}
-              <div className="absolute bottom-3 left-4 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#11161f]/90 border border-slate-700/80 shadow text-xs text-slate-300 backdrop-blur-sm">
+              <div className="studio-canvas-tools absolute bottom-3 left-4 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#11161f]/90 border border-slate-700/80 shadow text-xs text-slate-300 backdrop-blur-sm">
+                <div className="studio-zoom">
+                  <button aria-label="Alejar vista" disabled={zoomLevel <= 0.4} onClick={() => setZoomLevel(z => Math.max(.4, Math.round((z-.2)*10)/10))}><ZoomOut className="w-4 h-4" /></button>
+                  <button aria-label="Ajustar vista a la ventana" title="Ajustar vista a la ventana" onClick={() => setZoomLevel(1)}>{Math.round(zoomLevel*100)}%</button>
+                  <button aria-label="Acercar vista" disabled={zoomLevel >= 4} onClick={() => setZoomLevel(z => Math.min(4, Math.round((z+.2)*10)/10))}><ZoomIn className="w-4 h-4" /></button>
+                </div>
                 <button
                   onClick={() =>
                     setRenderStyle(
@@ -2467,7 +2426,7 @@ export function App() {
 
           {/* Si estamos en paso 5: Mostrar la vista de Mesa de Producción (900x600 mm) */}
           {currentStep === 'production' && (
-            <div className="flex-1 w-full h-full relative">
+            <div className="flex-1 min-h-0 w-full relative">
               <ProductionBedPreview
                 design={labelDesign}
                 material={activeMaterial}
@@ -2481,18 +2440,18 @@ export function App() {
 
           {/* Si estamos en paso 6: Vista de Resumen y Auditoría Gráfica */}
           {currentStep === 'export' && (
-            <div className="flex-1 w-full h-full overflow-auto p-6 bg-[#090c10] flex flex-col items-center justify-center">
+            <div className="studio-export-view flex-1 min-h-0 w-full overflow-auto p-6 bg-[#090c10] flex flex-col items-center">
               <div className="max-w-2xl w-full bg-[#11161f] border border-slate-800 rounded-xl p-6 shadow-2xl space-y-6">
                 <div className="flex items-center justify-between border-b border-slate-800 pb-4">
                   <div>
                     <h3 className="text-lg font-bold text-white">
-                      {validationReport.isValid ? 'Paquete de Producción Listo para Exportar' : 'Exportación bloqueada: corregí la geometría'}
+                      {validationReport.isValid ? 'Tu pedido está listo para exportar' : 'Exportación bloqueada: corregí la geometría'}
                     </h3>
                     <p className="text-xs text-slate-400 mt-0.5">
                       {projectName} • Cliente: {clientName || 'General'}
                     </p>
                   </div>
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-950 border border-emerald-700 text-emerald-300">
+                  <span className={`px-3 py-1 rounded-full text-xs font-bold border ${validationReport.isValid ? 'bg-emerald-950 border-emerald-700 text-emerald-300' : 'bg-red-950 border-red-700 text-red-300'}`}>
                     {validationReport.isValid ? '✓ Geometría verificada' : '⚠ Geometría inválida'}
                   </span>
                 </div>
@@ -2504,7 +2463,7 @@ export function App() {
                       {labelDesign.widthMm} × {labelDesign.heightMm} mm
                     </span>
                     <span className="text-[10px] text-cyan-400 font-mono mt-0.5 block">
-                      {labelDesign.shape}
+                      {SHAPE_LABELS[labelDesign.shape] ?? labelDesign.shape}
                     </span>
                   </div>
 
@@ -2529,19 +2488,27 @@ export function App() {
                   </div>
                 </div>
 
+                {!validationReport.isValid && <div className="studio-export-errors" role="alert">
+                  <p>Revisá los errores antes de descargar:</p>
+                  <ul>{validationReport.issues.filter(issue => issue.severity === 'error').slice(0, 3).map((issue,index) => <li key={index}>{issue.message.replace(/"[^"]+"/g, 'del logo')}</li>)}</ul>
+                </div>}
+                {hasRasterExport && <p className="studio-notice">SVG conserva tu imagen. Para descargar DXF, primero vectorizá el logo.</p>}
                 {/* Acciones principales de exportación */}
                 <div className="space-y-3 pt-2">
                   <button
+                    disabled={!validationReport.isValid || isProcessingImage}
                     onClick={() => handleExportSvg('combined')}
                     className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-transform hover:scale-[1.01]"
                   >
                     <Download className="w-5 h-5" />
-                    <span>DESCARGAR ARCHIVO SVG PARA LIGHTBURN</span>
+                    <span>Descargar SVG · LightBurn</span>
                   </button>
 
                   <div className="grid grid-cols-2 gap-3">
                     <button
-                      onClick={handleExportDxf}
+                      disabled={!validationReport.isValid || hasRasterExport || isProcessingImage}
+                    title={hasRasterExport ? 'Para DXF, vectorizá el logo o usá SVG.' : undefined}
+                    onClick={handleExportDxf}
                       className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-bold text-xs flex items-center justify-center gap-2 transition-colors"
                     >
                       <FileCode2 className="w-4 h-4 text-cyan-400" />
@@ -2555,6 +2522,12 @@ export function App() {
                       <span>Descargar Hoja de Taller (TXT)</span>
                     </button>
                   </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button disabled={!validationReport.isValid || isProcessingImage} onClick={() => handleExportSvg('engrave_only')} className="studio-secondary-action">SVG Solo Grabado</button>
+                    <button disabled={!validationReport.isValid || isProcessingImage} onClick={() => handleExportSvg('cut_only')} className="studio-secondary-action">SVG Solo Corte</button>
+                  </div>
+                  <button onClick={handleSaveOrderProject} className="studio-secondary-action w-full">Guardar .lhstudio.json</button>
+                  <p className="text-xs text-slate-400 text-center">Tanda {activeBatchIndex + 1} de {nestingResult.totalBatches} · {activeBatch?.count ?? 0} etiquetas en el archivo</p>
                 </div>
               </div>
             </div>
@@ -2564,10 +2537,10 @@ export function App() {
 
       {/* 4. MODAL DE CATÁLOGO DE PEDIDOS */}
       {isOrdersModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <dialog ref={ordersDialog} onCancel={() => setIsOrdersModalOpen(false)} aria-labelledby="orders-title" className="studio-orders-dialog">
           <div className="bg-[#11161f] border border-slate-800 rounded-xl max-w-2xl w-full p-5 shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="font-bold text-sm text-white flex items-center gap-2">
+              <h3 id="orders-title" className="font-bold text-sm text-white flex items-center gap-2">
                 <FolderOpen className="w-4 h-4 text-cyan-400" />
                 <span>Biblioteca de Pedidos</span>
               </h3>
@@ -2598,13 +2571,8 @@ export function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-              {orders
-                .filter(
-                  (o) =>
-                    o.projectName.toLowerCase().includes(orderSearchQuery.toLowerCase()) ||
-                    o.clientName.toLowerCase().includes(orderSearchQuery.toLowerCase())
-                )
-                .map((ord) => (
+              {filteredOrders.length === 0 && <div className="studio-empty"><FolderOpen className="w-8 h-8" /><h4>No encontramos pedidos</h4><p>Probá con otro nombre de pedido o cliente.</p></div>}
+              {filteredOrders                .map((ord) => (
                   <div
                     key={ord.id}
                     className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 flex items-center justify-between hover:border-slate-700 transition-colors"
@@ -2629,12 +2597,12 @@ export function App() {
                 ))}
             </div>
           </div>
-        </div>
+        </dialog>
       )}
 
       {/* 5. TOAST DE NOTIFICACIÓN FLOTANTE */}
       {statusMessage && (
-        <div className="fixed bottom-4 right-4 z-50 bg-[#161b22] border border-cyan-500/60 shadow-xl rounded-lg px-3.5 py-2 text-xs text-cyan-200 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2">
+        <div role="status" aria-live="polite" className="studio-toast fixed bottom-4 right-4 z-50 bg-[#161b22] border border-cyan-500/60 shadow-xl rounded-lg px-3.5 py-2 text-xs text-cyan-200 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2">
           <Info className="w-4 h-4 text-cyan-400 shrink-0" />
           <span>{statusMessage}</span>
         </div>

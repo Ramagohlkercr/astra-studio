@@ -74,7 +74,7 @@ export async function processImageDataUrlInBrowser(params: {
 
         const widthMm = roundMm(params.targetWidthMm);
         const heightMm = roundMm(widthMm / aspect);
-        const effectiveDpi = computeEffectiveDpi(origW, widthMm);
+        const effectiveDpi = computeEffectiveDpi(workW, widthMm);
 
         resolve({
           id: params.existingId || `logo-raster-${Date.now()}`,
@@ -93,6 +93,8 @@ export async function processImageDataUrlInBrowser(params: {
           processedDataUrl,
           pixelWidth: origW,
           pixelHeight: origH,
+          processedPixelWidth: workW,
+          processedPixelHeight: workH,
           processing: { ...params.options },
           vectorizedPathsNormalized,
           effectiveDpi,

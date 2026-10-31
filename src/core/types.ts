@@ -177,6 +177,8 @@ export interface RasterLogoElement extends DesignElementBase {
   processedDataUrl: string;
   pixelWidth: number;
   pixelHeight: number;
+  processedPixelWidth?: number;
+  processedPixelHeight?: number;
   processing: ImageProcessingOptions;
   /** Trazados vectoriales cerrados generados por Marching Squares normalizados a [0..1, 0..1] */
   vectorizedPathsNormalized: string[];
