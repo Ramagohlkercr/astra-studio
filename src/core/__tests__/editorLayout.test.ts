@@ -20,3 +20,11 @@ describe('Production blocks',()=>{
  it.each([[25,5,5],[50,10,5],[100,10,10],[200,10,20]])('%i pieces in %ix%i', (qty,cols,rows)=>{const d=createBlankLabelDesign(20,10);d.elements=[];const n=computeNestingLayout(d,{...DEFAULT_NESTING_CONFIG,rotationMode:'0',layoutMode:'blocks',requestedQuantity:qty});expect(n.totalExportedQuantity).toBe(qty);expect(n.batches[0].columnsUsed).toBe(cols);expect(n.batches[0].rowsUsed).toBe(rows);});
  it('fits small offcuts and splits batches without losing pieces',()=>{const n=computeNestingLayout(createBlankLabelDesign(20,10),{...DEFAULT_NESTING_CONFIG,layoutMode:'blocks',sheetWidthMm:80,sheetHeightMm:60,requestedQuantity:103});expect(n.batches.reduce((a,b)=>a+b.count,0)).toBe(103);for(const b of n.batches)for(const i of b.placedInstances){expect(i.boundingBox.maxX).toBeLessThanOrEqual(75);expect(i.boundingBox.maxY).toBeLessThanOrEqual(55);}});
 });
+
+describe('Explicit grid orientation',()=>{
+ it.each([['5x10',5,10],['10x5',10,5],['5x5',5,5]] as const)('%s preserves chosen columns and rows and splits quantities',(layoutMode,cols,rows)=>{
+ const n=computeNestingLayout(createBlankLabelDesign(20,10),{...DEFAULT_NESTING_CONFIG,rotationMode:'0',layoutMode,requestedQuantity:103});
+ expect(n.batches[0].columnsUsed).toBe(cols);expect(n.batches[0].rowsUsed).toBe(rows);expect(n.totalExportedQuantity).toBe(103);
+ expect(n.batches.every(b=>b.count<=cols*rows)).toBe(true);
+ });
+});

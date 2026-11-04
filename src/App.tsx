@@ -965,10 +965,10 @@ export function App() {
       } else {
         const bytes = logoFolderZip(name, pendingFiles);
         const url = URL.createObjectURL(new Blob([bytes], {type: 'application/zip'}));
-        const link = document.createElement('a'); link.href = url; link.download = `${name}_ASTRA_LOGOS.zip`;
+        const link = document.createElement('a'); link.href = url; link.download = `${name}_Astra_grabados_logo.zip`;
         document.body.appendChild(link); link.click(); link.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
-        notify('ZIP descargado con la carpeta ASTRA LOGOS y sus archivos. Descomprimilo para acceder.');
+        notify('ZIP descargado con la carpeta Astra grabados logo y sus archivos. Descomprimilo para acceder.');
       }
       setLogoFolderName(name); setPendingFiles(null);
     } catch (error) {
@@ -2076,12 +2076,15 @@ export function App() {
                 <label className="block text-slate-300 space-y-2">
                   <span>Distribución de etiquetas</span>
                   <select aria-label="Distribución de etiquetas" value={nestingConfig.layoutMode ?? 'blocks'}
-                    onChange={e => pushStateWithHistory(labelDesign, {...nestingConfig, layoutMode: e.target.value as 'blocks'|'sheet'})}
+                    onChange={e => pushStateWithHistory(labelDesign, {...nestingConfig, layoutMode: e.target.value as NonNullable<typeof nestingConfig.layoutMode>})}
                     className="w-full bg-slate-900 border border-slate-700 p-2 rounded">
-                    <option value="blocks">Bloques: 5×5 / 10×5</option>
+                    <option value="5x10">5 columnas × 10 filas</option>
+                    <option value="10x5">10 columnas × 5 filas</option>
+                    <option value="5x5">5 columnas × 5 filas</option>
+                    <option value="blocks">Automática según cantidad</option>
                     <option value="sheet">Aprovechar ancho de plancha</option>
                   </select>
-                  <p className="text-xs text-slate-400">Hasta 25: 5 columnas. Desde 26: 10 columnas, continuando hacia abajo en grupos de cinco filas. Se adapta al material disponible.</p>
+                  <p className="text-xs text-slate-400">Las columnas van a lo ancho y las filas hacia abajo. Si la cantidad supera el bloque, se generan más tandas; si el material es pequeño, se adapta al espacio disponible.</p>
                 </label>
                 {/* Cantidad requerida con botones de 1 clic */}
                 <div>
@@ -2555,7 +2558,7 @@ export function App() {
                       <span>Descargar Hoja de Taller (TXT)</span>
                     </button>
                   </div>
-                  <p className="text-xs text-slate-400 text-center">Dos SVG separados: grabado y corte con orificios. Se guardan juntos en ASTRA LOGOS.</p>
+                  <p className="text-xs text-slate-400 text-center">Dos SVG separados: grabado y corte con orificios. Se guardan juntos en Astra grabados logo.</p>
                   <button onClick={handleSaveOrderProject} className="studio-secondary-action w-full">Guardar .lhstudio.json</button>
                   <p className="text-xs text-slate-400 text-center">Tanda {activeBatchIndex + 1} de {nestingResult.totalBatches} · {activeBatch?.count ?? 0} etiquetas en el archivo</p>
                 </div>
@@ -2568,14 +2571,14 @@ export function App() {
       {pendingFiles && <dialog ref={saveDialog} className="studio-orders-dialog" aria-labelledby="save-logo-title"
         onCancel={event => { if (isSavingFiles) event.preventDefault(); else setPendingFiles(null); }}>
         <form className="p-6 space-y-4" onSubmit={event => {event.preventDefault(); void confirmLogoSave();}}>
-          <h3 id="save-logo-title" className="font-semibold text-white">Guardar en ASTRA LOGOS</h3>
+          <h3 id="save-logo-title" className="font-semibold text-white">Guardar en Astra grabados logo</h3>
           <p className="text-sm text-slate-400">Elegí el nombre del logo. Sus archivos quedarán juntos en una carpeta con ese nombre.</p>
           <label className="block text-sm space-y-2"><span>Nombre del logo o archivo</span>
             <input autoFocus required disabled={isSavingFiles} value={saveName} onChange={event => {setSaveName(event.target.value); setSaveError(null);}}
               className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2" aria-describedby="logo-save-destination" />
           </label>
           <div id="logo-save-destination" className="studio-notice text-sm break-words">
-            <p>{isTauri() ? 'Documentos / ASTRA LOGOS' : 'ZIP / ASTRA LOGOS'} / {saveName.trim() || 'Nombre del logo'}</p>
+            <p>{isTauri() ? 'Escritorio / Astra grabados logo' : 'ZIP / Astra grabados logo'} / {saveName.trim() || 'Nombre del logo'}</p>
             <ul className="mt-2 space-y-1">{pendingFiles.map(file => <li key={file.name}>{file.name}</li>)}</ul>
           </div>
           <p className="text-xs text-slate-400">{isTauri() ? 'Si ya existen archivos con ese nombre, se guarda una nueva versión numerada.' : 'En el navegador se descarga un ZIP que conserva esta estructura de carpetas.'}</p>

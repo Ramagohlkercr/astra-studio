@@ -100,10 +100,13 @@ export function computeNestingLayout(
   const deg0 = calcGridCapacity(usableW, usableH, baseW, baseH, config.gapXMm, config.gapYMm);
   const deg90 = calcGridCapacity(usableW, usableH, baseH, baseW, config.gapXMm, config.gapYMm);
 
-  if (config.layoutMode === 'blocks') {
-    const columns = requestedQty <= 25 ? 5 : 10;
+  if (config.layoutMode === 'blocks' || ['5x10', '10x5', '5x5'].includes(config.layoutMode ?? '')) {
+    const fixed = config.layoutMode !== 'blocks';
+    const columns = fixed ? (config.layoutMode === '10x5' ? 10 : 5) : requestedQty <= 25 ? 5 : 10;
+    const rows = config.layoutMode === '5x10' ? 10 : 5;
     for (const grid of [deg0, deg90]) {
       grid.cols = Math.min(grid.cols, columns);
+      if (fixed) grid.rows = Math.min(grid.rows, rows);
       grid.capacity = grid.cols * grid.rows;
     }
   }

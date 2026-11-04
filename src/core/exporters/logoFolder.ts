@@ -10,7 +10,7 @@ export function logoFolderZip(name: string, files: LogoOutputFile[]): Uint8Array
   const encoder = new TextEncoder(); const parts: Uint8Array[] = []; const central: Uint8Array[] = []; let offset = 0;
   const crc32 = (bytes: Uint8Array) => { let crc=0xffffffff; for(const byte of bytes){crc^=byte;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}return (crc^0xffffffff)>>>0; };
   for (const file of files) {
-    const path=encoder.encode(`ASTRA LOGOS/${name}/${name}_${file.name}`), data=encoder.encode(file.content), crc=crc32(data);
+    const path=encoder.encode(`Astra grabados logo/${name}/${name}_${file.name}`), data=encoder.encode(file.content), crc=crc32(data);
     const local=new Uint8Array(30+path.length), v=new DataView(local.buffer);
     v.setUint32(0,0x04034b50,true);v.setUint16(4,20,true);v.setUint16(6,0x800,true);v.setUint32(14,crc,true);v.setUint32(18,data.length,true);v.setUint32(22,data.length,true);v.setUint16(26,path.length,true);local.set(path,30);
     const entry=new Uint8Array(46+path.length), c=new DataView(entry.buffer);

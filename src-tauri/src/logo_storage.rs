@@ -33,7 +33,7 @@ fn save_at(documents: &Path, logo_name: &str, files: Vec<LogoFile>) -> Result<Sa
             return Err("Nombre o formato de archivo no válido.".into());
         }
     }
-    let root = documents.join("ASTRA LOGOS"); ensure_directory(&root)?;
+    let root = documents.join("Astra grabados logo"); ensure_directory(&root)?;
     let folder = root.join(logo_name); ensure_directory(&folder)?;
     // Reserve every filename with create_new; concurrent saves cannot overwrite each other.
     for version in 1..10000 {
@@ -66,7 +66,7 @@ fn save_at(documents: &Path, logo_name: &str, files: Vec<LogoFile>) -> Result<Sa
 
 #[tauri::command]
 pub fn save_logo_files(app: tauri::AppHandle, logo_name: String, files: Vec<LogoFile>) -> Result<SavedLogoFiles, String> {
-    let documents = app.path().document_dir().map_err(|e| format!("No se encontró Documentos: {e}"))?;
+    let documents = app.path().desktop_dir().map_err(|e| format!("No se encontró el Escritorio: {e}"))?;
     save_at(&documents, &logo_name, files)
 }
 
