@@ -35,3 +35,19 @@ it('keeps 0.1 mm between neighboring cutting bounds in both directions',()=>{
  expect(pieces[1].boundingBox.minX-pieces[0].boundingBox.maxX).toBeCloseTo(0.1,4);
  expect(pieces[5].boundingBox.minY-pieces[0].boundingBox.maxY).toBeCloseTo(0.1,4);
 });
+
+import {fitAllElementsToAvailableSpace, computeSafeEngravingZone, getElementVisibleBoundingBoxMm} from '../geometry/geometryEngine';
+describe('Maximum logo and sewing fit',()=>{
+ it.each([0,45,90])('fills available visible bounds without distortion at %s degrees',(angle)=>{
+ const d={...createBlankLabelDesign(40,20),safetyMarginMm:0.5}; const el=logo(angle);
+ const fitted=fitAllElementsToAvailableSpace([el],d,1,'safe_zone_center')[0];
+ const box=getElementVisibleBoundingBoxMm(fitted),zone=computeSafeEngravingZone(d);
+ expect(fitted.widthMm/fitted.heightMm).toBeCloseTo(el.widthMm/el.heightMm,3);
+ expect(box.width).toBeLessThanOrEqual(zone.width+0.001);expect(box.height).toBeLessThanOrEqual(zone.height+0.001);
+ expect(Math.max(box.width/zone.width,box.height/zone.height)).toBeCloseTo(1,3);
+ const sewn=fitAllElementsToAvailableSpace([fitted],{...d,safetyMarginMm:2},1,'safe_zone_center')[0];
+ const sewnBox=getElementVisibleBoundingBoxMm(sewn);
+ expect(sewnBox.minX).toBeGreaterThanOrEqual(1.999);expect(sewnBox.minY).toBeGreaterThanOrEqual(1.999);
+ expect(sewn.widthMm).toBeLessThan(fitted.widthMm);
+ });
+});

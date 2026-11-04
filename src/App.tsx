@@ -424,7 +424,7 @@ export function App() {
         contentBoundsNormalized: parsed.contentBoundsNormalized,
       };
 
-      const fittedEl = fitElementToAvailableSpace(rawEl, labelDesign, 0.85);
+      const fittedEl = fitElementToAvailableSpace(rawEl, labelDesign, 0.9999, 'safe_zone_center');
 
       pushStateWithHistory({
         ...labelDesign,
@@ -454,7 +454,7 @@ export function App() {
         const fittedRaster = fitElementToAvailableSpace(
           rasterEl,
           labelDesign,
-          0.85
+          0.9999, 'safe_zone_center'
         ) as RasterLogoElement;
 
         pushStateWithHistory({
@@ -500,7 +500,7 @@ export function App() {
         originalViewBox: parsed.originalViewBox,
         contentBoundsNormalized: parsed.contentBoundsNormalized,
       };
-      const fitted = fitElementToAvailableSpace(rawEl, labelDesign, 0.85);
+      const fitted = fitElementToAvailableSpace(rawEl, labelDesign, 0.9999, 'safe_zone_center');
       pushStateWithHistory({
         ...labelDesign,
         elements: [fitted],
@@ -535,7 +535,7 @@ export function App() {
         originalViewBox: parsed.originalViewBox,
         contentBoundsNormalized: parsed.contentBoundsNormalized,
       };
-      const fitted = fitElementToAvailableSpace(rawEl, labelDesign, 0.85);
+      const fitted = fitElementToAvailableSpace(rawEl, labelDesign, 0.9999, 'safe_zone_center');
       pushStateWithHistory({
         ...labelDesign,
         elements: [fitted],
@@ -588,7 +588,7 @@ export function App() {
     const fitted = fitElementToAvailableSpace(
       rasterEl,
       labelDesign,
-      0.82
+      0.9999, 'safe_zone_center'
     ) as RasterLogoElement;
     pushStateWithHistory({
       ...labelDesign,
@@ -703,7 +703,7 @@ export function App() {
     const adaptedElements = fitAllElementsToAvailableSpace(
       labelDesign.elements,
       labelDesign,
-      0.88
+      0.9999, 'safe_zone_center'
     );
     pushStateWithHistory({
       ...labelDesign,
@@ -826,16 +826,19 @@ export function App() {
   };
 
   // 3. Ajustar al Espacio Disponible (Escala proporcional máxima a la zona segura)
-  const handleFitToAvailableSpace = () => {
+  const [sewingMarginMm, setSewingMarginMm] = useState(2);
+  const handleFitToAvailableSpace = (marginMm = labelDesign.safetyMarginMm) => {
     if (labelDesign.elements.length === 0) return;
+    const fittedDesign = {...labelDesign, safetyMarginMm: marginMm};
     const fittedEls = fitAllElementsToAvailableSpace(
       labelDesign.elements,
-      labelDesign,
-      0.88,
+      fittedDesign,
+      0.9999,
       'safe_zone_center'
     );
     pushStateWithHistory({
       ...labelDesign,
+      safetyMarginMm: marginMm,
       elements: fittedEls,
     });
     notify('Logotipo ajustado proporcionalmente al espacio seguro disponible.');
@@ -1813,7 +1816,7 @@ export function App() {
                           Se detectó invasión del logotipo sobre los agujeros de costura.
                         </p>
                         <button
-                          onClick={handleFitToAvailableSpace}
+                          onClick={() => handleFitToAvailableSpace()}
                           className="w-full py-1 px-2 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] transition-colors"
                         >
                           ⚡ Ajustar logo para no invadir orificios
@@ -1860,12 +1863,19 @@ export function App() {
                     Tamaño del Grabado
                   </span>
                   <button
-                    onClick={handleFitToAvailableSpace}
+                    onClick={() => handleFitToAvailableSpace(0.5)}
                     className="w-full flex items-center justify-center gap-2 py-1.5 px-3 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-bold text-xs transition-colors"
                   >
                     <Maximize2 className="w-3.5 h-3.5" />
-                    <span>Ajustar al área segura</span>
+                    <span>Máximo tamaño del logo</span>
                   </button>
+                  <p className="text-xs text-slate-400">Conserva las proporciones, centra el dibujo visible y respeta los orificios. El ajuste máximo deja 0,5 mm al borde.</p>
+                  <label className="block text-xs text-slate-300">Margen para costura por lado (mm)
+                    <input type="number" aria-label="Margen para costura (mm)" min="0.5" max={Math.min(labelDesign.widthMm,labelDesign.heightMm)*0.35} step="0.1" value={sewingMarginMm}
+                      onChange={e => setSewingMarginMm(Math.max(0.5,Math.min(Math.min(labelDesign.widthMm,labelDesign.heightMm)*0.35,Number(e.target.value)||0.5)))}
+                      className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2" />
+                  </label>
+                  <button onClick={() => handleFitToAvailableSpace(sewingMarginMm)} className="w-full py-2 rounded bg-slate-800 border border-slate-700 text-cyan-300 text-xs font-semibold">Acomodar para costura</button>
 
                   {selectedElement && (
                     <div className="grid grid-cols-2 gap-2 pt-1">
@@ -2047,7 +2057,7 @@ export function App() {
                       <span>El grabado invade la línea de corte u orificios</span>
                     </div>
                     <button
-                      onClick={handleFitToAvailableSpace}
+                      onClick={() => handleFitToAvailableSpace()}
                       className="w-full py-1.5 px-3 rounded bg-red-600 hover:bg-red-500 text-white font-bold text-xs transition-colors"
                     >
                       ⚡ Auto-corregir a Zona Segura

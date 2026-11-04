@@ -95,7 +95,7 @@ describe('Astra Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
     const centerBtn = screen.getByRole('button', { name: /CENTRAR LOGO/i });
     fireEvent.click(centerBtn);
 
-    const fitBtn = screen.getByRole('button', { name: /Ajustar al área segura/i });
+    const fitBtn = screen.getByRole('button', { name: /Máximo tamaño del logo/i });
     fireEvent.click(fitBtn);
 
     // Ir al Paso 6: Exportar

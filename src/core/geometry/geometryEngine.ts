@@ -778,6 +778,12 @@ export function computeSafeEngravingZone(design: LabelDesign): BoundingBox {
   let maxX = design.widthMm - margin;
   let maxY = design.heightMm - margin;
 
+  if (design.shape === 'rounded_rect') {
+    const radius = Math.max(0, Math.min(design.cornerRadiusMm, design.widthMm / 2, design.heightMm / 2) - margin);
+    const inset = radius * (1 - Math.SQRT1_2) + 0.001;
+    minX += inset; maxX -= inset; minY += inset; maxY -= inset;
+  }
+
   // Para etiquetas circulares u ovaladas, inscribir un rectángulo seguro dentro de la elipse interior
   if (design.shape === 'circle' || design.shape === 'oval') {
     const rx = Math.max(0.001, (design.shape === 'circle' ? Math.min(design.widthMm, design.heightMm) : design.widthMm) / 2 - margin);

@@ -9,7 +9,7 @@ it('edits visible dimensions rather than transparent canvas dimensions',()=>{
  localStorage.setItem('laserhouse_studio_orders_v1',JSON.stringify(orders));
  render(<App/>);
  fireEvent.click(screen.getByRole('button',{name:/4.*Grabado/}));
- const fields=screen.getAllByRole('spinbutton');
+ const fields=screen.getAllByRole('spinbutton').filter(el=>el.getAttribute('aria-label') !== 'Margen para costura (mm)');
  fireEvent.change(fields[0],{target:{value:'8'}});
  expect((fields[0] as HTMLInputElement).value).toBe('8');
  fireEvent.change(fields[1],{target:{value:'3'}});
