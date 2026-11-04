@@ -2217,8 +2217,8 @@ export function App() {
                           <label className="text-slate-400 block mb-1">Separación X (mm):</label>
                           <input
                             type="number"
-                            step="0.5"
-                            min="0.5"
+                            step="0.1"
+                            min="0.1"
                             max="20"
                             aria-label="Separación horizontal (mm)" value={nestingConfig.gapXMm}
                             onChange={(e) =>
@@ -2234,8 +2234,8 @@ export function App() {
                           <label className="text-slate-400 block mb-1">Separación Y (mm):</label>
                           <input
                             type="number"
-                            step="0.5"
-                            min="0.5"
+                            step="0.1"
+                            min="0.1"
                             max="20"
                             aria-label="Separación vertical (mm)" value={nestingConfig.gapYMm}
                             onChange={(e) =>

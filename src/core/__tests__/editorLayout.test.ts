@@ -28,3 +28,10 @@ describe('Explicit grid orientation',()=>{
  expect(n.batches.every(b=>b.count<=cols*rows)).toBe(true);
  });
 });
+
+it('keeps 0.1 mm between neighboring cutting bounds in both directions',()=>{
+ const n=computeNestingLayout(createBlankLabelDesign(20,10),{...DEFAULT_NESTING_CONFIG,rotationMode:'0',layoutMode:'5x10',requestedQuantity:50});
+ const pieces=n.batches[0].placedInstances;
+ expect(pieces[1].boundingBox.minX-pieces[0].boundingBox.maxX).toBeCloseTo(0.1,4);
+ expect(pieces[5].boundingBox.minY-pieces[0].boundingBox.maxY).toBeCloseTo(0.1,4);
+});
