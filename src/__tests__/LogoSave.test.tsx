@@ -13,11 +13,13 @@ it('asks for a name before saving engraving and cutting together',async()=>{
  fireEvent.click(screen.getByRole('button',{name:'Guardar archivos'}));
  await waitFor(()=>expect(invoke).toHaveBeenCalledTimes(1));
  const args=vi.mocked(invoke).mock.calls[0][1] as any;
- expect(args.logoName).toBe('Clara Tejidos');expect(args.files).toHaveLength(2);
+ expect(args.logoName).toBe('Clara Tejidos');expect(args.files).toHaveLength(3);
  expect(args.files[0].name).toMatch(/Grabado/);expect(args.files[1].name).toMatch(/Corte/);
  expect(args.files[0].content).toContain('CAPA_00_GRABADO');
  expect(args.files[0].content).not.toContain('id="CAPA_02_CORTE"');
  expect(args.files[1].content).toContain('CAPA_02_CORTE');
+ expect(args.files[2].name).toBe('Ajustes_LightBurn.txt');
+ expect(args.files[2].content).toContain('DPI: 254.0');
  await waitFor(()=>expect(screen.queryByRole('button',{name:'Guardar archivos'})).toBeNull());
 });
 it('cancel does not write files',()=>{prepare();fireEvent.click(screen.getByRole('button',{name:'Cancelar'}));expect(invoke).not.toHaveBeenCalled();});

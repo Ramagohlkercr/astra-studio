@@ -1,3 +1,4 @@
+import {LIGHTBURN_PROFILES, LightburnProfile, lightburnGuide} from './core/exporters/lightburnGuide';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { LogoOutputFile, logoNameError, logoFolderZip } from './core/exporters/logoFolder';
 import { alignArtwork, artworkDpi, mergeProcessedArtwork, EdgeAlignment } from './core/geometry/editorActions';
@@ -230,6 +231,7 @@ export function App() {
   }, [isOrdersModalOpen]);
   const [orderSearchQuery, setOrderSearchQuery] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [lightburnProfile, setLightburnProfile] = useState<LightburnProfile>('balanced');
   const [pendingFiles, setPendingFiles] = useState<LogoOutputFile[] | null>(null);
   const [logoFolderName, setLogoFolderName] = useState('');
   const [saveName, setSaveName] = useState('');
@@ -985,7 +987,7 @@ export function App() {
         name: `${mode === 'engrave_only' ? 'Grabado' : 'Corte'}_Tanda_${activeBatchIndex + 1}.svg`,
         content: exportProductionSvg(labelDesign, nestingResult, activeMaterial, {mode, batchIndex: activeBatchIndex}).svgContent,
       }));
-      requestLogoSave(files);
+      requestLogoSave([...files, {name: 'Ajustes_LightBurn.txt', content: lightburnGuide(lightburnProfile)}]);
     } catch (err) { notify(`Error al preparar grabado y corte: ${(err as Error).message}`); }
   };
 
@@ -1407,12 +1409,12 @@ export function App() {
                         <div>
                           <div className="font-bold">
                             {artworkDpi(selectedElement) >= 200
-                              ? `Resolución óptima (${Math.round(artworkDpi(selectedElement))} DPI)`
+                              ? `Resolución de origen (${Math.round(artworkDpi(selectedElement))} DPI)`
                               : `Calidad baja (${Math.round(artworkDpi(selectedElement))} DPI)`}
                           </div>
                           <div className="text-[10px] opacity-90">
                             {artworkDpi(selectedElement) >= 200
-                              ? 'Resolución de la imagen procesada al tamaño actual. Revisá una muestra antes de producir.'
+                              ? 'DPI de la imagen al tamaño actual. El intervalo de grabado se configura por separado en LightBurn.'
                               : 'Recomendado ≥ 200 DPI para evitar bordes pixelados.'}
                           </div>
                         </div>
@@ -2310,6 +2312,15 @@ export function App() {
                       </span>
                     </div>
                   </div>
+                </div>
+
+                <div className="space-y-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
+                  <label className="block text-sm">Perfil sugerido para LightBurn
+                    <select aria-label="Perfil sugerido para LightBurn" value={lightburnProfile} onChange={e=>setLightburnProfile(e.target.value as LightburnProfile)} className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2">
+                      {Object.entries(LIGHTBURN_PROFILES).map(([key,p])=><option key={key} value={key}>{p.name} · {Math.round(25.4/p.interval)} DPI · {p.interval} mm</option>)}
+                    </select>
+                  </label>
+                  <p className="text-xs text-slate-400">La descarga incluye una guía para aplicar estos valores en LightBurn. El SVG no cambia los ajustes de la máquina. Velocidad y potencia requieren calibración para tu material.</p>
                 </div>
 
                 {/* Auditoría Geométrica en Vivo */}
