@@ -106,12 +106,15 @@ describe('Astra Studio — Asistente de 6 Pasos e Interfaz (UI)', () => {
     // Ejecutar descargas
     const downloadSvgButtons = screen.getAllByRole('button', { name: /SVG/i });
     fireEvent.click(downloadSvgButtons[0]);
+    fireEvent.click(screen.getByRole('button', {name:'Descargar carpeta ZIP'}));
 
     const downloadDxfButtons = screen.getAllByRole('button', { name: /DXF R12/i });
     fireEvent.click(downloadDxfButtons[0]);
+    fireEvent.click(screen.getByRole('button', {name:'Descargar carpeta ZIP'}));
 
     const saveProjectButtons = screen.getAllByRole('button', { name: /Guardar \.lhstudio\.json/i });
     fireEvent.click(saveProjectButtons[0]);
+    fireEvent.click(screen.getByRole('button', {name:'Descargar carpeta ZIP'}));
 
     expect(createObjUrlMock).toHaveBeenCalled();
   });

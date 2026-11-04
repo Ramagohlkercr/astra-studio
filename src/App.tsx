@@ -1,3 +1,5 @@
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { LogoOutputFile, logoNameError, logoFolderZip } from './core/exporters/logoFolder';
 import { alignArtwork, artworkDpi, mergeProcessedArtwork, EdgeAlignment } from './core/geometry/editorActions';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -47,7 +49,7 @@ import {
   parseAndAuditLightBurnSvg,
 } from './core/exporters/fileFormatValidator';
 import { generateProductionSummaryReport } from './core/exporters/productionSummaryExporter';
-import { exportProductionSvg, SvgExportMode } from './core/exporters/svgExporter';
+import { exportProductionSvg } from './core/exporters/svgExporter';
 import {
   centerAllElementsGeometrically,
   centerElementGeometrically,
@@ -228,6 +230,15 @@ export function App() {
   }, [isOrdersModalOpen]);
   const [orderSearchQuery, setOrderSearchQuery] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<LogoOutputFile[] | null>(null);
+  const [logoFolderName, setLogoFolderName] = useState('');
+  const [saveName, setSaveName] = useState('');
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSavingFiles, setIsSavingFiles] = useState(false);
+  const saveDialog = useRef<HTMLDialogElement>(null);
+  const savingFiles = useRef(false);
+  useEffect(() => { if (pendingFiles) saveDialog.current?.showModal?.(); }, [pendingFiles]);
+
 
   // Unidad de visualización de medidas (mm o cm) - Las medidas se almacenan internamente siempre en mm
   const [dimensionUnit, setDimensionUnit] = useState<DimensionUnit>('mm');
@@ -928,31 +939,51 @@ export function App() {
   // PASO 6: EXPORTADORES (SVG, DXF, PROYECTO, KERF)
   // ==========================================
 
-  const triggerDownload = (filename: string, content: string, mimeType: string) => {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const requestLogoSave = (files: LogoOutputFile[]) => {
+    setSaveName(logoFolderName || selectedElement?.name?.replace(/\.(png|jpe?g|svg)$/i, '') || projectName);
+    setSaveError(null);
+    setPendingFiles(files);
   };
 
-  const handleExportSvg = (mode: SvgExportMode = 'combined') => {
+  const triggerDownload = (_filename: string, content: string, mimeType: string) => {
+    const name = mimeType === 'application/json' ? 'Proyecto.lhstudio.json'
+      : mimeType === 'application/dxf' ? `Produccion_Tanda_${activeBatchIndex + 1}.dxf`
+      : mimeType === 'image/svg+xml' ? 'Calibracion_Kerf.svg' : `Hoja_de_Taller_Tanda_${activeBatchIndex + 1}.txt`;
+    requestLogoSave([{name, content}]);
+  };
+
+  const confirmLogoSave = async () => {
+    if (!pendingFiles || savingFiles.current) return;
+    const name = saveName.trim();
+    const error = logoNameError(name);
+    if (error) { setSaveError(error); return; }
+    savingFiles.current = true; setIsSavingFiles(true); setSaveError(null);
     try {
-      const artifact = exportProductionSvg(
-        labelDesign,
-        nestingResult,
-        activeMaterial,
-        { mode, batchIndex: activeBatchIndex }
-      );
-      triggerDownload(artifact.filenameSuggested, artifact.svgContent, 'image/svg+xml');
-      notify(`Archivo SVG "${artifact.filenameSuggested}" exportado.`);
-    } catch (err) {
-      notify(`Error al exportar SVG: ${(err as Error).message}`);
-    }
+      if (isTauri()) {
+        const result = await invoke<{folder: string; files: string[]}>('save_logo_files', {logoName: name, files: pendingFiles});
+        notify(`${result.files.length} archivo(s) guardado(s) en ${result.folder}`);
+      } else {
+        const bytes = logoFolderZip(name, pendingFiles);
+        const url = URL.createObjectURL(new Blob([bytes], {type: 'application/zip'}));
+        const link = document.createElement('a'); link.href = url; link.download = `${name}_ASTRA_LOGOS.zip`;
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        notify('ZIP descargado con la carpeta ASTRA LOGOS y sus archivos. Descomprimilo para acceder.');
+      }
+      setLogoFolderName(name); setPendingFiles(null);
+    } catch (error) {
+      setSaveError(`No se pudo completar el guardado: ${error instanceof Error ? error.message : String(error)}. Podés reintentar.`);
+    } finally { savingFiles.current = false; setIsSavingFiles(false); }
+  };
+
+  const handleExportSvg = () => {
+    try {
+      const files = (['engrave_only', 'cut_only'] as const).map(mode => ({
+        name: `${mode === 'engrave_only' ? 'Grabado' : 'Corte'}_Tanda_${activeBatchIndex + 1}.svg`,
+        content: exportProductionSvg(labelDesign, nestingResult, activeMaterial, {mode, batchIndex: activeBatchIndex}).svgContent,
+      }));
+      requestLogoSave(files);
+    } catch (err) { notify(`Error al preparar grabado y corte: ${(err as Error).message}`); }
   };
 
   const handleExportDxf = () => {
@@ -963,7 +994,7 @@ export function App() {
         activeBatchIndex
       );
       triggerDownload(artifact.filenameSuggested, artifact.dxfContent, 'application/dxf');
-      notify(`Archivo DXF R12 "${artifact.filenameSuggested}" exportado.`);
+
     } catch (err) {
       notify(`Error al exportar DXF: ${(err as Error).message}`);
     }
@@ -984,13 +1015,14 @@ export function App() {
         batchIndex: activeBatchIndex,
       });
       triggerDownload(artifact.filenameSuggested, artifact.reportText, 'text/plain');
-      notify(`Hoja de ruta "${artifact.filenameSuggested}" descargada.`);
+
     } catch (err) {
       notify(`Error al generar resumen: ${(err as Error).message}`);
     }
   };
 
   const openProject = (ord: OrderProject) => {
+    setLogoFolderName('');
     setActiveOrderId(ord.id); setProjectName(ord.projectName); setClientName(ord.clientName);
     setOrderNotes(ord.notes); setSelectedMaterialId(ord.materialId);
     if (ord.materialProfileSnapshot) setMaterials(prev => [...prev.filter(m => m.id !== ord.materialId), ord.materialProfileSnapshot]);
@@ -1021,13 +1053,13 @@ export function App() {
     try { setOrders(upsertOrderProject(orders, project)); }
     catch { catalogSaved = false; }
     triggerDownload(`${projectName.replace(/\s+/g, '_')}.lhstudio.json`, jsonStr, 'application/json');
-    notify(catalogSaved ? 'Proyecto guardado y descargado.' : 'Archivo descargado; el catálogo local NO se guardó (cuota o permisos). Conservá el archivo JSON.');
+    if (!catalogSaved) notify('El catálogo local no se guardó. Guardá el archivo del proyecto para conservarlo.');
   };
 
   const handleDownloadKerfPattern = () => {
     const artifact = generateKerfCalibrationPatternSvg(activeMaterial.name);
     triggerDownload(artifact.filenameSuggested, artifact.svgContent, 'image/svg+xml');
-    notify('Patrón de calibración de Kerf (100×20 mm) descargado.');
+
   };
 
   const handleCreateNewBlankOrder = () => {
@@ -1051,6 +1083,7 @@ export function App() {
     };
     setSelectedElementId(null);
     setActiveBatchIndex(0);
+    setLogoFolderName('');
     setActiveOrderId(newOrder.id);
     setProjectName(newOrder.projectName);
     setClientName(newOrder.clientName);
@@ -2497,11 +2530,11 @@ export function App() {
                 <div className="space-y-3 pt-2">
                   <button
                     disabled={!validationReport.isValid || isProcessingImage}
-                    onClick={() => handleExportSvg('combined')}
+                    onClick={handleExportSvg}
                     className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-transform hover:scale-[1.01]"
                   >
                     <Download className="w-5 h-5" />
-                    <span>Descargar SVG · LightBurn</span>
+                    <span>Descargar grabado y corte (SVG)</span>
                   </button>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -2522,10 +2555,7 @@ export function App() {
                       <span>Descargar Hoja de Taller (TXT)</span>
                     </button>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <button disabled={!validationReport.isValid || isProcessingImage} onClick={() => handleExportSvg('engrave_only')} className="studio-secondary-action">SVG Solo Grabado</button>
-                    <button disabled={!validationReport.isValid || isProcessingImage} onClick={() => handleExportSvg('cut_only')} className="studio-secondary-action">SVG Solo Corte</button>
-                  </div>
+                  <p className="text-xs text-slate-400 text-center">Dos SVG separados: grabado y corte con orificios. Se guardan juntos en ASTRA LOGOS.</p>
                   <button onClick={handleSaveOrderProject} className="studio-secondary-action w-full">Guardar .lhstudio.json</button>
                   <p className="text-xs text-slate-400 text-center">Tanda {activeBatchIndex + 1} de {nestingResult.totalBatches} · {activeBatch?.count ?? 0} etiquetas en el archivo</p>
                 </div>
@@ -2534,6 +2564,28 @@ export function App() {
           )}
         </section>
       </main>
+
+      {pendingFiles && <dialog ref={saveDialog} className="studio-orders-dialog" aria-labelledby="save-logo-title"
+        onCancel={event => { if (isSavingFiles) event.preventDefault(); else setPendingFiles(null); }}>
+        <form className="p-6 space-y-4" onSubmit={event => {event.preventDefault(); void confirmLogoSave();}}>
+          <h3 id="save-logo-title" className="font-semibold text-white">Guardar en ASTRA LOGOS</h3>
+          <p className="text-sm text-slate-400">Elegí el nombre del logo. Sus archivos quedarán juntos en una carpeta con ese nombre.</p>
+          <label className="block text-sm space-y-2"><span>Nombre del logo o archivo</span>
+            <input autoFocus required disabled={isSavingFiles} value={saveName} onChange={event => {setSaveName(event.target.value); setSaveError(null);}}
+              className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2" aria-describedby="logo-save-destination" />
+          </label>
+          <div id="logo-save-destination" className="studio-notice text-sm break-words">
+            <p>{isTauri() ? 'Documentos / ASTRA LOGOS' : 'ZIP / ASTRA LOGOS'} / {saveName.trim() || 'Nombre del logo'}</p>
+            <ul className="mt-2 space-y-1">{pendingFiles.map(file => <li key={file.name}>{file.name}</li>)}</ul>
+          </div>
+          <p className="text-xs text-slate-400">{isTauri() ? 'Si ya existen archivos con ese nombre, se guarda una nueva versión numerada.' : 'En el navegador se descarga un ZIP que conserva esta estructura de carpetas.'}</p>
+          {saveError && <p role="alert" className="text-sm text-red-300">{saveError}</p>}
+          <div className="flex justify-end gap-3">
+            <button type="button" disabled={isSavingFiles} className="studio-secondary-action" onClick={() => setPendingFiles(null)}>Cancelar</button>
+            <button type="submit" disabled={isSavingFiles} className="bg-cyan-600 text-white px-4 py-2">{isSavingFiles ? 'Guardando…' : isTauri() ? 'Guardar archivos' : 'Descargar carpeta ZIP'}</button>
+          </div>
+        </form>
+      </dialog>}
 
       {/* 4. MODAL DE CATÁLOGO DE PEDIDOS */}
       {isOrdersModalOpen && (
