@@ -21,3 +21,18 @@ it('blocks kerf that would silently substitute a hole diameter',()=>{
  const n=computeNestingLayout(d,{...DEFAULT_NESTING_CONFIG,requestedQuantity:1});
  expect(validateLabelAndBatchGeometry(d,n).issues.some(i=>i.code==='KERF_COLLAPSES_HOLE')).toBe(true);
 });
+
+import {exportProductionSvg} from '../exporters/svgExporter';
+import {exportProductionDxf} from '../exporters/dxfExporter';
+import {INITIAL_MATERIALS_CATALOG} from '../materials/materialsCatalog';
+it('exports each straight rectangle as one continuous closed contour in SVG and DXF',()=>{
+ const d=createBlankLabelDesign(40,15);d.shape='rectangle';d.elements=[];
+ const n=computeNestingLayout(d,{...DEFAULT_NESTING_CONFIG,requestedQuantity:2});
+ const svg=exportProductionSvg(d,n,INITIAL_MATERIALS_CATALOG[0],{mode:'cut_only'}).svgContent;
+ const paths=[...svg.matchAll(/<path[^>]*id="[^"]*-cut"[^>]*d="([^"]+)"/g)];
+ expect(paths).toHaveLength(2);
+ for(const p of paths){expect(p[1].match(/M/g)).toHaveLength(1);expect(p[1].match(/L/g)).toHaveLength(3);expect(p[1].trim().endsWith('Z')).toBe(true);}
+ const dxf=exportProductionDxf(d,n).dxfContent;
+ expect(dxf.match(/\nPOLYLINE\n/g)).toHaveLength(2);
+ expect(dxf.match(/\nSEQEND\n/g)).toHaveLength(2);
+});
