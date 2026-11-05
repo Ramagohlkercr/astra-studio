@@ -2159,6 +2159,10 @@ export function App() {
                   </select>
                   <p className="text-xs text-slate-400">Las columnas van a lo ancho y las filas hacia abajo. Si la cantidad supera el bloque, se generan más tandas; si el material es pequeño, se adapta al espacio disponible.</p>
                 </label>
+                <label className="block rounded border border-cyan-900 bg-slate-900 p-3 space-y-2">
+                  <span className="flex items-center gap-2"><input type="checkbox" aria-label="Corte por líneas compartidas" checked={nestingConfig.sharedCutLines ?? false} onChange={e=>pushStateWithHistory(labelDesign,{...nestingConfig,sharedCutLines:e.target.checked,gapXMm:e.target.checked?0:0.1,gapYMm:e.target.checked?0:0.1})} />Corte por líneas compartidas</span>
+                  <p className="text-xs text-slate-400">Solo rectángulos sin redondeo. Une las etiquetas con separación 0 y corta cada borde común una vez. Compensación de corte: 0. El ancho del haz reduce ligeramente el tamaño final.</p>
+                </label>
                 {/* Cantidad requerida con botones de 1 clic */}
                 <div>
                   <span className="text-slate-400 font-semibold block mb-1.5">
@@ -2293,7 +2297,7 @@ export function App() {
                             step="0.1"
                             min="0.1"
                             max="20"
-                            aria-label="Separación horizontal (mm)" value={nestingConfig.gapXMm}
+                            disabled={nestingConfig.sharedCutLines} aria-label="Separación horizontal (mm)" value={nestingConfig.gapXMm}
                             onChange={(e) =>
                               pushStateWithHistory(labelDesign, {
                                 ...nestingConfig,
@@ -2310,7 +2314,7 @@ export function App() {
                             step="0.1"
                             min="0.1"
                             max="20"
-                            aria-label="Separación vertical (mm)" value={nestingConfig.gapYMm}
+                            disabled={nestingConfig.sharedCutLines} aria-label="Separación vertical (mm)" value={nestingConfig.gapYMm}
                             onChange={(e) =>
                               pushStateWithHistory(labelDesign, {
                                 ...nestingConfig,
@@ -2400,7 +2404,7 @@ export function App() {
                     </div>
                     <div className={`flex items-center gap-1.5 ${validationReport.isValid ? 'text-emerald-400' : 'text-red-400'}`}>
                       {validationReport.isValid ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0" />}
-                      <span>{validationReport.isValid ? 'Contornos cerrados y sin superposiciones' : 'Hay errores geométricos: revisar antes de exportar'}</span>
+                      <span>{validationReport.isValid ? nestingConfig.sharedCutLines ? 'Líneas compartidas sin cortes duplicados' : 'Contornos cerrados y sin superposiciones' : 'Hay errores geométricos: revisar antes de exportar'}</span>
                     </div>
                     <div className="flex items-center gap-1.5 text-emerald-400">
                       <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />

@@ -1,3 +1,4 @@
+import {supportsSharedCuts} from './sharedCuts';
 import {
   BoundingBox,
   ClosedContour,
@@ -1503,6 +1504,9 @@ export function validateLabelAndBatchGeometry(
   const issues: ValidationIssue[] = [];
   const singleCompiled = compileLabelGeometry(design);
 
+  if (nestingResult.config.sharedCutLines && (!supportsSharedCuts(design) || design.kerfCompensationMm!==0)) {
+    issues.push({severity:'error',code:'INVALID_SHARED_CUT',message:'Las líneas compartidas requieren etiquetas rectangulares sin esquinas redondeadas y compensación de corte en 0.'});
+  }
   // 1. Validar dimensiones positivas
   if (design.widthMm <= 0 || design.heightMm <= 0) {
     issues.push({
@@ -1718,7 +1722,7 @@ export function validateLabelAndBatchGeometry(
   }
 
   const duplicateCutSegmentsCount = detectDuplicateCutSegments([
-    ...allCutContours,
+    ...(nestingResult.config.sharedCutLines && supportsSharedCuts(design) && design.kerfCompensationMm===0 ? [] : allCutContours),
     ...allHoleContours,
   ]);
 

@@ -58,6 +58,7 @@ export function computeNestingLayout(
   label: LabelDesign,
   config: NestingConfig
 ): NestingResult {
+  if (config.sharedCutLines) config = {...config, gapXMm:0, gapYMm:0};
   const warnings: string[] = [];
   const errors: string[] = [];
 
@@ -91,7 +92,7 @@ export function computeNestingLayout(
     );
   }
 
-  if (config.gapXMm < 0.5 || config.gapYMm < 0.5) {
+  if (!config.sharedCutLines && (config.gapXMm < 0.5 || config.gapYMm < 0.5)) {
     warnings.push(
       `La separación configurada (${config.gapXMm} × ${config.gapYMm} mm) es menor a 0.5 mm. En corte láser se recomienda >= 1.5 mm para evitar daño térmico o líneas compartidas.`
     );

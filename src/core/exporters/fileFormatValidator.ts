@@ -122,7 +122,7 @@ export function parseAndAuditLightBurnSvg(svgContent: string): SvgAuditReport {
       const stroke = attrs.match(/\bstroke="([^"]+)"/)?.[1] || '';
       if (!/Z\s*$/i.test(d.trim())) {
         allCutAndHolePathsClosed = false;
-        errors.push(`Un trazado en ${layerLabel} no está cerrado con 'Z'.`);
+        if (!(layerLabel==='CAPA_02_CORTE' && /data-cut-mode="shared"/.test(svgContent) && /^M [-\d.]+ [-\d.]+ L [-\d.]+ [-\d.]+$/.test(d.trim()))) errors.push(`Un trazado en ${layerLabel} no está cerrado con 'Z'.`);
       }
       if (stroke.toUpperCase() !== expectedStrokeHex.toUpperCase()) {
         errors.push(
@@ -314,10 +314,11 @@ export function parseAndAuditDxfR12(dxfContent: string): DxfAuditReport {
     (p) => p.explicitlyClosedLoop
   );
 
-  if (!allCutAndHolesClosedFlag) {
+  const requiredClosed = pairs.some(p=>p.code===999 && p.val==='ASTRA_SHARED_CUT_LINES') ? holePolys : [...holePolys,...cutPolys];
+  if (requiredClosed.some(p=>!p.closedFlag)) {
     errors.push('Existen polilíneas de CORTE o AGUJEROS sin el flag DXF 70=1 (cerrado).');
   }
-  if (!allCutAndHolesZeroGapLoop) {
+  if (requiredClosed.some(p=>!p.explicitlyClosedLoop)) {
     errors.push(
       'Existen polilíneas de CORTE o AGUJEROS cuyo último vértice no cierra exactamente con el primero.'
     );

@@ -1,3 +1,4 @@
+import {sharedCutLines} from '../geometry/sharedCuts';
 import { assertProductionGeometry, compileLabelGeometry, roundMm } from '../geometry/geometryEngine';
 import {
   LabelDesign,
@@ -135,12 +136,17 @@ export function exportProductionSvg(
       }
 
       cutContourCount++;
-      cutNodes.push(
+      if (!nesting.config.sharedCutLines) cutNodes.push(
         `    <path id="${xml(compiled.outerCutContour.id)}" d="${compiled.outerCutContour.svgPathD}" fill="none" stroke="${LIGHTBURN_LAYERS.CUT.hexColor}" stroke-width="0.1" />`
       );
     }
   }
 
+  if (includeCut && nesting.config.sharedCutLines) {
+    for (const [index,[a,b]] of sharedCutLines(batch.placedInstances.map(i=>i.boundingBox)).entries()) {
+      cutNodes.push(`    <path id="shared-cut-${index}" d="M ${a.x} ${a.y} L ${b.x} ${b.y}" fill="none" stroke="#FF0000" stroke-width="0.1" />`);
+    }
+  }
   const mirrorOpen =
     options.mirrorHorizontally || material.mirrorArtworkForBackEngrave
       ? `  <g id="ESPEJADO_HORIZONTAL" transform="translate(${canvasWidthMm}, 0) scale(-1, 1)">\n`
@@ -165,10 +171,10 @@ export function exportProductionSvg(
     `  Mapeo de Capas LightBurn:`,
     `    - Capa 00 (#000000 Negro) : GRABADO (${engravePathCount} elementos)`,
     `    - Capa 01 (#0000FF Azul)  : AGUJEROS INTERNOS (${holeContourCount} contornos cerrados)`,
-    `    - Capa 02 (#FF0000 Rojo)  : CORTE EXTERIOR (${cutContourCount} contornos cerrados)`,
+    `    - Capa 02 (#FF0000 Rojo)  : CORTE EXTERIOR (${cutContourCount} piezas; ${nesting.config.sharedCutLines ? 'líneas compartidas abiertas' : 'contornos cerrados'})`,
     `  =============================================================================`,
     `-->`,
-    `<svg`,
+    `<svg data-cut-mode="${nesting.config.sharedCutLines ? 'shared' : 'individual'}"`,
     `  xmlns="http://www.w3.org/2000/svg"`,
     `  xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"`,
     `  width="${canvasWidthMm}mm"`,

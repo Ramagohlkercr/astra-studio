@@ -1,3 +1,4 @@
+import {sharedCutLines} from '../geometry/sharedCuts';
 import { assertProductionGeometry, compileLabelGeometry, roundMm } from '../geometry/geometryEngine';
 import {
   LabelDesign,
@@ -48,6 +49,8 @@ export function exportProductionDxf(
     dxfLines.push(String(code));
     dxfLines.push(String(value));
   };
+
+  if (nesting.config.sharedCutLines) pushPair(999, 'ASTRA_SHARED_CUT_LINES');
 
   // 1. HEADER SECTION
   pushPair(0, 'SECTION');
@@ -188,13 +191,17 @@ export function exportProductionDxf(
 
       // Capa CORTE EXTERIOR
       cutContourCount++;
-      emitPolyline(
+      if (!nesting.config.sharedCutLines) emitPolyline(
         LIGHTBURN_LAYERS.CUT.name,
         LIGHTBURN_LAYERS.CUT.dxfColorIndex,
         compiled.outerCutContour.points,
         true
       );
     }
+  }
+
+  if (nesting.config.sharedCutLines && batch) {
+    for (const line of sharedCutLines(batch.placedInstances.map(i=>i.boundingBox))) emitPolyline(LIGHTBURN_LAYERS.CUT.name,LIGHTBURN_LAYERS.CUT.dxfColorIndex,line,false);
   }
 
   pushPair(0, 'ENDSEC');
