@@ -234,6 +234,7 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
                       height={eng.heightMm}
                       preserveAspectRatio="none"
                       href={eng.dataUrl}
+                      transform={eng.rotationDeg ? `rotate(${eng.rotationDeg} ${roundMm((eng.xMm ?? 0)+(eng.widthMm ?? 0)/2)} ${roundMm((eng.yMm ?? 0)+(eng.heightMm ?? 0)/2)})` : undefined}
                     />
                   ) : null
                 )}

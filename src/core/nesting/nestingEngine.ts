@@ -58,6 +58,7 @@ export function computeNestingLayout(
   label: LabelDesign,
   config: NestingConfig
 ): NestingResult {
+  if (label.fold && config.rotationMode === 'auto_optimize') config = {...config,rotationMode:'0'};
   if (config.sharedCutLines) config = {...config, gapXMm:0, gapYMm:0};
   const warnings: string[] = [];
   const errors: string[] = [];
