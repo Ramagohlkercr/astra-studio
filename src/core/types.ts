@@ -210,6 +210,8 @@ export type LabelElement =
   | DecorativeBorderElement;
 
 export interface LabelDesign {
+  /** Fold guide only; never exported as a cutting operation. Dimensions are unfolded. */
+  fold?: {axis: 'horizontal' | 'vertical'; faces: 'one' | 'both'};
   id: string;
   name: string;
   shape: LabelShapeType;

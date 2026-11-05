@@ -1,3 +1,4 @@
+import {arrangeFoldedLabel, unfoldLabel, FoldOptions} from './core/geometry/foldedLabel';
 import {LIGHTBURN_PROFILES, LightburnProfile, lightburnGuide} from './core/exporters/lightburnGuide';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { LogoOutputFile, logoNameError, logoFolderZip } from './core/exporters/logoFolder';
@@ -643,6 +644,15 @@ export function App() {
   // PASO 2: FORMA Y MEDIDAS DE LA ETIQUETA
   // ==========================================
 
+  const applyFold = (fold: FoldOptions | null) => {
+    try {
+      const next = fold ? arrangeFoldedLabel(labelDesign, fold) : unfoldLabel(labelDesign);
+      pushStateWithHistory(next);
+      setSelectedElementId(next.elements[0]?.id ?? null);
+      notify(fold ? 'Etiqueta para doblar preparada. Las medidas corresponden a la pieza abierta.' : 'Formato simple restaurado.');
+    } catch (error) { notify((error as Error).message); }
+  };
+
   const applyDimensionUpdate = (wMm: number, hMm: number) => {
     const safeW = roundMm(Math.max(1, Math.min(900, wMm)), 3);
     const safeH = roundMm(Math.max(1, Math.min(600, hMm)), 3);
@@ -653,6 +663,11 @@ export function App() {
       heightMm: safeH,
     };
 
+    if (updated.fold) {
+      try { pushStateWithHistory(arrangeFoldedLabel(updated, updated.fold)); }
+      catch (error) { notify((error as Error).message); }
+      return;
+    }
     // Centrar los elementos geométricamente manteniendo intacto tamaño y relación de aspecto
     const centeredElements = centerAllElementsGeometrically(
       labelDesign.elements,
@@ -832,6 +847,11 @@ export function App() {
   const handleFitToAvailableSpace = (marginMm = labelDesign.safetyMarginMm) => {
     if (labelDesign.elements.length === 0) return;
     const fittedDesign = {...labelDesign, safetyMarginMm: marginMm};
+    if (fittedDesign.fold) {
+      try { pushStateWithHistory(arrangeFoldedLabel(fittedDesign, fittedDesign.fold)); }
+      catch (error) { notify((error as Error).message); }
+      return;
+    }
     const fittedEls = fitAllElementsToAvailableSpace(
       labelDesign.elements,
       fittedDesign,
@@ -1529,6 +1549,28 @@ export function App() {
             {/* CONTENIDO ESPECÍFICO DEL PASO 2: MEDIDAS Y FORMA */}
             {currentStep === 'dimensions' && (
               <div className="space-y-4 text-xs">
+                <div className="space-y-2 rounded-lg border border-cyan-900 bg-slate-900 p-3">
+                  <label className="block">Formato de etiqueta
+                    <select aria-label="Formato de etiqueta" value={labelDesign.fold ? 'fold' : 'plain'} onChange={e=>applyFold(e.target.value==='fold'?{axis:'horizontal',faces:'both'}:null)} className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2">
+                      <option value="plain">Simple</option><option value="fold">Para doblar</option>
+                    </select>
+                  </label>
+                  {labelDesign.fold && <>
+                    <label className="block">Dirección del doblez
+                      <select aria-label="Dirección del doblez" value={labelDesign.fold.axis} onChange={e=>applyFold({...labelDesign.fold!,axis:e.target.value as FoldOptions['axis']})} className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2">
+                        <option value="horizontal">Horizontal · mitad superior e inferior</option><option value="vertical">Vertical · mitad izquierda y derecha</option>
+                      </select>
+                    </label>
+                    <label className="block">Logo en las caras
+                      <select aria-label="Logo en las caras" value={labelDesign.fold.faces} onChange={e=>applyFold({...labelDesign.fold!,faces:e.target.value as FoldOptions['faces']})} className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2">
+                        <option value="both">Ambas caras</option><option value="one">Una cara</option>
+                      </select>
+                    </label>
+                    <p className="text-cyan-200">Pieza abierta: {labelDesign.widthMm} × {labelDesign.heightMm} mm. Doblada: {labelDesign.fold.axis==='vertical'?labelDesign.widthMm/2:labelDesign.widthMm} × {labelDesign.fold.axis==='horizontal'?labelDesign.heightMm/2:labelDesign.heightMm} mm.</p>
+                    <p className="text-slate-400">Rectangular, sin orificios. La línea central es solo una guía y no se exporta. En horizontal, el reverso gira 180°; las letras no se reflejan. Después de cambiar el logo, usá Reacomodar caras.</p>
+                    <button onClick={()=>applyFold(labelDesign.fold!)} className="w-full rounded bg-cyan-900 p-2">Reacomodar caras</button>
+                  </>}
+                </div>
                 {/* Selector de unidad mm / cm */}
                 <div className="flex items-center justify-between bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
                   <span className="text-slate-300 font-semibold text-xs">Unidad de medida:</span>

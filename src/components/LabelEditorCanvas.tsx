@@ -740,6 +740,10 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
               </text>
             ))}
         </g>
+      {design.fold && <line aria-label="Guía de doblez (no se corta)" pointerEvents="none"
+          x1={design.fold.axis==='vertical'?design.widthMm/2:0} y1={design.fold.axis==='horizontal'?design.heightMm/2:0}
+          x2={design.fold.axis==='vertical'?design.widthMm/2:design.widthMm} y2={design.fold.axis==='horizontal'?design.heightMm/2:design.heightMm}
+          stroke="#22d3ee" strokeWidth={0.12} strokeDasharray="1 0.7" />}
       </svg>
     </div>
   );
