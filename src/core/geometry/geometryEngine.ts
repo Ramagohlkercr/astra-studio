@@ -138,9 +138,11 @@ export function buildShapeClosedContour(params: {
       { cx: x0 + r, cy: y0 + r, startAngle: Math.PI, endAngle: (3 * Math.PI) / 2 },
     ];
 
+    // Sample the actual corner radius, not half the longest side of the label.
+    const cornerSteps = params.arcSegmentsPerQuarter ?? Math.max(4, Math.ceil((Math.PI / 2) / (2 * Math.acos(Math.max(-1, 1 - 0.005 / Math.max(0.005, r))))));
     for (const c of corners) {
-      for (let i = 0; i <= segs; i++) {
-        const t = i / segs;
+      for (let i = 0; i <= cornerSteps; i++) {
+        const t = i / cornerSteps;
         const ang = c.startAngle + t * (c.endAngle - c.startAngle);
         const px = roundMm(c.cx + r * Math.cos(ang));
         const py = roundMm(c.cy + r * Math.sin(ang));
@@ -408,7 +410,9 @@ export function buildCircularHoleContour(params: {
   const r = roundMm(effectiveDiameter / 2);
   const cx = roundMm(params.centerXMm);
   const cy = roundMm(params.centerYMm);
-  const segs = params.segments ?? Math.max(24, Math.ceil(Math.PI / Math.acos(Math.max(-1, 1 - 0.005 / Math.max(0.005, r)))));
+  const minimumSegments = Math.max(24, Math.ceil(Math.PI / Math.acos(Math.max(-1, 1 - 0.005 / Math.max(0.005, r)))));
+  // Include all four cardinal points so measured DXF bounds match the nominal diameter.
+  const segs = Math.ceil(Math.max(4, params.segments ?? minimumSegments) / 4) * 4;
 
   const pts: Point2D[] = [];
   for (let i = 0; i < segs; i++) {
@@ -1510,6 +1514,15 @@ export function validateLabelAndBatchGeometry(
 
   if (design.shape === 'circle' && Math.abs(design.widthMm - design.heightMm) > 0.0001) {
     issues.push({severity:'error', code:'CIRCLE_REQUIRES_EQUAL_DIMENSIONS', message:'Una etiqueta circular requiere ancho y alto iguales. Use forma ovalada para medidas diferentes.'});
+  }
+
+  for (const hole of computeHoleSpecs(design.holes, design.widthMm, design.heightMm)) {
+    if (hole.diameterMm - Math.max(0, design.kerfCompensationMm) < 0.2) {
+      issues.push({severity:'error',code:'KERF_COLLAPSES_HOLE',message:`El orificio de ${hole.diameterMm} mm queda por debajo de 0,2 mm con la compensación de corte. Reducí la compensación o aumentá el diámetro; no se exportará con un tamaño sustituido.`});
+    }
+  }
+  if (design.kerfCompensationMm > 0 && ['oval','octagon_tag','custom_polygon'].includes(design.shape)) {
+    issues.push({severity:'error',code:'UNSUPPORTED_KERF_OFFSET',message:'Esta forma requiere una compensación de contorno real. Dejá la compensación de Astra en 0 y aplicala una sola vez en el software de corte.'});
   }
 
   // 2. Validar tamaño de plancha respecto a la máquina Vank 9060 (900 x 600 mm)

@@ -123,7 +123,8 @@ export function exportProductionDxf(
     pushPair(30, 0.0);
     pushPair(70, closed ? 1 : 0);
 
-    const verticesToEmit = [...pts];
+    // Quantize before removing coincident consecutive vertices.
+    const verticesToEmit = pts.map(p=>({x:roundMm(p.x,4),y:roundMm(p.y,4)})).filter((p,i,all)=>i===0 || p.x!==all[i-1].x || p.y!==all[i-1].y);
     if (closed && verticesToEmit.length >= 3) {
       const first = verticesToEmit[0];
       const last = verticesToEmit[verticesToEmit.length - 1];
