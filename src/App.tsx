@@ -1,3 +1,4 @@
+import {rotateArtworkExactly} from './core/geometry/preciseRotation';
 import {arrangeFoldedLabel, unfoldLabel, FoldOptions} from './core/geometry/foldedLabel';
 import {LIGHTBURN_PROFILES, LightburnProfile, lightburnGuide} from './core/exporters/lightburnGuide';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -867,6 +868,11 @@ export function App() {
   };
 
   // 4. Ajuste Óptico / Micromovimiento (0.1 mm y 0.01 mm)
+  const handleExactRotation = (degrees:number) => {
+    if (!selectedElement) return;
+    pushStateWithHistory({...labelDesign,elements:labelDesign.elements.map(el=>el.id===selectedElement.id?rotateArtworkExactly(el,degrees):el)});
+  };
+
   const handleNudge = (deltaX: number, deltaY: number) => {
     if (!selectedElement) return;
     const nudged = nudgeElementMm(selectedElement, deltaX, deltaY, labelDesign);
@@ -1963,14 +1969,27 @@ export function App() {
                   )}
                 </div>
 
-                <div className="studio-control-card">
-                  <label htmlFor="logo-angle" className="block text-slate-300 mb-2">Rotación del logo</label>
+                <div className="studio-control-card space-y-2">
+                  <label className="block text-slate-300">Logo a girar
+                    <select aria-label="Logo a girar" value={selectedElement?.id ?? ''} onChange={e=>setSelectedElementId(e.target.value)} className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2">
+                      {!selectedElement && <option value="">Seleccioná un logo</option>}
+                      {labelDesign.elements.filter(el=>el.visible).map((el,i)=><option key={el.id} value={el.id}>{i+1}. {el.name}</option>)}
+                    </select>
+                  </label>
+                  <label htmlFor="logo-angle" className="block text-slate-300">Rotación del logo</label>
                   <div className="flex items-center gap-2">
-                    <input id="logo-angle" aria-label="Rotación del logo (grados)" type="number" min="-360" max="360" step="1" className="w-24 bg-slate-950 border border-slate-700" disabled={!selectedElement} value={selectedElement?.rotationDeg ?? 0}
-                      onChange={e => { if (selectedElement && Number.isFinite(e.target.valueAsNumber)) pushStateWithHistory({...labelDesign, elements: labelDesign.elements.map(el => el.id === selectedElement.id ? {...el, rotationDeg: e.target.valueAsNumber % 360} : el)}); }} />
+                    <input id="logo-angle" aria-label="Rotación del logo (grados)" type="number" step="0.1" className="w-24 bg-slate-950 border border-slate-700" disabled={!selectedElement} value={selectedElement?.rotationDeg ?? 0}
+                      onChange={e => {if(Number.isFinite(e.target.valueAsNumber)) handleExactRotation(e.target.valueAsNumber);}} />
                     <span className="text-slate-400">grados</span>
-                    <button disabled={!selectedElement} className="ml-auto bg-slate-800 px-3" onClick={() => { if(selectedElement) pushStateWithHistory({...labelDesign, elements: labelDesign.elements.map(el => el.id === selectedElement.id ? {...el, rotationDeg: 0} : el)}); }}>Restablecer</button>
+                    <button disabled={!selectedElement} className="ml-auto bg-slate-800 px-3" onClick={()=>handleExactRotation(0)}>Restablecer</button>
                   </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {[0,90,180,270].map(angle=><button key={angle} disabled={!selectedElement} onClick={()=>handleExactRotation(angle)} className="rounded bg-slate-800 py-2 text-cyan-300" aria-label={`Fijar rotación a ${angle} grados`}>{angle}°</button>)}
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {[-90,-1,1,90].map(delta=><button key={delta} disabled={!selectedElement} onClick={()=>handleExactRotation((selectedElement?.rotationDeg ?? 0)+delta)} className="rounded bg-slate-800 py-2 text-slate-200" aria-label={`Girar ${delta} grados`}>{delta>0?'+':''}{delta}°</button>)}
+                  </div>
+                  <p className="text-xs text-slate-400">Gira solo el logo elegido, conservando su centro visible. En etiquetas dobladas podés seleccionar cada cara por separado. Si sobresale, reducí su tamaño; Reacomodar caras vuelve a la orientación automática del doblez.</p>
                 </div>
 
                 {/* Alineación Asistida a Bordes Seguros */}

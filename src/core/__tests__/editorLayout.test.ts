@@ -51,3 +51,15 @@ describe('Maximum logo and sewing fit',()=>{
  expect(sewn.widthMm).toBeLessThan(fitted.widthMm);
  });
 });
+
+import {rotateArtworkExactly} from '../geometry/preciseRotation';
+it('rotates to exact angles while preserving the visible center',()=>{
+ const el=logo();const before=getElementVisibleBoundingBoxMm(el);
+ for(const angle of [-90,90,180,270,361]){
+ const next=rotateArtworkExactly(el,angle),box=getElementVisibleBoundingBoxMm(next);
+ expect(next.rotationDeg).toBe((angle%360+360)%360);
+ expect(box.minX+box.maxX).toBeCloseTo(before.minX+before.maxX,3);
+ expect(box.minY+box.maxY).toBeCloseTo(before.minY+before.maxY,3);
+ expect(next.widthMm).toBe(el.widthMm);expect(next.heightMm).toBe(el.heightMm);
+ }
+});
