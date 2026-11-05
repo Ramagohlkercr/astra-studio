@@ -35,3 +35,11 @@ it('rejects rounded shapes and kerf compensation in shared mode',()=>{
  d.shape='rectangle';d.kerfCompensationMm=0.1;n=computeNestingLayout(d,n.config);
  expect(()=>exportProductionDxf(d,n)).toThrow();
 });
+
+import {compatibleCutConfig} from '../geometry/sharedCuts';
+it.each(['circle','oval','rounded_rect'] as const)('restores individual cutting after switching to %s',shape=>{
+ const d=createBlankLabelDesign(30,30);d.shape=shape;d.cornerRadiusMm=2;
+ const c=compatibleCutConfig(d,{...DEFAULT_NESTING_CONFIG,sharedCutLines:true,gapXMm:0,gapYMm:0});
+ expect(c.sharedCutLines).toBe(false);expect(c.gapXMm).toBe(0.1);expect(c.gapYMm).toBe(0.1);
+ expect(compatibleCutConfig(d,c)).toBe(c);
+});

@@ -1,4 +1,4 @@
-import {BoundingBox,LabelDesign,Point2D} from '../types';
+import {BoundingBox,LabelDesign,Point2D,NestingConfig} from '../types';
 export function supportsSharedCuts(d:LabelDesign):boolean {
  return ['rectangle','square'].includes(d.shape) || (d.shape==='rounded_rect' && d.cornerRadiusMm===0);
 }
@@ -19,4 +19,10 @@ export function sharedCutLines(boxes:BoundingBox[]):[Point2D,Point2D][] {
   emit();
  }
  return lines;
+}
+
+/** Reconcile a saved or edited design with the available cutting modes. */
+export function compatibleCutConfig(design:LabelDesign, config:NestingConfig):NestingConfig {
+ if (!config.sharedCutLines || (supportsSharedCuts(design) && design.kerfCompensationMm===0)) return config;
+ return {...config,sharedCutLines:false,gapXMm:config.gapXMm>0?config.gapXMm:0.1,gapYMm:config.gapYMm>0?config.gapYMm:0.1};
 }

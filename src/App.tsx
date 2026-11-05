@@ -1,3 +1,4 @@
+import {compatibleCutConfig, supportsSharedCuts} from './core/geometry/sharedCuts';
 import {rotateArtworkExactly} from './core/geometry/preciseRotation';
 import {arrangeFoldedLabel, unfoldLabel, FoldOptions} from './core/geometry/foldedLabel';
 import {LIGHTBURN_PROFILES, LightburnProfile, lightburnGuide} from './core/exporters/lightburnGuide';
@@ -208,7 +209,7 @@ export function App() {
 
   const [labelDesign, setLabelDesign] = useState<LabelDesign>(initialOrder.labelDesign);
   const [nestingConfig, setNestingConfig] = useState<NestingConfig>(
-    {...initialOrder.nestingConfig, layoutMode: initialOrder.nestingConfig.layoutMode ?? 'blocks'}
+    compatibleCutConfig(initialOrder.labelDesign, {...initialOrder.nestingConfig, layoutMode: initialOrder.nestingConfig.layoutMode ?? 'blocks'})
   );
 
   // Navegación principal del Asistente de 6 pasos
@@ -327,18 +328,28 @@ export function App() {
       setLabelDesign(nextDesign);
       return;
     }
+    const compatibleNesting = compatibleCutConfig(nextDesign, nextNesting || nestingConfig);
+    if ((nextNesting || nestingConfig).sharedCutLines && !compatibleNesting.sharedCutLines) notify('Corte individual activado: esta forma o compensación no admite líneas compartidas.');
     const snap: HistorySnapshot = {
       labelDesign: structuredClone(nextDesign),
-      nestingConfig: structuredClone(nextNesting || nestingConfig),
+      nestingConfig: structuredClone(compatibleNesting),
       materialId: nextMatId || selectedMaterialId,
     };
     const sliced = history.slice(0, historyIndex + 1);
     setHistory([...sliced, snap]);
     setHistoryIndex(sliced.length);
     setLabelDesign(nextDesign);
-    if (nextNesting) setNestingConfig(nextNesting);
+    setNestingConfig(compatibleNesting);
     if (nextMatId) setSelectedMaterialId(nextMatId);
   };
+
+  useEffect(() => {
+    const corrected = compatibleCutConfig(labelDesign,nestingConfig);
+    if (corrected !== nestingConfig) {
+      setNestingConfig(corrected);
+      setHistory(items=>items.map(item=>({...item,nestingConfig:compatibleCutConfig(item.labelDesign,item.nestingConfig)})));
+    }
+  },[labelDesign,nestingConfig]);
 
   const handleUndo = () => {
     if (historyIndex > 0) {
@@ -2160,8 +2171,8 @@ export function App() {
                   <p className="text-xs text-slate-400">Las columnas van a lo ancho y las filas hacia abajo. Si la cantidad supera el bloque, se generan más tandas; si el material es pequeño, se adapta al espacio disponible.</p>
                 </label>
                 <label className="block rounded border border-cyan-900 bg-slate-900 p-3 space-y-2">
-                  <span className="flex items-center gap-2"><input type="checkbox" aria-label="Corte por líneas compartidas" checked={nestingConfig.sharedCutLines ?? false} onChange={e=>pushStateWithHistory(labelDesign,{...nestingConfig,sharedCutLines:e.target.checked,gapXMm:e.target.checked?0:0.1,gapYMm:e.target.checked?0:0.1})} />Corte por líneas compartidas</span>
-                  <p className="text-xs text-slate-400">Solo rectángulos sin redondeo. Une las etiquetas con separación 0 y corta cada borde común una vez. Compensación de corte: 0. El ancho del haz reduce ligeramente el tamaño final.</p>
+                  <span className="flex items-center gap-2"><input type="checkbox" aria-label="Corte por líneas compartidas" disabled={!supportsSharedCuts(labelDesign) || labelDesign.kerfCompensationMm!==0} checked={nestingConfig.sharedCutLines ?? false} onChange={e=>pushStateWithHistory(labelDesign,{...nestingConfig,sharedCutLines:e.target.checked,gapXMm:e.target.checked?0:0.1,gapYMm:e.target.checked?0:0.1})} />Corte por líneas compartidas</span>
+                  <p className="text-xs text-slate-400">Disponible solo para rectángulos sin redondeo y sin compensación. Al cambiar a otra forma se activa el corte individual. Une las etiquetas con separación 0 y corta cada borde común una vez. Compensación de corte: 0. El ancho del haz reduce ligeramente el tamaño final.</p>
                 </label>
                 {/* Cantidad requerida con botones de 1 clic */}
                 <div>
