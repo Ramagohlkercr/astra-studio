@@ -147,3 +147,37 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
   if (layout.warnings.length) rows.push('', 'ADVERTENCIAS:', ...layout.warnings.map(w => `- ${w}`));
   return rows.join('\n') + '\n';
 }
+
+export interface RotaryGuideArtifact {
+  svgContent: string;
+  filename: string;
+}
+
+/**
+ * SVG de guías NO productivas (color T1 naranja) para prueba de encuadre sobre un objeto de descarte:
+ * marco del área, cruz central, marco del diseño y línea de costura (Y=0). Nunca va en el archivo de producción.
+ */
+export function exportRotaryGuideSvg(design: LabelDesign, config: RotaryConfig): RotaryGuideArtifact {
+  const layout = computeRotaryLayout(config, design);
+  if (!layout.valid) throw new Error(`Rotativo inválido: ${layout.errors.join(' ')}`);
+  const w = layout.canvasWidthMm, h = layout.canvasHeightMm;
+  const c = LIGHTBURN_LAYERS.GUIDE.hexColor;
+  const st = `fill="none" stroke="${c}" stroke-width="0.1"`;
+  const dx = layout.offsetXMm, dy = layout.offsetYMm;
+  const body = [
+    `    <rect id="area" x="0" y="0" width="${w}" height="${h}" ${st} />`,
+    `    <rect id="diseno" x="${dx}" y="${dy}" width="${design.widthMm}" height="${design.heightMm}" ${st} />`,
+    `    <path id="cruz-centro" d="M ${roundMm(w / 2 - 5)} ${roundMm(h / 2)} L ${roundMm(w / 2 + 5)} ${roundMm(h / 2)} M ${roundMm(w / 2)} ${roundMm(h / 2 - 5)} L ${roundMm(w / 2)} ${roundMm(h / 2 + 5)}" ${st} />`,
+    `    <path id="costura" d="M 0 0 L ${w} 0" ${st} stroke-dasharray="3 2" />`,
+  ];
+  const svg = [
+    `<?xml version="1.0" encoding="UTF-8" standalone="no"?>`,
+    `<!-- ASTRA STUDIO — GUÍAS DE ALINEACIÓN ROTATIVO (NO PRODUCTIVO). Usar sólo para encuadre/prueba en un objeto de descarte. -->`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="0 0 ${w} ${h}" version="1.1" data-units="mm">`,
+    `  <g id="GUIAS_T1" data-layer="GUIDE" data-lightburn-layer="T1">`,
+    ...body,
+    `  </g>`,
+    `</svg>`,
+  ].join('\n');
+  return {svgContent: svg, filename: `${sanitizeName(design.name)}_ROTATIVO_GUIAS_ALINEACION_${w}x${h}mm.svg`};
+}

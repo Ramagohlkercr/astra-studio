@@ -166,3 +166,20 @@ export function computeRotaryLayout(config: RotaryConfig, design: Pick<LabelDesi
     slantStretchPercent,
   };
 }
+
+/** Valida una configuración guardada (p. ej. de un archivo de proyecto); devuelve undefined si no es utilizable. */
+export function sanitizeRotaryConfig(raw: unknown): RotaryConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Partial<RotaryConfig>;
+  const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  if (!ok(r.objectDiameterMm) || !ok(r.usefulLengthMm) || !ok(r.arcDeg)) return undefined;
+  return {
+    ...DEFAULT_ROTARY_CONFIG,
+    rotaryType: r.rotaryType === 'chuck' ? 'chuck' : 'roller',
+    objectDiameterMm: r.objectDiameterMm,
+    endDiameterMm: ok(r.endDiameterMm) ? r.endDiameterMm : undefined,
+    usefulLengthMm: r.usefulLengthMm,
+    arcDeg: r.arcDeg,
+    rollerDiameterMm: ok(r.rollerDiameterMm) ? r.rollerDiameterMm : DEFAULT_ROTARY_CONFIG.rollerDiameterMm,
+  };
+}

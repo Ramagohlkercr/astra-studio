@@ -1,6 +1,6 @@
 import {describe, it, expect} from 'vitest';
-import {computeRotaryLayout, DEFAULT_ROTARY_CONFIG, rotaryCircumferenceMm, warpPointForTaper, diameterAtX} from '../rotary/rotaryEngine';
-import {exportRotarySvg} from '../exporters/rotaryExporter';
+import {computeRotaryLayout, DEFAULT_ROTARY_CONFIG, rotaryCircumferenceMm, sanitizeRotaryConfig, warpPointForTaper, diameterAtX} from '../rotary/rotaryEngine';
+import {exportRotarySvg, exportRotaryGuideSvg} from '../exporters/rotaryExporter';
 import {createInitialOrdersCatalog} from '../projects/projectManager';
 
 const base = () => ({...createInitialOrdersCatalog()[0].labelDesign, widthMm: 80, heightMm: 40});
@@ -70,5 +70,20 @@ describe('Rotary tapered objects', () => {
     const a = exportRotarySvg(d, cone);
     expect(a.svgContent).toContain('data-rotary-tapered="true"');
     expect(a.instructionsText).toContain('CARGAR EN LA MÁQUINA');
+  });
+});
+
+describe('Rotary guides and persistence', () => {
+  it('guide SVG uses the non-productive T1 layer only', () => {
+    const g = exportRotaryGuideSvg(base(), DEFAULT_ROTARY_CONFIG);
+    expect(g.svgContent).toContain('data-lightburn-layer="T1"');
+    expect(g.svgContent).not.toContain('#000000');
+    expect(g.svgContent).not.toContain('#FF0000');
+  });
+  it('sanitizes stored configs', () => {
+    expect(sanitizeRotaryConfig(undefined)).toBeUndefined();
+    expect(sanitizeRotaryConfig({objectDiameterMm: 'x'})).toBeUndefined();
+    const c = sanitizeRotaryConfig({objectDiameterMm: 60, endDiameterMm: 80, usefulLengthMm: 90, arcDeg: 180, rotaryType: 'chuck'});
+    expect(c).toMatchObject({objectDiameterMm: 60, endDiameterMm: 80, usefulLengthMm: 90, arcDeg: 180, rotaryType: 'chuck', machineBedWidthMm: 900});
   });
 });

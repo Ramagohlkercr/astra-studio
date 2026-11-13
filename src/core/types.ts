@@ -461,6 +461,8 @@ export interface ExportedFileRecord {
   heightMm: Millimeters;
 }
 
+import type {RotaryConfig} from './rotary/rotaryEngine';
+
 export interface OrderProject {
   id: string;
   projectName: string;
@@ -473,4 +475,6 @@ export interface OrderProject {
   labelDesign: LabelDesign;
   nestingConfig: NestingConfig;
   exportedFilesHistory: ExportedFileRecord[];
+  /** Configuración del accesorio rotativo (opcional) */
+  rotaryConfig?: RotaryConfig;
 }

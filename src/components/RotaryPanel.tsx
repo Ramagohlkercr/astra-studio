@@ -1,18 +1,21 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {computeRotaryLayout, DEFAULT_ROTARY_CONFIG, RotaryConfig, RotaryType} from '../core/rotary/rotaryEngine';
-import {exportRotarySvg} from '../core/exporters/rotaryExporter';
+import {computeRotaryLayout, RotaryConfig, RotaryType} from '../core/rotary/rotaryEngine';
+import {exportRotarySvg, exportRotaryGuideSvg} from '../core/exporters/rotaryExporter';
 import {LogoOutputFile} from '../core/exporters/logoFolder';
 import {LabelDesign} from '../core/types';
 
 interface Props {
   design: LabelDesign;
+  config: RotaryConfig;
+  onConfigChange: (config: RotaryConfig) => void;
   onSave: (files: LogoOutputFile[]) => void;
   onClose: () => void;
 }
 
-export function RotaryPanel({design, onSave, onClose}: Props) {
+export function RotaryPanel({design, config, onConfigChange, onSave, onClose}: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [config, setConfig] = useState<RotaryConfig>(DEFAULT_ROTARY_CONFIG);
+  const setConfig = (update: (c: RotaryConfig) => RotaryConfig) => onConfigChange(update(config));
+  const [withGuides, setWithGuides] = useState(false);
   useEffect(() => { dialog.current?.showModal?.(); }, []);
 
   const layout = useMemo(() => computeRotaryLayout(config, design), [config, design]);
@@ -22,11 +25,13 @@ export function RotaryPanel({design, onSave, onClose}: Props) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const save = () => {
     let art;
-    try { art = exportRotarySvg(design, config); } catch (e) { setSaveError(e instanceof Error ? e.message : String(e)); return; }
+    let guide;
+    try { art = exportRotarySvg(design, config); if (withGuides) guide = exportRotaryGuideSvg(design, config); } catch (e) { setSaveError(e instanceof Error ? e.message : String(e)); return; }
     setSaveError(null);
     onSave([
       {name: art.svgFilename, content: art.svgContent},
       {name: art.instructionsFilename, content: art.instructionsText},
+      ...(guide ? [{name: guide.filename, content: guide.svgContent}] : []),
     ]);
   };
 
@@ -80,6 +85,7 @@ export function RotaryPanel({design, onSave, onClose}: Props) {
         {layout.errors.map(m => <p key={m} role="alert" className="text-sm text-red-300">{m}</p>)}
         {saveError && <p role="alert" className="text-sm text-red-300">{saveError}</p>}
         {layout.warnings.map(m => <p key={m} className="text-sm text-amber-300">{m}</p>)}
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={withGuides} onChange={e => setWithGuides(e.target.checked)} />Incluir SVG de guías de alineación (no productivo, para prueba de encuadre)</label>
         <p className="text-xs text-slate-400">Sólo grabado. Potencia, velocidad y pasos por vuelta los cargás vos en LightBurn o en la Ruida.</p>
 
         <div className="flex justify-end gap-3">

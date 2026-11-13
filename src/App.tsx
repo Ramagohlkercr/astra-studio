@@ -48,6 +48,7 @@ import {
 import { LabelEditorCanvas } from './components/LabelEditorCanvas';
 import { ProductionBedPreview } from './components/ProductionBedPreview';
 import { RotaryPanel } from './components/RotaryPanel';
+import { DEFAULT_ROTARY_CONFIG, RotaryConfig } from './core/rotary/rotaryEngine';
 import { exportProductionDxf } from './core/exporters/dxfExporter';
 import {
   parseAndAuditDxfR12,
@@ -230,6 +231,7 @@ export function App() {
   const [activeBatchIndex, setActiveBatchIndex] = useState<number>(0);
   const [isOrdersModalOpen, setIsOrdersModalOpen] = useState<boolean>(false);
   const [isRotaryOpen, setIsRotaryOpen] = useState<boolean>(false);
+  const [rotaryConfig, setRotaryConfig] = useState<RotaryConfig>(() => initialOrder.rotaryConfig ?? DEFAULT_ROTARY_CONFIG);
   const ordersDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     if (isOrdersModalOpen) ordersDialog.current?.showModal?.();
@@ -1071,6 +1073,7 @@ export function App() {
     setOrderNotes(ord.notes); setSelectedMaterialId(ord.materialId);
     if (ord.materialProfileSnapshot) setMaterials(prev => [...prev.filter(m => m.id !== ord.materialId), ord.materialProfileSnapshot]);
     setSelectedElementId(ord.labelDesign.elements[0]?.id ?? null);
+    setRotaryConfig(ord.rotaryConfig ?? DEFAULT_ROTARY_CONFIG);
     setLabelDesign(structuredClone(ord.labelDesign)); setNestingConfig({...structuredClone(ord.nestingConfig), layoutMode: ord.nestingConfig.layoutMode ?? 'blocks'});
     setActiveBatchIndex(0);
     setHistory([{labelDesign: structuredClone(ord.labelDesign), nestingConfig: {...structuredClone(ord.nestingConfig), layoutMode: ord.nestingConfig.layoutMode ?? 'blocks'}, materialId: ord.materialId}]);
@@ -1090,6 +1093,7 @@ export function App() {
       materialProfileSnapshot: activeMaterial,
       labelDesign,
       nestingConfig,
+      rotaryConfig,
       exportedFilesHistory: orders.find(order => order.id === activeOrderId)?.exportedFilesHistory ?? [],
     };
     const jsonStr = serializeOrderProjectToJson(project);
@@ -1133,6 +1137,7 @@ export function App() {
     setClientName(newOrder.clientName);
     setOrderNotes(newOrder.notes);
     setSelectedMaterialId(newOrder.materialId);
+    setRotaryConfig(DEFAULT_ROTARY_CONFIG);
     setLabelDesign(newOrder.labelDesign);
     setNestingConfig(newOrder.nestingConfig);
     setHistory([
@@ -2698,7 +2703,7 @@ export function App() {
         </form>
       </dialog>}
 
-      {isRotaryOpen && <RotaryPanel design={labelDesign} onClose={() => setIsRotaryOpen(false)} onSave={files => { setIsRotaryOpen(false); requestLogoSave(files); }} />}
+      {isRotaryOpen && <RotaryPanel design={labelDesign} config={rotaryConfig} onConfigChange={setRotaryConfig} onClose={() => setIsRotaryOpen(false)} onSave={files => { setIsRotaryOpen(false); requestLogoSave(files); }} />}
 
       {/* 4. MODAL DE CATÁLOGO DE PEDIDOS */}
       {isOrdersModalOpen && (

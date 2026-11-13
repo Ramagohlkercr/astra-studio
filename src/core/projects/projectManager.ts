@@ -1,3 +1,4 @@
+import {sanitizeRotaryConfig} from '../rotary/rotaryEngine';
 import { roundMm } from '../geometry/geometryEngine';
 import { INITIAL_MATERIALS_CATALOG } from '../materials/materialsCatalog';
 import { DEFAULT_NESTING_CONFIG } from '../nesting/nestingEngine';
@@ -531,6 +532,7 @@ export function deserializeOrderProjectFromJson(jsonString: string): OrderProjec
 
   return {
     ...candidate,
+    rotaryConfig: sanitizeRotaryConfig(candidate.rotaryConfig),
     labelDesign: {
       ...candidate.labelDesign,
       widthMm: roundMm(candidate.labelDesign.widthMm, 4),
