@@ -1,5 +1,5 @@
 import {describe, it, expect} from 'vitest';
-import {computeRotaryLayout, DEFAULT_ROTARY_CONFIG, rotaryCircumferenceMm} from '../rotary/rotaryEngine';
+import {computeRotaryLayout, DEFAULT_ROTARY_CONFIG, rotaryCircumferenceMm, warpPointForTaper, diameterAtX} from '../rotary/rotaryEngine';
 import {exportRotarySvg} from '../exporters/rotaryExporter';
 import {createInitialOrdersCatalog} from '../projects/projectManager';
 
@@ -41,5 +41,34 @@ describe('Rotary export', () => {
   });
   it('throws when the layout is invalid', () => {
     expect(() => exportRotarySvg({...base(), widthMm: 500}, DEFAULT_ROTARY_CONFIG)).toThrow();
+  });
+});
+
+describe('Rotary tapered objects', () => {
+  const cone = {...DEFAULT_ROTARY_CONFIG, objectDiameterMm: 60, endDiameterMm: 80, usefulLengthMm: 100};
+  it('uses the average diameter as reference', () => {
+    const l = computeRotaryLayout(cone, {widthMm: 40, heightMm: 40});
+    expect(l.tapered).toBe(true);
+    expect(l.referenceDiameterMm).toBe(70);
+    expect(l.circumferenceMm).toBeCloseTo(Math.PI * 70, 3);
+  });
+  it('pre-compensates Y: narrower end stretches, wider end shrinks, center unchanged', () => {
+    const h = 200;
+    expect(warpPointForTaper(cone, h, 50, 150).y).toBeCloseTo(150, 3);
+    expect(warpPointForTaper(cone, h, 0, 150).y).toBeGreaterThan(150);
+    expect(warpPointForTaper(cone, h, 100, 150).y).toBeLessThan(150);
+    expect(diameterAtX(cone, 0)).toBe(60);
+    // arco real = y' * d(x)/dRef recupera el arco deseado
+    const p = warpPointForTaper(cone, h, 0, 150);
+    expect((p.y - 100) * diameterAtX(cone, 0) / 70).toBeCloseTo(50, 2);
+  });
+  it('rejects designs that do not fit the narrow end', () => {
+    expect(computeRotaryLayout({...cone, objectDiameterMm: 20, endDiameterMm: 80}, {widthMm: 100, heightMm: 120}).valid).toBe(false);
+  });
+  it('exports warped vector art with reference diameter', () => {
+    const d = {...base(), widthMm: 60, heightMm: 40};
+    const a = exportRotarySvg(d, cone);
+    expect(a.svgContent).toContain('data-rotary-tapered="true"');
+    expect(a.instructionsText).toContain('CARGAR EN LA MÁQUINA');
   });
 });

@@ -1,6 +1,6 @@
 import {compileLabelGeometry, roundMm} from '../geometry/geometryEngine';
-import {computeRotaryLayout, RotaryConfig} from '../rotary/rotaryEngine';
-import {LabelDesign, LIGHTBURN_LAYERS} from '../types';
+import {computeRotaryLayout, RotaryConfig, warpPointForTaper} from '../rotary/rotaryEngine';
+import {LabelDesign, LIGHTBURN_LAYERS, Point2D} from '../types';
 
 function xml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;').replace(/--/g, '—');
@@ -8,6 +8,22 @@ function xml(value: string): string {
 
 function sanitizeName(raw: string): string {
   return raw.trim().replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'Rotativo_Astra';
+}
+
+const MAX_SEGMENT_MM = 0.5;
+
+/** Subdivide segmentos largos para que la deformación cónica siga curvando las rectas. */
+function densify(points: Point2D[], closed: boolean): Point2D[] {
+  const out: Point2D[] = [];
+  const n = points.length;
+  const last = closed ? n : n - 1;
+  for (let i = 0; i < last; i++) {
+    const a = points[i], b = points[(i + 1) % n];
+    const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / MAX_SEGMENT_MM));
+    for (let k = 0; k < steps; k++) out.push({x: a.x + (b.x - a.x) * k / steps, y: a.y + (b.y - a.y) * k / steps});
+  }
+  if (!closed && n > 0) out.push(points[n - 1]);
+  return out;
 }
 
 export interface RotaryExportArtifact {
@@ -37,6 +53,22 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
   const nodes: string[] = [];
   let engravePathCount = 0;
   for (const eng of compiled.engravingItems) {
+    if (layout.tapered) {
+      if (eng.kind !== 'vector_path' || !eng.polylines?.length) {
+        throw new Error('Las imágenes raster no se pueden compensar en objetos cónicos: usá logos vectoriales, texto o imágenes vectorizadas.');
+      }
+      const d = eng.polylines.map(pl => {
+        const pts = densify(pl.points, pl.closed).map(p => warpPointForTaper(config, layout.canvasHeightMm, p.x, p.y));
+        return pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + (pl.closed ? ' Z' : '');
+      }).join(' ');
+      engravePathCount++;
+      if (eng.filled) {
+        nodes.push(`    <path id="${xml(eng.id)}" d="${d}" fill="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" fill-rule="${eng.fillRule || 'evenodd'}" stroke="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" stroke-width="0.05" />`);
+      } else {
+        nodes.push(`    <path id="${xml(eng.id)}" d="${d}" fill="none" stroke="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" stroke-width="${roundMm(eng.strokeWidthMm || 0.3)}" stroke-linecap="round" stroke-linejoin="round" />`);
+      }
+      continue;
+    }
     if (eng.kind === 'vector_path' && eng.svgPathD) {
       engravePathCount++;
       if (eng.filled) {
@@ -61,20 +93,20 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
     `<!--`,
     `  ASTRA STUDIO — ARCHIVO ROTATIVO (ESCALA REAL 1:1 EN MM, SÓLO GRABADO)`,
     `  Máquina destino : Vank 9060 CO2 + accesorio rotativo (${config.rotaryType === 'roller' ? 'rodillos' : 'mandril'})`,
-    `  Objeto          : Ø ${config.objectDiameterMm} mm (circunferencia ${layout.circumferenceMm} mm), arco ${config.arcDeg}°`,
+    `  Objeto          : ${layout.tapered ? `cónico Ø ${config.objectDiameterMm} → ${config.endDiameterMm} mm (referencia ${layout.referenceDiameterMm} mm)` : `Ø ${config.objectDiameterMm} mm`} (circunferencia ${layout.circumferenceMm} mm), arco ${config.arcDeg}°`,
     `  Lienzo          : ${w} mm (eje X, largo del objeto) x ${h} mm (eje Y, giro del objeto)`,
     `  Capa 00 (#000000): GRABADO (${engravePathCount} elementos)`,
     `-->`,
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"`,
     `  width="${w}mm" height="${h}mm" viewBox="0 0 ${w} ${h}" version="1.1"`,
-    `  data-generator="Astra Studio rotary" data-units="mm" data-rotary-diameter-mm="${config.objectDiameterMm}" data-rotary-arc-deg="${config.arcDeg}">`,
+    `  data-generator="Astra Studio rotary" data-units="mm" data-rotary-diameter-mm="${layout.referenceDiameterMm}" data-rotary-tapered="${layout.tapered}" data-rotary-arc-deg="${config.arcDeg}">`,
     `  <g id="CAPA_00_GRABADO" inkscape:groupmode="layer" inkscape:label="00_GRABADO" data-layer="ENGRAVE" data-lightburn-layer="00">`,
     ...nodes,
     `  </g>`,
     `</svg>`,
   ];
 
-  const base = `${sanitizeName(design.name)}_ROTATIVO_D${config.objectDiameterMm}mm_${w}x${h}mm`;
+  const base = `${sanitizeName(design.name)}_ROTATIVO_${layout.tapered ? 'CONICO_' : ''}D${layout.referenceDiameterMm}mm_${w}x${h}mm`;
   return {
     svgContent: lines.join('\n'),
     instructionsText: buildRotaryInstructions(design, config, layout),
@@ -92,7 +124,9 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
     '',
     `Diseño: ${design.name} (${design.widthMm} mm a lo largo del eje x ${design.heightMm} mm alrededor del objeto)`,
     `Tipo de rotativo: ${config.rotaryType === 'roller' ? 'rodillos' : 'mandril'}`,
-    `Diámetro del objeto: ${config.objectDiameterMm} mm`,
+    layout.tapered
+      ? `Objeto cónico: Ø ${config.objectDiameterMm} mm (X=0) → Ø ${config.endDiameterMm} mm (X=${config.usefulLengthMm}). CARGAR EN LA MÁQUINA Ø ${layout.referenceDiameterMm} mm (referencia). El arte ya está pre-compensado en Y.`
+      : `Diámetro del objeto: ${config.objectDiameterMm} mm`,
     `Circunferencia: ${layout.circumferenceMm} mm`,
     `Arco a grabar: ${config.arcDeg}° (${layout.arcLengthMm} mm)`,
     `Diseño ocupa: ${layout.designArcDeg}° de la circunferencia, centrado en el lienzo`,

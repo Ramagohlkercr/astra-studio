@@ -19,8 +19,11 @@ export function RotaryPanel({design, onSave, onClose}: Props) {
   const num = (key: keyof RotaryConfig) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setConfig(c => ({...c, [key]: e.target.value === '' ? NaN : Number(e.target.value)}));
 
+  const [saveError, setSaveError] = useState<string | null>(null);
   const save = () => {
-    const art = exportRotarySvg(design, config);
+    let art;
+    try { art = exportRotarySvg(design, config); } catch (e) { setSaveError(e instanceof Error ? e.message : String(e)); return; }
+    setSaveError(null);
     onSave([
       {name: art.svgFilename, content: art.svgContent},
       {name: art.instructionsFilename, content: art.instructionsText},
@@ -46,8 +49,12 @@ export function RotaryPanel({design, onSave, onClose}: Props) {
               <option value="chuck">Mandril</option>
             </select>
           </label>
-          <label className="space-y-1"><span>Diámetro del objeto (mm)</span>
+          <label className="space-y-1"><span>Diámetro inicial, X = 0 (mm)</span>
             <input className={field} type="number" min={5} max={300} step="0.1" value={Number.isNaN(config.objectDiameterMm) ? '' : config.objectDiameterMm} onChange={num('objectDiameterMm')} />
+          </label>
+          <label className="space-y-1"><span>Diámetro final, X = largo (mm)</span>
+            <input className={field} type="number" min={5} max={300} step="0.1" placeholder="igual = recto" value={config.endDiameterMm === undefined || Number.isNaN(config.endDiameterMm) ? '' : config.endDiameterMm}
+              onChange={e => setConfig(c => ({...c, endDiameterMm: e.target.value === '' ? undefined : Number(e.target.value)}))} />
           </label>
           <label className="space-y-1"><span>Largo útil (mm)</span>
             <input className={field} type="number" min={1} step="0.1" value={Number.isNaN(config.usefulLengthMm) ? '' : config.usefulLengthMm} onChange={num('usefulLengthMm')} />
@@ -58,6 +65,7 @@ export function RotaryPanel({design, onSave, onClose}: Props) {
         </div>
 
         <div className="studio-notice text-sm space-y-1">
+          {layout.tapered && <p>Objeto cónico: cargá <b>Ø {layout.referenceDiameterMm} mm</b> en la máquina.</p>}
           <p>Circunferencia: <b>{layout.circumferenceMm} mm</b> · Lienzo: <b>{layout.canvasWidthMm} × {layout.canvasHeightMm} mm</b></p>
           <p>Diseño: {design.widthMm} × {design.heightMm} mm ({layout.designArcDeg}° de la vuelta)</p>
         </div>
@@ -70,6 +78,7 @@ export function RotaryPanel({design, onSave, onClose}: Props) {
         )}
 
         {layout.errors.map(m => <p key={m} role="alert" className="text-sm text-red-300">{m}</p>)}
+        {saveError && <p role="alert" className="text-sm text-red-300">{saveError}</p>}
         {layout.warnings.map(m => <p key={m} className="text-sm text-amber-300">{m}</p>)}
         <p className="text-xs text-slate-400">Sólo grabado. Potencia, velocidad y pasos por vuelta los cargás vos en LightBurn o en la Ruida.</p>
 
