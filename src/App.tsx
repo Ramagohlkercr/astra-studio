@@ -47,6 +47,7 @@ import {
 } from 'lucide-react';
 import { LabelEditorCanvas } from './components/LabelEditorCanvas';
 import { ProductionBedPreview } from './components/ProductionBedPreview';
+import { RotaryPanel } from './components/RotaryPanel';
 import { exportProductionDxf } from './core/exporters/dxfExporter';
 import {
   parseAndAuditDxfR12,
@@ -228,6 +229,7 @@ export function App() {
   );
   const [activeBatchIndex, setActiveBatchIndex] = useState<number>(0);
   const [isOrdersModalOpen, setIsOrdersModalOpen] = useState<boolean>(false);
+  const [isRotaryOpen, setIsRotaryOpen] = useState<boolean>(false);
   const ordersDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     if (isOrdersModalOpen) ordersDialog.current?.showModal?.();
@@ -1226,6 +1228,15 @@ export function App() {
           >
             <FolderOpen className="w-3.5 h-3.5 text-cyan-400" />
             <span>Pedidos</span>
+          </button>
+
+          <button
+            onClick={() => setIsRotaryOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-slate-800/80 hover:bg-slate-700 border border-slate-700 rounded text-slate-200 transition-colors"
+            title="Generar archivo para accesorio rotativo"
+          >
+            <RotateCw className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Rotativo</span>
           </button>
 
           <label className="px-2.5 py-1 text-xs bg-slate-800 border border-slate-700 rounded text-slate-200 cursor-pointer">
@@ -2686,6 +2697,8 @@ export function App() {
           </div>
         </form>
       </dialog>}
+
+      {isRotaryOpen && <RotaryPanel design={labelDesign} onClose={() => setIsRotaryOpen(false)} onSave={files => { setIsRotaryOpen(false); requestLogoSave(files); }} />}
 
       {/* 4. MODAL DE CATÁLOGO DE PEDIDOS */}
       {isOrdersModalOpen && (
