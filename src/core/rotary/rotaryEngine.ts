@@ -24,6 +24,19 @@ export interface RotaryConfig {
   rollerDiameterMm?: Millimeters;
   /** Ancho útil de la máquina en X (Vank 9060 = 900) */
   machineBedWidthMm: Millimeters;
+  /** Copias del diseño repartidas alrededor del objeto (por defecto 1) */
+  repeatCount?: number;
+  /** Desplazamiento del diseño a lo largo del eje respecto del centro (mm) */
+  axisOffsetMm?: Millimeters;
+  /** Giro del diseño alrededor del objeto respecto del centro del arco (grados, + = hacia Y creciente) */
+  angularOffsetDeg?: number;
+}
+
+export interface RotaryPlacement {
+  offsetXMm: Millimeters;
+  offsetYMm: Millimeters;
+  /** Línea central de la copia en Y (centro de deformación cónica) */
+  centerYMm: Millimeters;
 }
 
 export const DEFAULT_ROTARY_CONFIG: RotaryConfig = {
@@ -49,6 +62,10 @@ export interface RotaryLayout {
   /** Traslación aplicada al diseño para centrarlo en el lienzo */
   offsetXMm: Millimeters;
   offsetYMm: Millimeters;
+  placements: RotaryPlacement[];
+  repeatCount: number;
+  /** Separación entre centros de copias (mm), 0 si hay una sola */
+  copyPitchMm: Millimeters;
   /** Posición angular del centro del diseño respecto a la costura (grados) */
   designArcDeg: number;
   /** Diámetro de referencia a cargar en la máquina (promedio de los extremos) */
@@ -76,11 +93,11 @@ export function diameterAtX(config: RotaryConfig, x: Millimeters): Millimeters {
 
 /**
  * Compensa un punto del lienzo para un objeto cónico: la máquina gira un ángulo fijo por mm de Y,
- * así que el arco real en X vale Y × d(x)/dRef. Se pre-escala Y (respecto al centro del lienzo) por dRef/d(x).
+ * así que el arco real en X vale Y × d(x)/dRef. Se pre-escala Y (respecto a la línea central de cada copia) por dRef/d(x).
  */
-export function warpPointForTaper(config: RotaryConfig, canvasHeightMm: Millimeters, x: Millimeters, y: Millimeters): {x: Millimeters; y: Millimeters} {
+export function warpPointForTaper(config: RotaryConfig, centerYMm: Millimeters, x: Millimeters, y: Millimeters): {x: Millimeters; y: Millimeters} {
   if (!isTapered(config)) return {x, y};
-  const yc = canvasHeightMm / 2;
+  const yc = centerYMm;
   return {x, y: roundMm(yc + (y - yc) * referenceDiameterMm(config) / diameterAtX(config, x))};
 }
 
@@ -108,6 +125,11 @@ export function computeRotaryLayout(config: RotaryConfig, design: Pick<LabelDesi
   }
   if (!(config.arcDeg > 0) || config.arcDeg > 360) errors.push('El arco a grabar debe estar entre 1° y 360°.');
 
+  const repeat = config.repeatCount === undefined ? 1 : config.repeatCount;
+  const axisOff = config.axisOffsetMm ?? 0;
+  const angOff = config.angularOffsetDeg ?? 0;
+  if (!Number.isInteger(repeat) || repeat < 1 || repeat > 36) errors.push('Las copias alrededor deben ser un entero entre 1 y 36.');
+  if (!finite(axisOff) || !finite(angOff)) errors.push('Los desplazamientos del diseño deben ser numéricos.');
   const endOk = config.endDiameterMm === undefined || finite(config.endDiameterMm);
   const tapered = endOk && isTapered(config);
   const refD = endOk ? referenceDiameterMm(config) : config.objectDiameterMm;
@@ -117,8 +139,14 @@ export function computeRotaryLayout(config: RotaryConfig, design: Pick<LabelDesi
   if (design.widthMm > config.usefulLengthMm) {
     errors.push(`El diseño (${design.widthMm} mm a lo largo del eje) no entra en el largo útil de ${config.usefulLengthMm} mm.`);
   }
-  if (design.heightMm > arcLengthMm) {
-    errors.push(`El diseño (${design.heightMm} mm alrededor del objeto) no entra en el arco de ${arcLengthMm} mm.`);
+  const repeatN = Number.isInteger(repeat) && repeat >= 1 ? repeat : 1;
+  const pitchMm = roundMm(arcLengthMm / repeatN);
+  if (design.heightMm > pitchMm) {
+    errors.push(repeatN > 1
+      ? `El diseño (${design.heightMm} mm alrededor) no entra ${repeatN} veces en el arco: cada copia dispone de ${pitchMm} mm.`
+      : `El diseño (${design.heightMm} mm alrededor del objeto) no entra en el arco de ${arcLengthMm} mm.`);
+  } else if (repeatN > 1 && pitchMm - design.heightMm < 2) {
+    warnings.push(`Las copias quedan a menos de 2 mm entre sí (${roundMm(pitchMm - design.heightMm, 2)} mm).`);
   } else if (config.arcDeg >= 360 && design.heightMm > circumferenceMm * 0.98) {
     warnings.push('El diseño ocupa casi toda la circunferencia: los extremos pueden tocarse en la costura.');
   }
@@ -126,12 +154,13 @@ export function computeRotaryLayout(config: RotaryConfig, design: Pick<LabelDesi
   let minDiameterMm = refD;
   if (tapered && config.usefulLengthMm > 0) {
     const end = config.endDiameterMm as number;
-    const x0 = (config.usefulLengthMm - design.widthMm) / 2;
+    const x0 = (config.usefulLengthMm - design.widthMm) / 2 + (finite(axisOff) ? axisOff : 0);
     minDiameterMm = Math.min(diameterAtX(config, x0), diameterAtX(config, x0 + design.widthMm));
     // El diseño real debe caber en la circunferencia más chica que atraviesa y su comando en Y en la vuelta de referencia.
+    const widthSafe = Math.max(minDiameterMm, 1e-6);
     if (design.heightMm > Math.PI * minDiameterMm * Math.min(config.arcDeg, 360) / 360) {
       errors.push(`El diseño (${design.heightMm} mm alrededor) no entra en el extremo más angosto (Ø ${roundMm(minDiameterMm, 1)} mm).`);
-    } else if (design.heightMm * refD / minDiameterMm > arcLengthMm) {
+    } else if (design.heightMm * refD / widthSafe > pitchMm) {
       errors.push('La compensación cónica estira el diseño más allá del arco disponible; reducí el alto o ampliá el arco.');
     }
     const half = Math.abs(end - config.objectDiameterMm) / 2;
@@ -145,8 +174,23 @@ export function computeRotaryLayout(config: RotaryConfig, design: Pick<LabelDesi
 
   const canvasWidthMm = roundMm(config.usefulLengthMm);
   const canvasHeightMm = arcLengthMm;
-  const offsetXMm = roundMm((canvasWidthMm - design.widthMm) / 2);
-  const offsetYMm = roundMm((canvasHeightMm - design.heightMm) / 2);
+  const angOffMm = finite(angOff) ? roundMm(circumferenceMm * angOff / 360) : 0;
+  const offsetXMm = roundMm((canvasWidthMm - design.widthMm) / 2 + (finite(axisOff) ? axisOff : 0));
+  if (offsetXMm < -1e-9 || offsetXMm + design.widthMm > canvasWidthMm + 1e-9) {
+    errors.push('El desplazamiento axial saca el diseño del largo útil.');
+  }
+  const stretch = tapered ? refD / Math.max(minDiameterMm, 1e-6) : 1;
+  const halfSpan = design.heightMm * stretch / 2;
+  const placements: RotaryPlacement[] = [];
+  for (let i = 0; i < repeatN; i++) {
+    const centerYMm = roundMm(pitchMm * (i + 0.5) + angOffMm);
+    placements.push({offsetXMm, offsetYMm: roundMm(centerYMm - design.heightMm / 2), centerYMm});
+    if (centerYMm - halfSpan < -1e-6 || centerYMm + halfSpan > canvasHeightMm + 1e-6) {
+      errors.push(`El giro del diseño saca la copia ${i + 1} del arco disponible.`);
+      break;
+    }
+  }
+  const offsetYMm = placements[0].offsetYMm;
   const designArcDeg = circumferenceMm > 0 ? roundMm((design.heightMm / circumferenceMm) * 360, 2) : 0;
 
   return {
@@ -159,6 +203,9 @@ export function computeRotaryLayout(config: RotaryConfig, design: Pick<LabelDesi
     canvasHeightMm,
     offsetXMm,
     offsetYMm,
+    placements,
+    repeatCount: repeatN,
+    copyPitchMm: repeatN > 1 ? pitchMm : 0,
     designArcDeg,
     referenceDiameterMm: refD,
     minDiameterMm: roundMm(minDiameterMm),
@@ -180,6 +227,9 @@ export function sanitizeRotaryConfig(raw: unknown): RotaryConfig | undefined {
     endDiameterMm: ok(r.endDiameterMm) ? r.endDiameterMm : undefined,
     usefulLengthMm: r.usefulLengthMm,
     arcDeg: r.arcDeg,
+    repeatCount: ok(r.repeatCount) ? r.repeatCount : undefined,
+    axisOffsetMm: ok(r.axisOffsetMm) ? r.axisOffsetMm : undefined,
+    angularOffsetDeg: ok(r.angularOffsetDeg) ? r.angularOffsetDeg : undefined,
     rollerDiameterMm: ok(r.rollerDiameterMm) ? r.rollerDiameterMm : DEFAULT_ROTARY_CONFIG.rollerDiameterMm,
   };
 }

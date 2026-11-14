@@ -1,6 +1,6 @@
 import {compileLabelGeometry, roundMm} from '../geometry/geometryEngine';
-import {computeRotaryLayout, RotaryConfig, warpPointForTaper} from '../rotary/rotaryEngine';
-import {LabelDesign, LIGHTBURN_LAYERS, Point2D} from '../types';
+import {computeRotaryLayout, RotaryConfig, RotaryLayout, warpPointForTaper} from '../rotary/rotaryEngine';
+import {EngravedItemGeometry, LabelDesign, LIGHTBURN_LAYERS, Point2D} from '../types';
 
 function xml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;').replace(/--/g, '—');
@@ -36,6 +36,37 @@ export interface RotaryExportArtifact {
   engravePathCount: number;
 }
 
+function toPathD(polylines: {points: Point2D[]; closed: boolean}[]): string {
+  return polylines.map(pl => pl.points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + (pl.closed ? ' Z' : '')).join(' ');
+}
+
+/**
+ * Compila el grabado de todas las copias del diseño ya ubicadas sobre el lienzo desenrollado,
+ * aplicando la compensación cónica cuando corresponde.
+ */
+function collectRotaryArtwork(design: LabelDesign, config: RotaryConfig, layout: RotaryLayout): EngravedItemGeometry[] {
+  const items: EngravedItemGeometry[] = [];
+  layout.placements.forEach((placement, k) => {
+    const compiled = compileLabelGeometry(design, {
+      offsetXMm: placement.offsetXMm,
+      offsetYMm: placement.offsetYMm,
+      instanceIdPrefix: layout.placements.length > 1 ? `rotativo_${k + 1}` : 'rotativo',
+    });
+    for (const eng of compiled.engravingItems) {
+      if (!layout.tapered) { items.push(eng); continue; }
+      if (eng.kind !== 'vector_path' || !eng.polylines?.length) {
+        throw new Error('Las imágenes raster no se pueden compensar en objetos cónicos: usá logos vectoriales, texto o imágenes vectorizadas.');
+      }
+      const polylines = eng.polylines.map(pl => ({
+        closed: pl.closed,
+        points: densify(pl.points, pl.closed).map(p => warpPointForTaper(config, placement.centerYMm, p.x, p.y)),
+      }));
+      items.push({...eng, polylines, svgPathD: toPathD(polylines)});
+    }
+  });
+  return items;
+}
+
 /**
  * SVG 1:1 mm sólo de grabado (capa 00) con el arte desenrollado sobre el objeto cilíndrico.
  * Lanza error si la configuración o el diseño no son válidos.
@@ -44,31 +75,9 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
   const layout = computeRotaryLayout(config, design);
   if (!layout.valid) throw new Error(`Rotativo inválido: ${layout.errors.join(' ')}`);
 
-  const compiled = compileLabelGeometry(design, {
-    offsetXMm: layout.offsetXMm,
-    offsetYMm: layout.offsetYMm,
-    instanceIdPrefix: 'rotativo',
-  });
-
   const nodes: string[] = [];
   let engravePathCount = 0;
-  for (const eng of compiled.engravingItems) {
-    if (layout.tapered) {
-      if (eng.kind !== 'vector_path' || !eng.polylines?.length) {
-        throw new Error('Las imágenes raster no se pueden compensar en objetos cónicos: usá logos vectoriales, texto o imágenes vectorizadas.');
-      }
-      const d = eng.polylines.map(pl => {
-        const pts = densify(pl.points, pl.closed).map(p => warpPointForTaper(config, layout.canvasHeightMm, p.x, p.y));
-        return pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + (pl.closed ? ' Z' : '');
-      }).join(' ');
-      engravePathCount++;
-      if (eng.filled) {
-        nodes.push(`    <path id="${xml(eng.id)}" d="${d}" fill="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" fill-rule="${eng.fillRule || 'evenodd'}" stroke="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" stroke-width="0.05" />`);
-      } else {
-        nodes.push(`    <path id="${xml(eng.id)}" d="${d}" fill="none" stroke="${LIGHTBURN_LAYERS.ENGRAVE.hexColor}" stroke-width="${roundMm(eng.strokeWidthMm || 0.3)}" stroke-linecap="round" stroke-linejoin="round" />`);
-      }
-      continue;
-    }
+  for (const eng of collectRotaryArtwork(design, config, layout)) {
     if (eng.kind === 'vector_path' && eng.svgPathD) {
       engravePathCount++;
       if (eng.filled) {
@@ -94,19 +103,20 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
     `  ASTRA STUDIO — ARCHIVO ROTATIVO (ESCALA REAL 1:1 EN MM, SÓLO GRABADO)`,
     `  Máquina destino : Vank 9060 CO2 + accesorio rotativo (${config.rotaryType === 'roller' ? 'rodillos' : 'mandril'})`,
     `  Objeto          : ${layout.tapered ? `cónico Ø ${config.objectDiameterMm} → ${config.endDiameterMm} mm (referencia ${layout.referenceDiameterMm} mm)` : `Ø ${config.objectDiameterMm} mm`} (circunferencia ${layout.circumferenceMm} mm), arco ${config.arcDeg}°`,
+    `  Copias          : ${layout.repeatCount}`,
     `  Lienzo          : ${w} mm (eje X, largo del objeto) x ${h} mm (eje Y, giro del objeto)`,
     `  Capa 00 (#000000): GRABADO (${engravePathCount} elementos)`,
     `-->`,
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"`,
     `  width="${w}mm" height="${h}mm" viewBox="0 0 ${w} ${h}" version="1.1"`,
-    `  data-generator="Astra Studio rotary" data-units="mm" data-rotary-diameter-mm="${layout.referenceDiameterMm}" data-rotary-tapered="${layout.tapered}" data-rotary-arc-deg="${config.arcDeg}">`,
+    `  data-generator="Astra Studio rotary" data-units="mm" data-rotary-diameter-mm="${layout.referenceDiameterMm}" data-rotary-tapered="${layout.tapered}" data-rotary-arc-deg="${config.arcDeg}" data-rotary-copies="${layout.repeatCount}">`,
     `  <g id="CAPA_00_GRABADO" inkscape:groupmode="layer" inkscape:label="00_GRABADO" data-layer="ENGRAVE" data-lightburn-layer="00">`,
     ...nodes,
     `  </g>`,
     `</svg>`,
   ];
 
-  const base = `${sanitizeName(design.name)}_ROTATIVO_${layout.tapered ? 'CONICO_' : ''}D${layout.referenceDiameterMm}mm_${w}x${h}mm`;
+  const base = rotaryBaseName(design, config, layout);
   return {
     svgContent: lines.join('\n'),
     instructionsText: buildRotaryInstructions(design, config, layout),
@@ -116,6 +126,63 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
     heightMm: h,
     engravePathCount,
   };
+}
+
+function rotaryBaseName(design: LabelDesign, config: RotaryConfig, layout: RotaryLayout): string {
+  return `${sanitizeName(design.name)}_ROTATIVO_${layout.tapered ? 'CONICO_' : ''}D${layout.referenceDiameterMm}mm_${layout.canvasWidthMm}x${layout.canvasHeightMm}mm`;
+}
+
+export interface RotaryDxfArtifact {
+  dxfContent: string;
+  filename: string;
+  polylineCount: number;
+}
+
+/** DXF R12 (AC1009) sólo de grabado para RDWorks. No admite imágenes raster. */
+export function exportRotaryDxf(design: LabelDesign, config: RotaryConfig): RotaryDxfArtifact {
+  const layout = computeRotaryLayout(config, design);
+  if (!layout.valid) throw new Error(`Rotativo inválido: ${layout.errors.join(' ')}`);
+  const items = collectRotaryArtwork(design, config, layout);
+  if (items.some(i => i.kind === 'raster_image' || !i.polylines?.length)) {
+    throw new Error('DXF R12 no admite grabado raster. Exportá SVG o vectorizá el logo antes de exportar DXF.');
+  }
+  const w = layout.canvasWidthMm, h = layout.canvasHeightMm;
+  const out: string[] = [];
+  const pair = (code: number, value: string | number) => { out.push(String(code), String(value)); };
+  const L = LIGHTBURN_LAYERS.ENGRAVE;
+  pair(0, 'SECTION'); pair(2, 'HEADER');
+  pair(9, '$ACADVER'); pair(1, 'AC1009');
+  pair(9, '$INSUNITS'); pair(70, 4);
+  pair(9, '$MEASUREMENT'); pair(70, 1);
+  pair(9, '$EXTMIN'); pair(10, 0); pair(20, 0); pair(30, 0);
+  pair(9, '$EXTMAX'); pair(10, w); pair(20, h); pair(30, 0);
+  pair(0, 'ENDSEC');
+  pair(0, 'SECTION'); pair(2, 'TABLES');
+  pair(0, 'TABLE'); pair(2, 'LTYPE'); pair(70, 1);
+  pair(0, 'LTYPE'); pair(2, 'CONTINUOUS'); pair(70, 0); pair(3, 'Solid line'); pair(72, 65); pair(73, 0); pair(40, 0);
+  pair(0, 'ENDTAB');
+  pair(0, 'TABLE'); pair(2, 'LAYER'); pair(70, 1);
+  pair(0, 'LAYER'); pair(2, L.name); pair(70, 0); pair(62, L.dxfColorIndex); pair(6, 'CONTINUOUS');
+  pair(0, 'ENDTAB'); pair(0, 'ENDSEC');
+  pair(0, 'SECTION'); pair(2, 'ENTITIES');
+  let polylineCount = 0;
+  for (const item of items) {
+    for (const pl of item.polylines ?? []) {
+      const pts = pl.points.map(p => ({x: roundMm(p.x, 4), y: roundMm(p.y, 4)})).filter((p, i, all) => i === 0 || p.x !== all[i - 1].x || p.y !== all[i - 1].y);
+      if (pts.length < 2) continue;
+      if (pl.closed && pts.length >= 3) {
+        const a = pts[0], b = pts[pts.length - 1];
+        if (Math.hypot(a.x - b.x, a.y - b.y) > 0.0001) pts.push({x: a.x, y: a.y});
+      }
+      polylineCount++;
+      pair(0, 'POLYLINE'); pair(8, L.name); pair(62, L.dxfColorIndex); pair(66, 1);
+      pair(10, 0); pair(20, 0); pair(30, 0); pair(70, pl.closed ? 1 : 0);
+      for (const pt of pts) { pair(0, 'VERTEX'); pair(8, L.name); pair(10, pt.x); pair(20, roundMm(h - pt.y, 4)); pair(30, 0); }
+      pair(0, 'SEQEND'); pair(8, L.name);
+    }
+  }
+  pair(0, 'ENDSEC'); pair(0, 'EOF');
+  return {dxfContent: out.join('\n') + '\n', filename: `${rotaryBaseName(design, config, layout)}_RDWORKS.dxf`, polylineCount};
 }
 
 export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfig, layout = computeRotaryLayout(config, design)): string {
@@ -129,7 +196,8 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
       : `Diámetro del objeto: ${config.objectDiameterMm} mm`,
     `Circunferencia: ${layout.circumferenceMm} mm`,
     `Arco a grabar: ${config.arcDeg}° (${layout.arcLengthMm} mm)`,
-    `Diseño ocupa: ${layout.designArcDeg}° de la circunferencia, centrado en el lienzo`,
+    `Diseño ocupa: ${layout.designArcDeg}° de la circunferencia${layout.repeatCount > 1 ? ` x ${layout.repeatCount} copias (separación entre centros ${layout.copyPitchMm} mm)` : ''}`,
+    ...(config.axisOffsetMm || config.angularOffsetDeg ? [`Desplazamiento: ${config.axisOffsetMm ?? 0} mm axial, ${config.angularOffsetDeg ?? 0}° de giro`] : []),
     `Lienzo del archivo: ${layout.canvasWidthMm} x ${layout.canvasHeightMm} mm`,
     '',
     'ANTES DE GRABAR (a cargar por el operador, la app NO los inventa):',
@@ -163,10 +231,9 @@ export function exportRotaryGuideSvg(design: LabelDesign, config: RotaryConfig):
   const w = layout.canvasWidthMm, h = layout.canvasHeightMm;
   const c = LIGHTBURN_LAYERS.GUIDE.hexColor;
   const st = `fill="none" stroke="${c}" stroke-width="0.1"`;
-  const dx = layout.offsetXMm, dy = layout.offsetYMm;
   const body = [
     `    <rect id="area" x="0" y="0" width="${w}" height="${h}" ${st} />`,
-    `    <rect id="diseno" x="${dx}" y="${dy}" width="${design.widthMm}" height="${design.heightMm}" ${st} />`,
+    ...layout.placements.map((p, i) => `    <rect id="diseno-${i + 1}" x="${p.offsetXMm}" y="${p.offsetYMm}" width="${design.widthMm}" height="${design.heightMm}" ${st} />`),
     `    <path id="cruz-centro" d="M ${roundMm(w / 2 - 5)} ${roundMm(h / 2)} L ${roundMm(w / 2 + 5)} ${roundMm(h / 2)} M ${roundMm(w / 2)} ${roundMm(h / 2 - 5)} L ${roundMm(w / 2)} ${roundMm(h / 2 + 5)}" ${st} />`,
     `    <path id="costura" d="M 0 0 L ${w} 0" ${st} stroke-dasharray="3 2" />`,
   ];
