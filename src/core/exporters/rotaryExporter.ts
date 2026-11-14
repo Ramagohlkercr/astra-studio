@@ -1,4 +1,4 @@
-import {compileLabelGeometry, roundMm} from '../geometry/geometryEngine';
+import {compileLabelGeometry, rasterImageTransform, roundMm} from '../geometry/geometryEngine';
 import {computeRotaryLayout, RotaryConfig, RotaryLayout, warpPointForTaper} from '../rotary/rotaryEngine';
 import {EngravedItemGeometry, LabelDesign, LIGHTBURN_LAYERS, Point2D} from '../types';
 
@@ -88,9 +88,8 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
       }
     } else if (eng.kind === 'raster_image' && eng.dataUrl) {
       engravePathCount++;
-      const rot = eng.rotationDeg
-        ? ` transform="rotate(${eng.rotationDeg} ${roundMm((eng.xMm || 0) + (eng.widthMm || 0) / 2)} ${roundMm((eng.yMm || 0) + (eng.heightMm || 0) / 2)})"`
-        : '';
+      const rt = rasterImageTransform(eng);
+      const rot = rt ? ` transform="${rt}"` : '';
       nodes.push(`    <image id="${xml(eng.id)}" x="${eng.xMm}" y="${eng.yMm}" width="${eng.widthMm}" height="${eng.heightMm}" preserveAspectRatio="none" href="${xml(eng.dataUrl)}"${rot} />`);
     }
   }

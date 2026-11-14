@@ -156,6 +156,8 @@ export interface DesignElementBase {
   lockAspectRatio: boolean;
   /** Rotación en grados */
   rotationDeg: number;
+  /** Reflejo horizontal del arte alrededor de su centro, aplicado antes de la rotación (reverso en espejo) */
+  mirrored?: boolean;
   locked: boolean;
   visible: boolean;
   groupId?: string;
@@ -211,7 +213,7 @@ export type LabelElement =
 
 export interface LabelDesign {
   /** Fold guide only; never exported as a cutting operation. Dimensions are unfolded. */
-  fold?: {axis: 'horizontal' | 'vertical'; faces: 'one' | 'both'};
+  fold?: {axis: 'horizontal' | 'vertical'; faces: 'one' | 'both'; reverse?: 'rotate' | 'mirror'};
   id: string;
   name: string;
   shape: LabelShapeType;
@@ -272,6 +274,8 @@ export interface EngravedItemGeometry {
   widthMm?: Millimeters;
   heightMm?: Millimeters;
   rotationDeg?: number;
+  /** Reflejo horizontal de la imagen antes de rotar */
+  mirrored?: boolean;
   boundingBox: BoundingBox;
 }
 

@@ -5,6 +5,7 @@ import {
   getElementVisibleBoundingBoxMm,
   getElementNormalizedContentBounds,
   roundMm,
+  rasterImageTransform,
 } from '../core/geometry/geometryEngine';
 import {
   LabelDesign,
@@ -541,11 +542,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
                     height={eng.heightMm}
                     preserveAspectRatio="none"
                     href={eng.dataUrl}
-                    transform={
-                      eng.rotationDeg
-                        ? `rotate(${eng.rotationDeg} ${roundMm((eng.xMm || 0) + (eng.widthMm || 0) / 2)} ${roundMm((eng.yMm || 0) + (eng.heightMm || 0) / 2)})`
-                        : undefined
-                    }
+                    transform={rasterImageTransform(eng)}
                   />
                 )}
 

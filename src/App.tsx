@@ -1596,13 +1596,18 @@ export function App() {
                         <option value="horizontal">Horizontal · mitad superior e inferior</option><option value="vertical">Vertical · mitad izquierda y derecha</option>
                       </select>
                     </label>
+                    <label className="block">Reverso del logo
+                      <select aria-label="Reverso del logo" value={labelDesign.fold.reverse ?? 'rotate'} onChange={e=>applyFold({...labelDesign.fold!,reverse:e.target.value as NonNullable<FoldOptions['reverse']>},'preserve')} className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2">
+                        <option value="rotate">Normal · el reverso se lee derecho al doblar</option><option value="mirror">Espejo · reflejo sobre la línea de doblez</option>
+                      </select>
+                    </label>
                     <label className="block">Logo en las caras
                       <select aria-label="Logo en las caras" value={labelDesign.fold.faces} onChange={e=>applyFold({...labelDesign.fold!,faces:e.target.value as FoldOptions['faces']},'preserve')} className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2">
                         <option value="both">Ambas caras</option><option value="one">Una cara</option>
                       </select>
                     </label>
                     <p className="text-cyan-200">Pieza abierta: {labelDesign.widthMm} × {labelDesign.heightMm} mm. Doblada: {labelDesign.fold.axis==='vertical'?labelDesign.widthMm/2:labelDesign.widthMm} × {labelDesign.fold.axis==='horizontal'?labelDesign.heightMm/2:labelDesign.heightMm} mm.</p>
-                    <p className="text-slate-400">Rectangular, sin orificios. La línea central es solo una guía y no se exporta. En horizontal, el reverso gira 180°; las letras no se reflejan. Podés mover, girar o agrandar el logo de una cara y la otra lo sigue sola. Al cambiar medidas o caras, el logo se queda donde lo pusiste.</p>
+                    <p className="text-slate-400">Rectangular, sin orificios. La línea central es solo una guía y no se exporta. En «Normal» el reverso gira 180° y las letras no se reflejan; en «Espejo» el reverso es el reflejo exacto del frente sobre el doblez (letras en espejo). Podés mover, girar o agrandar el logo de una cara y la otra lo sigue sola. Al cambiar medidas o caras, el logo se queda donde lo pusiste.</p>
                     <div role="group" aria-label="Posición del logo en la cara" className="space-y-1">
                       <span className="block text-slate-300">Posición del logo en la cara</span>
                       <div className="grid grid-cols-3 gap-1">

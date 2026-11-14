@@ -7,7 +7,8 @@ import {
   getElementVisibleBoundingBoxMm,
   roundMm,
 } from './geometryEngine';
-export type FoldOptions = {axis:'horizontal'|'vertical'; faces:'one'|'both'};
+/** reverse: 'rotate' (default) = reverso girado/trasladado; 'mirror' = reflejo exacto sobre la línea de doblez. */
+export type FoldOptions = {axis:'horizontal'|'vertical'; faces:'one'|'both'; reverse?:'rotate'|'mirror'};
 export type FoldPlacement = 'top'|'bottom'|'left'|'right'|'center';
 const BACK=':fold-back';
 const isBack=(e:LabelElement)=>e.id.endsWith(BACK);
@@ -24,6 +25,14 @@ function faceDesign(design:LabelDesign, fold:FoldOptions):LabelDesign {
  * Vertical fold: the face is translated by half the piece width.
  */
 function mapToOtherFace(el:LabelElement, fold:FoldOptions, design:LabelDesign, toBack:boolean, target:LabelElement):LabelElement {
+ const norm=(deg:number)=>((deg%360)+360)%360;
+ if(fold.reverse==='mirror') {
+  // Reflection across the fold line = local horizontal flip + rotation (180°-θ horizontal fold, -θ vertical fold).
+  const base={...el,id:target.id,name:target.name,mirrored:!el.mirrored};
+  return fold.axis==='horizontal'
+   ?{...base,xMm:el.xMm,yMm:roundMm(design.heightMm-el.yMm,3),rotationDeg:norm(180-el.rotationDeg)}
+   :{...base,xMm:roundMm(design.widthMm-el.xMm,3),yMm:el.yMm,rotationDeg:norm(-el.rotationDeg)};
+ }
  if(fold.axis==='horizontal') {
   return {...el,id:target.id,name:target.name,xMm:roundMm(design.widthMm-el.xMm,3),yMm:roundMm(design.heightMm-el.yMm,3),rotationDeg:(el.rotationDeg+180)%360};
  }
@@ -142,7 +151,7 @@ function changed(a:LabelElement,b:LabelElement):boolean {
  */
 export function syncFoldedFaces(prev:LabelDesign, next:LabelDesign):LabelDesign {
  const fold=next.fold;
- if(!fold||!prev.fold||fold.faces!=='both'||prev.fold.axis!==fold.axis||prev.fold.faces!==fold.faces||
+ if(!fold||!prev.fold||fold.faces!=='both'||prev.fold.axis!==fold.axis||prev.fold.faces!==fold.faces||(prev.fold.reverse??'rotate')!==(fold.reverse??'rotate')||
    prev.widthMm!==next.widthMm||prev.heightMm!==next.heightMm) return next;
  const prevById=new Map(prev.elements.map(e=>[e.id,e]));
  const nextById=new Map(next.elements.map(e=>[e.id,e]));

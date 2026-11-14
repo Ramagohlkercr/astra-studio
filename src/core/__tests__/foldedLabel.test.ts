@@ -99,3 +99,51 @@ describe('Folded scaling',()=>{
   expect(placeFoldedFaces(top,'top')).toBe(top);
  });
 });
+
+import {rasterImageTransform} from '../geometry/geometryEngine';
+const mirrorFolded=(axis:'horizontal'|'vertical')=>arrangeFoldedLabel({...createInitialOrdersCatalog()[0].labelDesign,widthMm:40,heightMm:60},{axis,faces:'both',reverse:'mirror'});
+describe('Folded mirror reverse',()=>{
+ it.each(['horizontal','vertical'] as const)('back is the exact reflection of the front across the fold line (%s)',axis=>{
+  const d=mirrorFolded(axis);const g=groups(d);
+  if(axis==='horizontal'){expect(g.b.minY).toBeCloseTo(60-g.f.maxY,2);expect(g.b.maxY).toBeCloseTo(60-g.f.minY,2);expect(g.b.minX).toBeCloseTo(g.f.minX,2);expect(g.b.maxX).toBeCloseTo(g.f.maxX,2);}
+  else{expect(g.b.minX).toBeCloseTo(40-g.f.maxX,2);expect(g.b.maxX).toBeCloseTo(40-g.f.minX,2);expect(g.b.minY).toBeCloseTo(g.f.minY,2);}
+  const n=d.elements.length/2;
+  d.elements.slice(n).forEach(e=>expect(e.mirrored).toBe(true));
+  d.elements.slice(0,n).forEach(e=>expect(e.mirrored).toBeFalsy());
+ });
+ it('mirrored art really is flipped in the compiled geometry',()=>{
+  const d=mirrorFolded('vertical');const n=d.elements.length/2;
+  const comp=compileLabelGeometry(d).engravingItems;
+  const fb=comp.slice(0,n),bb=comp.slice(n);
+  fb.forEach((f,i)=>{
+   expect(bb[i].boundingBox.width).toBeCloseTo(f.boundingBox.width,1);
+   expect(bb[i].boundingBox.minX).toBeCloseTo(40-f.boundingBox.maxX,1);
+  });
+  // text points: the first glyph point of the front sits on the opposite side in the back
+  const ft=fb.find(e=>e.id.includes('text'))??fb[fb.length-1],bt=bb[fb.indexOf(ft)];
+  const fx=ft.polylines![0].points[0].x,bx=bt.polylines![0].points[0].x;
+  expect(bx).toBeCloseTo(40-fx,1);
+ });
+ it('syncs edits both ways and keeps the reflection',()=>{
+  const d=mirrorFolded('horizontal');const n=d.elements.length/2;
+  const moved={...d,elements:d.elements.map((e,i)=>i===0?{...e,xMm:e.xMm+2,yMm:e.yMm+3,rotationDeg:20}:e)};
+  const out=syncFoldedFaces(d,moved);
+  expect(out.elements[n].xMm).toBeCloseTo(out.elements[0].xMm,3);
+  expect(out.elements[n].yMm).toBeCloseTo(60-out.elements[0].yMm,3);
+  expect(out.elements[n].rotationDeg).toBeCloseTo(160,3);
+  const back=syncFoldedFaces(out,{...out,elements:out.elements.map((e,i)=>i===n?{...e,yMm:e.yMm-1}:e)});
+  expect(back.elements[0].yMm).toBeCloseTo(60-back.elements[n].yMm,3);
+  expect(back.elements[0].rotationDeg).toBeCloseTo(20,3);
+ });
+ it('switching the reverse mode keeps front positions',()=>{
+  const d=placeFoldedFaces(folded('horizontal'),'top');
+  const m=arrangeFoldedLabel({...d,fold:{...d.fold!,reverse:'mirror'}},{...d.fold!,reverse:'mirror'},'preserve');
+  expect(groups(m).f.minY).toBeCloseTo(groups(d).f.minY,2);
+  expect(m.elements.some(e=>e.mirrored)).toBe(true);
+ });
+ it('raster image transform composes rotation and flip',()=>{
+  expect(rasterImageTransform({xMm:0,yMm:0,widthMm:10,heightMm:4})).toBeUndefined();
+  expect(rasterImageTransform({xMm:0,yMm:0,widthMm:10,heightMm:4,rotationDeg:30})).toBe('rotate(30 5 2)');
+  expect(rasterImageTransform({xMm:0,yMm:0,widthMm:10,heightMm:4,rotationDeg:30,mirrored:true})).toBe('rotate(30 5 2) translate(5 0) scale(-1 1) translate(-5 0)');
+ });
+});

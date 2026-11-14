@@ -556,6 +556,18 @@ function sampleSvgArcPoints(
  * Soporta todos los comandos SVG 1.1 (M/m, L/l, H/h, V/v, C/c, S/s, Q/q, T/t, A/a, Z/z)
  * y secuencias implícitas de coordenadas repetidas.
  */
+/** Transform SVG de una imagen raster: reflejo local (si corresponde) y luego rotación, ambos sobre su centro. */
+export function rasterImageTransform(eng: {
+  xMm?: Millimeters; yMm?: Millimeters; widthMm?: Millimeters; heightMm?: Millimeters; rotationDeg?: number; mirrored?: boolean;
+}): string | undefined {
+  const cx = roundMm((eng.xMm ?? 0) + (eng.widthMm ?? 0) / 2);
+  const cy = roundMm((eng.yMm ?? 0) + (eng.heightMm ?? 0) / 2);
+  const parts: string[] = [];
+  if (eng.rotationDeg) parts.push(`rotate(${eng.rotationDeg} ${cx} ${cy})`);
+  if (eng.mirrored) parts.push(`translate(${cx} 0) scale(-1 1) translate(${-cx} 0)`);
+  return parts.length ? parts.join(' ') : undefined;
+}
+
 export function transformNormalizedPathToMillimeters(
   pathD: string,
   origBox: { minX: number; minY: number; width: number; height: number },
@@ -563,7 +575,8 @@ export function transformNormalizedPathToMillimeters(
   targetCenterYMm: Millimeters,
   targetWidthMm: Millimeters,
   targetHeightMm: Millimeters,
-  rotationDeg = 0
+  rotationDeg = 0,
+  mirrored = false
 ): {
   svgPathD: string;
   sampledPoints: Point2D[];
@@ -581,7 +594,8 @@ export function transformNormalizedPathToMillimeters(
   const sinA = Math.sin(rad);
 
   const mapPoint = (nx: number, ny: number): Point2D => {
-    const rawX = leftMm + (nx - origBox.minX) * scaleX;
+    const srcX = mirrored ? 2 * origBox.minX + origBox.width - nx : nx;
+    const rawX = leftMm + (srcX - origBox.minX) * scaleX;
     const rawY = topMm + (ny - origBox.minY) * scaleY;
     if (!rotationDeg) {
       return { x: roundMm(rawX), y: roundMm(rawY) };
@@ -894,7 +908,8 @@ export function getElementVisibleBoundingBoxMm(el: LabelElement): BoundingBox {
     const compiled = compileDesignElement(el);
     if (compiled) return compiled.boundingBox;
   }
-  const norm = getElementNormalizedContentBounds(el);
+  const rawNorm = getElementNormalizedContentBounds(el);
+  const norm = el.mirrored ? { ...rawNorm, minX: 1 - rawNorm.maxX, maxX: 1 - rawNorm.minX } : rawNorm;
   const angle = el.rotationDeg * Math.PI / 180;
   const cos = Math.cos(angle), sin = Math.sin(angle);
   return computeBoundingBox([
@@ -1182,6 +1197,7 @@ export function compileDesignElement(
       fontSizeMm: el.fontSizeMm,
       letterSpacingMm: el.letterSpacingMm,
       rotationDeg: el.rotationDeg,
+      mirrored: el.mirrored,
     });
     const allPts = compiled.polylines.flatMap((pl) => pl.points);
     return {
@@ -1237,7 +1253,8 @@ export function compileDesignElement(
         cy,
         el.widthMm,
         el.heightMm,
-        el.rotationDeg
+        el.rotationDeg,
+        el.mirrored
       );
       if (tr.svgPathD) {
         combinedPaths.push(tr.svgPathD);
@@ -1285,7 +1302,8 @@ export function compileDesignElement(
         cy,
         el.widthMm,
         el.heightMm,
-        el.rotationDeg
+        el.rotationDeg,
+        el.mirrored
       );
       if (tr.svgPathD) {
         combinedPaths.push(tr.svgPathD);
@@ -1330,6 +1348,7 @@ export function compileDesignElement(
     widthMm: roundMm(el.widthMm),
     heightMm: roundMm(el.heightMm),
     rotationDeg: el.rotationDeg,
+    mirrored: el.mirrored,
     boundingBox: getElementVisibleBoundingBoxMm({ ...el, xMm: cx, yMm: cy }),
   };
 }

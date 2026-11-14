@@ -376,6 +376,8 @@ export function compileVectorTextToGeometry(params: {
   fontSizeMm: Millimeters;
   letterSpacingMm: Millimeters;
   rotationDeg?: number;
+  /** Reflejo horizontal del texto sobre su centro, antes de rotar */
+  mirrored?: boolean;
 }): {
   svgPathD: string;
   polylines: { points: Point2D[]; closed: boolean }[];
@@ -397,7 +399,8 @@ export function compileVectorTextToGeometry(params: {
   const cosA = Math.cos(angleRad);
   const sinA = Math.sin(angleRad);
 
-  const transformPt = (x: number, y: number): Point2D => {
+  const transformPt = (rawX: number, y: number): Point2D => {
+    const x = params.mirrored ? 2 * params.centerXMm - rawX : rawX;
     if (!params.rotationDeg) {
       return { x: roundMm(x), y: roundMm(y) };
     }

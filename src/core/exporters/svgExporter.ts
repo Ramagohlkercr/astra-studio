@@ -1,5 +1,5 @@
 import {sharedCutLines} from '../geometry/sharedCuts';
-import { assertProductionGeometry, compileLabelGeometry, roundMm } from '../geometry/geometryEngine';
+import { assertProductionGeometry, compileLabelGeometry, rasterImageTransform, roundMm } from '../geometry/geometryEngine';
 import {
   LabelDesign,
   LIGHTBURN_LAYERS,
@@ -117,9 +117,8 @@ export function exportProductionSvg(
           }
         } else if (eng.kind === 'raster_image' && eng.dataUrl) {
           engravePathCount++;
-          const rotAttr = eng.rotationDeg
-            ? ` transform="rotate(${eng.rotationDeg} ${roundMm((eng.xMm || 0) + (eng.widthMm || 0) / 2)} ${roundMm((eng.yMm || 0) + (eng.heightMm || 0) / 2)})"`
-            : '';
+          const rotTransform = rasterImageTransform(eng);
+          const rotAttr = rotTransform ? ` transform="${rotTransform}"` : '';
           engraveNodes.push(
             `    <image id="${xml(eng.id)}" x="${eng.xMm}" y="${eng.yMm}" width="${eng.widthMm}" height="${eng.heightMm}" preserveAspectRatio="none" href="${xml(eng.dataUrl)}"${rotAttr} />`
           );
