@@ -1,6 +1,6 @@
 import {compatibleCutConfig, supportsSharedCuts} from './core/geometry/sharedCuts';
 import {rotateArtworkExactly} from './core/geometry/preciseRotation';
-import {arrangeFoldedLabel, unfoldLabel, FoldOptions} from './core/geometry/foldedLabel';
+import {arrangeFoldedLabel, unfoldLabel, placeFoldedFaces, scaleFoldedFaces, syncFoldedFaces, FoldOptions, FoldPlacement} from './core/geometry/foldedLabel';
 import {LIGHTBURN_PROFILES, LightburnProfile, lightburnGuide} from './core/exporters/lightburnGuide';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { LogoOutputFile, logoNameError, logoFolderZip } from './core/exporters/logoFolder';
@@ -324,10 +324,12 @@ export function App() {
   const imageRequest = useRef(0);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
   const pushStateWithHistory = (
-    nextDesign: LabelDesign,
+    rawDesign: LabelDesign,
     nextNesting?: NestingConfig,
     nextMatId?: string
   ) => {
+    // En etiquetas para doblar, la cara que no se tocó sigue a la que se editó.
+    const nextDesign = syncFoldedFaces(latestDesign.current, rawDesign);
     if (canvasInteraction.current) {
       setLabelDesign(nextDesign);
       return;
@@ -660,9 +662,9 @@ export function App() {
   // PASO 2: FORMA Y MEDIDAS DE LA ETIQUETA
   // ==========================================
 
-  const applyFold = (fold: FoldOptions | null) => {
+  const applyFold = (fold: FoldOptions | null, mode: 'refit' | 'preserve' = 'refit') => {
     try {
-      const next = fold ? arrangeFoldedLabel(labelDesign, fold) : unfoldLabel(labelDesign);
+      const next = fold ? arrangeFoldedLabel(labelDesign, fold, mode) : unfoldLabel(labelDesign);
       pushStateWithHistory(next);
       setSelectedElementId(next.elements[0]?.id ?? null);
       notify(fold ? 'Etiqueta para doblar preparada. Las medidas corresponden a la pieza abierta.' : 'Formato simple restaurado.');
@@ -680,7 +682,7 @@ export function App() {
     };
 
     if (updated.fold) {
-      try { pushStateWithHistory(arrangeFoldedLabel(updated, updated.fold)); }
+      try { pushStateWithHistory(arrangeFoldedLabel(updated, updated.fold, 'preserve')); }
       catch (error) { notify((error as Error).message); }
       return;
     }
@@ -1595,13 +1597,24 @@ export function App() {
                       </select>
                     </label>
                     <label className="block">Logo en las caras
-                      <select aria-label="Logo en las caras" value={labelDesign.fold.faces} onChange={e=>applyFold({...labelDesign.fold!,faces:e.target.value as FoldOptions['faces']})} className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2">
+                      <select aria-label="Logo en las caras" value={labelDesign.fold.faces} onChange={e=>applyFold({...labelDesign.fold!,faces:e.target.value as FoldOptions['faces']},'preserve')} className="w-full mt-2 bg-slate-950 border border-slate-700 rounded p-2">
                         <option value="both">Ambas caras</option><option value="one">Una cara</option>
                       </select>
                     </label>
                     <p className="text-cyan-200">Pieza abierta: {labelDesign.widthMm} × {labelDesign.heightMm} mm. Doblada: {labelDesign.fold.axis==='vertical'?labelDesign.widthMm/2:labelDesign.widthMm} × {labelDesign.fold.axis==='horizontal'?labelDesign.heightMm/2:labelDesign.heightMm} mm.</p>
-                    <p className="text-slate-400">Rectangular, sin orificios. La línea central es solo una guía y no se exporta. En horizontal, el reverso gira 180°; las letras no se reflejan. Después de cambiar el logo, usá Reacomodar caras.</p>
-                    <button onClick={()=>applyFold(labelDesign.fold!)} className="w-full rounded bg-cyan-900 p-2">Reacomodar caras</button>
+                    <p className="text-slate-400">Rectangular, sin orificios. La línea central es solo una guía y no se exporta. En horizontal, el reverso gira 180°; las letras no se reflejan. Podés mover, girar o agrandar el logo de una cara y la otra lo sigue sola. Al cambiar medidas o caras, el logo se queda donde lo pusiste.</p>
+                    <div role="group" aria-label="Posición del logo en la cara" className="space-y-1">
+                      <span className="block text-slate-300">Posición del logo en la cara</span>
+                      <div className="grid grid-cols-3 gap-1">
+                        {([['top','Arriba'],['bottom','Abajo'],['left','Izquierda'],['right','Derecha'],['center','Centro']] as [FoldPlacement,string][]).map(([where,label])=>
+                          <button key={where} onClick={()=>{const next=placeFoldedFaces(labelDesign,where); if(next===labelDesign){notify('El logo ya está ahí o ocupa toda la cara. Achicalo para poder moverlo.');return;} pushStateWithHistory(next); notify(`Logo ubicado: ${label.toLowerCase()}. La otra cara lo acompaña.`);}} className="rounded bg-slate-800 border border-slate-700 p-2">{label}</button>)}
+                      </div>
+                    </div>
+                    <div role="group" aria-label="Tamaño del logo en la cara" className="grid grid-cols-2 gap-1">
+                      <button onClick={()=>{const next=scaleFoldedFaces(labelDesign,0.85); if(next===labelDesign){notify('El logo ya está en su tamaño mínimo.');return;} pushStateWithHistory(next);}} className="rounded bg-slate-800 border border-slate-700 p-2">Logo más chico (−15%)</button>
+                      <button onClick={()=>{const next=scaleFoldedFaces(labelDesign,1/0.85); if(next===labelDesign){notify('El logo ya ocupa toda la cara.');return;} pushStateWithHistory(next);}} className="rounded bg-slate-800 border border-slate-700 p-2">Logo más grande (+18%)</button>
+                    </div>
+                    <button onClick={()=>applyFold(labelDesign.fold!,'refit')} className="w-full rounded bg-cyan-900 p-2">Reacomodar caras (centrar y ajustar tamaño)</button>
                   </>}
                 </div>
                 {/* Selector de unidad mm / cm */}
