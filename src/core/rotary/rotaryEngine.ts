@@ -12,6 +12,8 @@ export type RotaryType = 'roller' | 'chuck';
 
 export interface RotaryConfig {
   rotaryType: RotaryType;
+  /** Pasos por vuelta del rodillo motriz o mandril, informados por el operador. */
+  stepsPerRotation?: number;
   /** Diámetro del objeto (mm) en el extremo X=0; si no hay endDiameterMm, cilindro recto */
   objectDiameterMm: Millimeters;
   /** Diámetro en el extremo X=largo útil (mm). Distinto de objectDiameterMm = objeto cónico (ej. tumbler) */
@@ -44,7 +46,7 @@ export const DEFAULT_ROTARY_CONFIG: RotaryConfig = {
   objectDiameterMm: 75,
   usefulLengthMm: 100,
   arcDeg: 360,
-  rollerDiameterMm: 20,
+  rollerDiameterMm: undefined,
   machineBedWidthMm: 900,
 };
 
@@ -123,8 +125,13 @@ export function computeRotaryLayout(config: RotaryConfig, design: Pick<LabelDesi
   if (config.usefulLengthMm > config.machineBedWidthMm) {
     errors.push(`El largo útil (${config.usefulLengthMm} mm) supera el ancho de la máquina (${config.machineBedWidthMm} mm).`);
   }
-  if (!(config.arcDeg > 0) || config.arcDeg > 360) errors.push('El arco a grabar debe estar entre 1° y 360°.');
+  if (!(config.arcDeg >= 1) || config.arcDeg > 360) errors.push('El arco a grabar debe estar entre 1° y 360°.');
 
+  if (!(design.widthMm>0) || !(design.heightMm>0)) errors.push('El diseño debe tener ancho y alto mayores a 0.');
+  if (config.stepsPerRotation!==undefined && (!finite(config.stepsPerRotation)||config.stepsPerRotation<=0)) errors.push('Los pasos por vuelta deben ser mayores a 0 o dejarse sin completar.');
+  if (config.rotaryType==='roller' && config.rollerDiameterMm!==undefined && (!finite(config.rollerDiameterMm)||config.rollerDiameterMm<=0)) errors.push('El diámetro del rodillo debe ser mayor a 0 o dejarse sin completar.');
+  if (config.rotaryType==='roller' && config.rollerDiameterMm===undefined) warnings.push('Falta medir el rodillo motriz: el archivo se puede preparar, pero su diámetro debe configurarse en LightBurn antes de grabar.');
+  if (config.stepsPerRotation===undefined) warnings.push('Pasos por vuelta pendientes: usá el valor del fabricante o una calibración del accesorio.');
   const repeat = config.repeatCount === undefined ? 1 : config.repeatCount;
   const axisOff = config.axisOffsetMm ?? 0;
   const angOff = config.angularOffsetDeg ?? 0;
@@ -139,7 +146,7 @@ export function computeRotaryLayout(config: RotaryConfig, design: Pick<LabelDesi
   if (design.widthMm > config.usefulLengthMm) {
     errors.push(`El diseño (${design.widthMm} mm a lo largo del eje) no entra en el largo útil de ${config.usefulLengthMm} mm.`);
   }
-  const repeatN = Number.isInteger(repeat) && repeat >= 1 ? repeat : 1;
+  const repeatN = Number.isInteger(repeat) && repeat >= 1 && repeat <= 36 ? repeat : 1;
   const pitchMm = roundMm(arcLengthMm / repeatN);
   if (design.heightMm > pitchMm) {
     errors.push(repeatN > 1
@@ -223,6 +230,7 @@ export function sanitizeRotaryConfig(raw: unknown): RotaryConfig | undefined {
   return {
     ...DEFAULT_ROTARY_CONFIG,
     rotaryType: r.rotaryType === 'chuck' ? 'chuck' : 'roller',
+    stepsPerRotation: ok(r.stepsPerRotation) && r.stepsPerRotation>0 ? r.stepsPerRotation : undefined,
     objectDiameterMm: r.objectDiameterMm,
     endDiameterMm: ok(r.endDiameterMm) ? r.endDiameterMm : undefined,
     usefulLengthMm: r.usefulLengthMm,
@@ -232,4 +240,11 @@ export function sanitizeRotaryConfig(raw: unknown): RotaryConfig | undefined {
     angularOffsetDeg: ok(r.angularOffsetDeg) ? r.angularOffsetDeg : undefined,
     rollerDiameterMm: ok(r.rollerDiameterMm) ? r.rollerDiameterMm : DEFAULT_ROTARY_CONFIG.rollerDiameterMm,
   };
+}
+
+/** Correct a known setting using a measured Test rotation; never sends movement. */
+export function correctedRotarySteps(current:number, measuredDegrees:number):number | null {
+ if(!Number.isFinite(current)||!Number.isFinite(measuredDegrees)||current<=0||measuredDegrees<=0) return null;
+ const result=current*360/measuredDegrees;
+ return Number.isFinite(result)?roundMm(result,3):null;
 }

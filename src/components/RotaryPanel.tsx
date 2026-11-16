@@ -1,5 +1,5 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {computeRotaryLayout, RotaryConfig, RotaryType} from '../core/rotary/rotaryEngine';
+import {computeRotaryLayout, correctedRotarySteps, RotaryConfig, RotaryType} from '../core/rotary/rotaryEngine';
 import {exportRotarySvg, exportRotaryGuideSvg, exportRotaryDxf} from '../core/exporters/rotaryExporter';
 import {LogoOutputFile} from '../core/exporters/logoFolder';
 import {LabelDesign} from '../core/types';
@@ -24,6 +24,8 @@ export const ROTARY_PRESETS: {id: string; label: string; patch: Partial<RotaryCo
 export function RotaryPanel({design, config, onConfigChange, onSave, onClose}: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const setConfig = (update: (c: RotaryConfig) => RotaryConfig) => onConfigChange(update(config));
+  const [measuredDegrees,setMeasuredDegrees]=useState<number>(360);
+  const correction=correctedRotarySteps(config.stepsPerRotation ?? 0,measuredDegrees);
   const [withDxf, setWithDxf] = useState(false);
   const [withGuides, setWithGuides] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -31,10 +33,14 @@ export function RotaryPanel({design, config, onConfigChange, onSave, onClose}: P
 
   const layout = useMemo(() => computeRotaryLayout(config, design), [config, design]);
 
-  const preview = useMemo(() => {
-    if (!layout.valid) return null;
-    try { return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(exportRotarySvg(design, config).svgContent)}`; } catch { return null; }
-  }, [layout.valid, design, config]);
+  const previewResult = useMemo(() => {
+    if (!layout.valid) return {url:null,error:null};
+    try {return {url:`data:image/svg+xml;charset=utf-8,${encodeURIComponent(exportRotarySvg(design, config).svgContent)}`,error:null};}
+    catch(e){return {url:null,error:e instanceof Error?e.message:String(e)};}
+  },[layout.valid,design,config]);
+  const preview=previewResult.url;
+  const rasterOnly=design.elements.some(el=>el.visible&&el.type==='logo_raster'&&(el.processing.mode!=='vector'||!el.vectorizedPathsNormalized.length));
+  useEffect(()=>{if(rasterOnly)setWithDxf(false);},[rasterOnly]);
 
   const num = (key: 'objectDiameterMm' | 'usefulLengthMm' | 'arcDeg' | 'repeatCount' | 'axisOffsetMm' | 'angularOffsetDeg') =>
     (e: React.ChangeEvent<HTMLInputElement>) => setConfig(c => ({...c, [key]: e.target.value === '' ? NaN : Number(e.target.value)}));
@@ -105,8 +111,24 @@ export function RotaryPanel({design, config, onConfigChange, onSave, onClose}: P
           </label>
         </div>
 
+        <details className="border border-slate-700 rounded p-3 space-y-3">
+          <summary className="cursor-pointer text-cyan-300">Configuración y calibración del accesorio</summary>
+          <p className="text-xs text-slate-400">Ficha para LightBurn, no mueve ni configura la máquina. Medí el rodillo motriz; su diámetro no es el del objeto.</p>
+          {config.rotaryType==='roller' && <label className="block text-sm">Diámetro del rodillo motriz (mm)
+            <input aria-label="Diámetro del rodillo motriz (mm)" className={field} type="number" min="0.1" step="0.1" value={val(config.rollerDiameterMm)} placeholder="Medir el rodillo real" onChange={e=>setConfig(c=>({...c,rollerDiameterMm:e.target.value===''?undefined:Number(e.target.value)}))}/>
+          </label>}
+          <label className="block text-sm">Pasos por vuelta del accesorio
+            <input aria-label="Pasos por vuelta" className={field} type="number" min="0.001" step="1" value={val(config.stepsPerRotation)} placeholder="Valor del fabricante o calibrado" onChange={e=>setConfig(c=>({...c,stepsPerRotation:e.target.value===''?undefined:Number(e.target.value)}))}/>
+          </label>
+          <p className="text-xs text-slate-400">Si hiciste Test en LightBurn, indicá cuántos grados giró el rodillo motriz o mandril antes del regreso. La vuelta esperada es 360°.</p>
+          <label className="block text-sm">Giro medido en Test (°)
+            <input aria-label="Giro medido en Test (grados)" className={field} type="number" min="0.1" step="0.1" value={Number.isFinite(measuredDegrees)?measuredDegrees:''} onChange={e=>setMeasuredDegrees(e.target.valueAsNumber)}/>
+          </label>
+          {correction!==null && <p className="text-sm">Pasos corregidos propuestos: {correction}</p>}
+          <button type="button" disabled={correction===null} className="studio-secondary-action disabled:opacity-40" onClick={()=>{if(correction!==null){setConfig(c=>({...c,stepsPerRotation:correction}));setMeasuredDegrees(360);}}}>Usar corrección en la ficha</button>
+        </details>
         <div className="studio-notice text-sm space-y-1">
-          {layout.tapered && <p>Objeto cónico: cargá <b>Ø {layout.referenceDiameterMm} mm</b> en la máquina.</p>}
+          {layout.tapered && <p>Objeto cónico: diámetro de referencia del dibujo <b>{layout.referenceDiameterMm} mm</b>. {config.rotaryType==='chuck' ? 'Usá esa referencia para el mandril y verificá una muestra.' : 'En LightBurn, el diámetro que calibra la escala es el del rodillo motriz.'}</p>}
           <p>Circunferencia: <b>{layout.circumferenceMm} mm</b> · Lienzo: <b>{layout.canvasWidthMm} × {layout.canvasHeightMm} mm</b></p>
           <p>Diseño: {design.widthMm} × {design.heightMm} mm ({layout.designArcDeg}° de la vuelta){layout.repeatCount > 1 ? ` × ${layout.repeatCount} copias` : ''}</p>
         </div>
@@ -118,19 +140,20 @@ export function RotaryPanel({design, config, onConfigChange, onSave, onClose}: P
         )}
         {preview && <p className="text-xs text-slate-400 text-center">Borde superior = costura (Y = 0). Izquierda = extremo X = 0.</p>}
 
+        {previewResult.error && <p role="alert" className="text-sm text-red-300">{previewResult.error}</p>}
         {layout.errors.map(m => <p key={m} role="alert" className="text-sm text-red-300">{m}</p>)}
         {saveError && <p role="alert" className="text-sm text-red-300">{saveError}</p>}
         {layout.warnings.map(m => <p key={m} className="text-sm text-amber-300">{m}</p>)}
 
         <div className="space-y-1 text-sm">
-          <label className="flex items-center gap-2"><input type="checkbox" checked={withDxf} onChange={e => setWithDxf(e.target.checked)} />Incluir DXF para RDWorks (sólo vectorial)</label>
+          <label className="flex items-center gap-2"><input type="checkbox" disabled={rasterOnly} checked={withDxf} onChange={e => setWithDxf(e.target.checked)} />Incluir DXF para RDWorks (sólo vectorial)</label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={withGuides} onChange={e => setWithGuides(e.target.checked)} />Incluir SVG de guías de alineación (no productivo, para prueba de encuadre)</label>
         </div>
         <p className="text-xs text-slate-400">Sólo grabado. Potencia, velocidad y pasos por vuelta los cargás vos en LightBurn o en la Ruida.</p>
 
         <div className="flex justify-end gap-3">
           <button type="button" className="studio-secondary-action" onClick={onClose}>Cerrar</button>
-          <button type="button" disabled={!layout.valid} className="bg-cyan-600 text-white px-4 py-2 disabled:opacity-40" onClick={save}>Guardar archivos</button>
+          <button type="button" disabled={!layout.valid || !!previewResult.error} className="bg-cyan-600 text-white px-4 py-2 disabled:opacity-40" onClick={save}>Guardar archivos</button>
         </div>
       </div>
     </dialog>

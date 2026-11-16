@@ -191,7 +191,7 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
     `Diseño: ${design.name} (${design.widthMm} mm a lo largo del eje x ${design.heightMm} mm alrededor del objeto)`,
     `Tipo de rotativo: ${config.rotaryType === 'roller' ? 'rodillos' : 'mandril'}`,
     layout.tapered
-      ? `Objeto cónico: Ø ${config.objectDiameterMm} mm (X=0) → Ø ${config.endDiameterMm} mm (X=${config.usefulLengthMm}). CARGAR EN LA MÁQUINA Ø ${layout.referenceDiameterMm} mm (referencia). El arte ya está pre-compensado en Y.`
+      ? `Objeto cónico: Ø ${config.objectDiameterMm} mm (X=0) → Ø ${config.endDiameterMm} mm (X=${config.usefulLengthMm}). CARGAR EN LA MÁQUINA: ${config.rotaryType === 'chuck' ? `Ø ${layout.referenceDiameterMm} mm del objeto (referencia)` : 'diámetro medido del rodillo motriz; el diámetro de referencia del dibujo no reemplaza al del rodillo'}. El arte ya está pre-compensado en Y.`
       : `Diámetro del objeto: ${config.objectDiameterMm} mm`,
     `Circunferencia: ${layout.circumferenceMm} mm`,
     `Arco a grabar: ${config.arcDeg}° (${layout.arcLengthMm} mm)`,
@@ -200,10 +200,14 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
     `Lienzo del archivo: ${layout.canvasWidthMm} x ${layout.canvasHeightMm} mm`,
     '',
     'ANTES DE GRABAR (a cargar por el operador, la app NO los inventa):',
-    '- Activar el rotativo en LightBurn (Rotary Setup) o en la Ruida, y cargar el diámetro del objeto indicado arriba.',
+    '- Activar el rotativo en LightBurn (Rotary Setup), eje Y, y elegir el tipo de accesorio.',
+    `- Pasos por vuelta: ${config.stepsPerRotation ?? 'PENDIENTE de medir o confirmar con el fabricante'}.`,
     config.rotaryType === 'roller'
       ? `- Cargar el diámetro de los rodillos${config.rollerDiameterMm ? ` (referencia: ${config.rollerDiameterMm} mm)` : ''} y verificar los pasos por vuelta.`
-      : '- Verificar los pasos por vuelta del mandril.',
+      : `- Cargar el diámetro del objeto: ${layout.referenceDiameterMm} mm.`,
+    config.rotaryType === 'roller' ? '- En rodillos, la escala depende del diámetro del rodillo motriz, no del diámetro del objeto.' : '- En mandril, la escala depende del diámetro del objeto.',
+    '- Test de LightBurn: debe completar una vuelta del rodillo MOTRIZ o del MANDRIL y regresar. En rodillos no se mide la vuelta del objeto.',
+    '- Estos valores son una ficha de configuración: Astra no configura ni mueve la máquina.',
     '- Potencia, velocidad e intervalo de línea: validar con una prueba sobre un objeto de descarte.',
     '- Si el software de la máquina ya compensa el diámetro, NO volver a escalar el arte.',
     '- El eje Y del archivo es el giro del objeto: mantener el origen en la marca elegida como costura.',

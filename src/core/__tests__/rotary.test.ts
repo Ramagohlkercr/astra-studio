@@ -131,3 +131,26 @@ describe('Rotary repeats, offsets and DXF', () => {
     expect(warpPointForTaper(cfg, c, 50, c + 10).y).toBeCloseTo(c + 10, 3);
   });
 });
+
+import {correctedRotarySteps} from '../rotary/rotaryEngine';
+describe('Rotary hardware configuration',()=>{
+ it('corrects measured angular travel without guessing steps',()=>{
+ expect(correctedRotarySteps(10000,180)).toBe(20000);
+ expect(correctedRotarySteps(10000,720)).toBe(5000);
+ expect(correctedRotarySteps(0,360)).toBeNull();expect(correctedRotarySteps(10000,0)).toBeNull();
+ });
+ it('caps allocation for invalid copy counts',()=>{
+ const layout=computeRotaryLayout({...DEFAULT_ROTARY_CONFIG,repeatCount:1e9},{widthMm:20,heightMm:10});
+ expect(layout.valid).toBe(false);expect(layout.placements.length).toBeLessThanOrEqual(36);
+ });
+ it('rejects invalid physical sizes and calibration',()=>{
+ expect(computeRotaryLayout({...DEFAULT_ROTARY_CONFIG,stepsPerRotation:-10},{widthMm:20,heightMm:10}).valid).toBe(false);
+ expect(computeRotaryLayout(DEFAULT_ROTARY_CONFIG,{widthMm:-1,heightMm:10}).valid).toBe(false);
+ expect(computeRotaryLayout({...DEFAULT_ROTARY_CONFIG,arcDeg:0.5},{widthMm:1,heightMm:1}).valid).toBe(false);
+ });
+ it('preserves real hardware measurements on reload',()=>{
+ const restored=sanitizeRotaryConfig({...DEFAULT_ROTARY_CONFIG,stepsPerRotation:12500,rollerDiameterMm:32});
+ expect(restored?.stepsPerRotation).toBe(12500);expect(restored?.rollerDiameterMm).toBe(32);
+ expect(DEFAULT_ROTARY_CONFIG.rollerDiameterMm).toBeUndefined();
+ });
+});
