@@ -1,3 +1,4 @@
+import {rotateArtworkExactly,snapRotation} from '../core/geometry/preciseRotation';
 import { resizeArtwork } from '../core/geometry/editorResize';
 import React, { useRef, useState } from 'react';
 import {
@@ -24,7 +25,7 @@ interface LabelEditorCanvasProps {
   onResizeElement?: (id: string, newWidthMm: number, newHeightMm: number, xMm?: number, yMm?: number) => void;
   onInteractionStart?: () => void;
   onInteractionEnd?: () => void;
-  onRotateElement?: (id: string, newRotationDeg: number) => void;
+  onRotateElement?: (id: string, newRotationDeg: number, xMm?:number, yMm?:number) => void;
   zoomLevel: number; // 1.0 = base scale (~18 px/mm)
   onZoomChange: (nextZoom: number) => void;
   showMillimeterGrid: boolean;
@@ -158,6 +159,7 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
     onInteractionStart?.();
     setDragState({
       mode: 'rotate',
+      element: structuredClone(selectedEl),
       elementId: selectedEl.id,
       startPt: pt,
       initXMm: selectedEl.xMm,
@@ -206,14 +208,15 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
       });
       onResizeElement(dragState.elementId, resized.widthMm, resized.heightMm, resized.xMm, resized.yMm);
     } else if (dragState.mode === 'rotate' && onRotateElement) {
-      const centerX = dragState.initXMm;
-      const centerY = dragState.initYMm;
-      const radians = Math.atan2(pt.y - centerY, pt.x - centerX);
-      const initial = Math.atan2(dragState.startPt.y-centerY, dragState.startPt.x-centerX);
-      let degrees = Math.round(dragState.initRotationDeg+(radians-initial)*180/Math.PI);
-      if (degrees < 0) degrees += 360;
-      degrees = degrees % 360;
-      onRotateElement(dragState.elementId, degrees);
+      if (!dragState.element) return;
+      const box=getElementVisibleBoundingBoxMm(dragState.element);
+      const centerX=(box.minX+box.maxX)/2, centerY=(box.minY+box.maxY)/2;
+      if(Math.hypot(pt.x-centerX,pt.y-centerY)<0.1) return;
+      const radians = Math.atan2(pt.y-centerY,pt.x-centerX);
+      const initial = Math.atan2(dragState.startPt.y-centerY,dragState.startPt.x-centerX);
+      const degrees=snapRotation(dragState.initRotationDeg+(radians-initial)*180/Math.PI,e.shiftKey,e.altKey);
+      const rotated=rotateArtworkExactly(dragState.element,degrees);
+      onRotateElement(dragState.elementId,rotated.rotationDeg,rotated.xMm,rotated.yMm);
     }
   };
 

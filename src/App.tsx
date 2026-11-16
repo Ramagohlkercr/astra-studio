@@ -886,7 +886,7 @@ export function App() {
 
   // 4. Ajuste Óptico / Micromovimiento (0.1 mm y 0.01 mm)
   const handleExactRotation = (degrees:number) => {
-    if (!selectedElement) return;
+    if (!selectedElement || selectedElement.locked) return;
     pushStateWithHistory({...labelDesign,elements:labelDesign.elements.map(el=>el.id===selectedElement.id?rotateArtworkExactly(el,degrees):el)});
   };
 
@@ -2023,18 +2023,18 @@ export function App() {
                   </label>
                   <label htmlFor="logo-angle" className="block text-slate-300">Rotación del logo</label>
                   <div className="flex items-center gap-2">
-                    <input id="logo-angle" aria-label="Rotación del logo (grados)" type="number" step="0.1" className="w-24 bg-slate-950 border border-slate-700" disabled={!selectedElement} value={selectedElement?.rotationDeg ?? 0}
+                    <input id="logo-angle" aria-label="Rotación del logo (grados)" type="number" step="0.1" className="w-24 bg-slate-950 border border-slate-700" disabled={!selectedElement || selectedElement.locked} value={selectedElement?.rotationDeg ?? 0}
                       onChange={e => {if(Number.isFinite(e.target.valueAsNumber)) handleExactRotation(e.target.valueAsNumber);}} />
                     <span className="text-slate-400">grados</span>
-                    <button disabled={!selectedElement} className="ml-auto bg-slate-800 px-3" onClick={()=>handleExactRotation(0)}>Restablecer</button>
+                    <button disabled={!selectedElement || selectedElement.locked} className="ml-auto bg-slate-800 px-3" onClick={()=>handleExactRotation(0)}>Restablecer</button>
                   </div>
                   <div className="grid grid-cols-4 gap-1">
-                    {[0,90,180,270].map(angle=><button key={angle} disabled={!selectedElement} onClick={()=>handleExactRotation(angle)} className="rounded bg-slate-800 py-2 text-cyan-300" aria-label={`Fijar rotación a ${angle} grados`}>{angle}°</button>)}
+                    {[0,45,90,180,270].map(angle=><button key={angle} disabled={!selectedElement || selectedElement.locked} onClick={()=>handleExactRotation(angle)} className="rounded bg-slate-800 py-2 text-cyan-300" aria-label={`Fijar rotación a ${angle} grados`}>{angle}°</button>)}
                   </div>
                   <div className="grid grid-cols-4 gap-1">
-                    {[-90,-1,1,90].map(delta=><button key={delta} disabled={!selectedElement} onClick={()=>handleExactRotation((selectedElement?.rotationDeg ?? 0)+delta)} className="rounded bg-slate-800 py-2 text-slate-200" aria-label={`Girar ${delta} grados`}>{delta>0?'+':''}{delta}°</button>)}
+                    {[-90,-1,-0.1,0.1,1,90].map(delta=><button key={delta} disabled={!selectedElement || selectedElement.locked} onClick={()=>handleExactRotation((selectedElement?.rotationDeg ?? 0)+delta)} className="rounded bg-slate-800 py-2 text-slate-200" aria-label={`Girar ${delta} grados`}>{delta>0?'+':''}{delta}°</button>)}
                   </div>
-                  <p className="text-xs text-slate-400">Gira solo el logo elegido, conservando su centro visible. En etiquetas dobladas podés seleccionar cada cara por separado. Si sobresale, reducí su tamaño; Reacomodar caras vuelve a la orientación automática del doblez.</p>
+                  <p className="text-xs text-slate-400">Gira solo el logo elegido, conservando su centro visible. Con el mouse: Shift ajusta cada 15°; Alt permite pasos de 0,1°. En etiquetas dobladas podés seleccionar cada cara por separado. Si sobresale, reducí su tamaño; Reacomodar caras vuelve a la orientación automática del doblez.</p>
                 </div>
 
                 {/* Alineación Asistida a Bordes Seguros */}
@@ -2526,9 +2526,9 @@ export function App() {
                 onResizeElement={(id, nw, nh, x, y) => {
                   handleUpdateElementSizeMm(nw, nh, x, y);
                 }}
-                onRotateElement={(id, rot) => {
+                onRotateElement={(id, rot, xMm, yMm) => {
                   const updatedEls = labelDesign.elements.map((el) =>
-                    el.id === id ? { ...el, rotationDeg: roundMm(rot, 1) } : el
+                    el.id === id && !el.locked ? {...rotateArtworkExactly(el,rot), ...(xMm!==undefined && yMm!==undefined ? {xMm,yMm} : {})} : el
                   );
                   pushStateWithHistory({
                     ...labelDesign,
