@@ -35,7 +35,7 @@ describe('Codex boundary and persistence regressions',()=>{
 describe('Codex input limits and real shape safety',()=>{
  it('rejects negative nesting gaps instead of overlapping',()=>{const n=computeNestingLayout(design(),{...DEFAULT_NESTING_CONFIG,requestedQuantity:25,gapXMm:-10});expect(n.errors.length).toBeGreaterThan(0);expect(n.batches).toHaveLength(0);});
  it('treats circle as a circle for unequal dimensions',()=>{const d=design();d.shape='circle';const p=compileLabelGeometry(d).outerCutContour.primitive;expect(p?.kind).toBe('circle');});
- it('treats configured safety margin violations as export errors',()=>{const d=design();d.safetyMarginMm=5;const e=logo();e.rotationDeg=0;e.contentBoundsNormalized=undefined;e.normalizedPaths=['M 0 0 L 100 0 L 100 100 L 0 100 Z'];e.xMm=3;e.yMm=10;e.widthMm=4;e.heightMm=4;d.elements=[e];expect(()=>exportProductionDxf(d,computeNestingLayout(d,DEFAULT_NESTING_CONFIG))).toThrow();});
+ it('lets the engraving sit past the safety margin: it warns but does not block export',()=>{const d=design();d.safetyMarginMm=5;const e=logo();e.rotationDeg=0;e.contentBoundsNormalized=undefined;e.normalizedPaths=['M 0 0 L 100 0 L 100 100 L 0 100 Z'];e.xMm=3;e.yMm=10;e.widthMm=4;e.heightMm=4;d.elements=[e];const n=computeNestingLayout(d,DEFAULT_NESTING_CONFIG);expect(validateLabelAndBatchGeometry(d,n,0).isValid).toBe(true);expect(()=>exportProductionDxf(d,n)).not.toThrow();});
 });
 
 it('uses visible raster content for production safety, not transparent canvas',()=>{

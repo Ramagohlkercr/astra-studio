@@ -1635,7 +1635,7 @@ export function validateLabelAndBatchGeometry(
     if (outOfLabelBox || anyCornerOutsidePolygon) {
       engraveInvasionCount++;
       issues.push({
-        severity: 'error',
+        severity: 'warning',
         code: 'ENGRAVE_CROSSES_CUT_LINE',
         message: `El elemento de grabado "${eng.id}" invade o sobresale de la línea de corte exterior. Use "Ajustar a Zona Segura" o reduzca su tamaño.`,
       });
@@ -1648,7 +1648,7 @@ export function validateLabelAndBatchGeometry(
     ) {
       engraveSafetyWarningCount++;
       issues.push({
-        severity: 'error',
+        severity: 'warning',
         code: 'ENGRAVE_OUTSIDE_SAFETY_MARGIN',
         message: `El grabado "${eng.id}" supera el margen de seguridad interior (${design.safetyMarginMm} mm).`,
       });
@@ -1659,7 +1659,7 @@ export function validateLabelAndBatchGeometry(
       if (boxesOverlap(eb, hc.boundingBox, -0.15)) {
         engraveInvasionCount++;
         issues.push({
-          severity: 'error',
+          severity: 'warning',
           code: 'ENGRAVE_INVADES_HOLE',
           message: `El elemento de grabado "${eng.id}" invade el agujero "${hc.id}". Ajuste la posición o use "Ajustar a Zona Segura".`,
         });

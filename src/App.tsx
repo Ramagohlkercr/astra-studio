@@ -1026,11 +1026,11 @@ export function App() {
 
   const handleExportSvg = () => {
     try {
-      const files = (['engrave_only', 'cut_only'] as const).map(mode => ({
-        name: `${mode === 'engrave_only' ? 'Grabado' : 'Corte'}_Tanda_${activeBatchIndex + 1}.svg`,
+      const files = (['combined', 'engrave_only', 'cut_only'] as const).map(mode => ({
+        name: `${mode === 'combined' ? 'LightBurn_COMPLETO' : mode === 'engrave_only' ? 'Grabado' : 'Corte'}_Tanda_${activeBatchIndex + 1}.svg`,
         content: exportProductionSvg(labelDesign, nestingResult, activeMaterial, {mode, batchIndex: activeBatchIndex}).svgContent,
       }));
-      requestLogoSave([...files, {name: 'Ajustes_LightBurn.txt', content: lightburnGuide(lightburnProfile)}]);
+      requestLogoSave([...files, {name: 'Ajustes_LightBurn.txt', content: 'IMPORTACIÓN ALINEADA EN LIGHTBURN\nImportá solamente LightBurn_COMPLETO_Tanda_' + (activeBatchIndex + 1) + '.svg: contiene grabado, orificios y corte en su posición relativa exacta.\nNo importes además Grabado y Corte: duplicarías el trabajo. Los archivos separados son alternativas; al importarlos por separado LightBurn puede centrar cada contenido y desalinearlos, especialmente en etiquetas para doblar.\n\n' + lightburnGuide(lightburnProfile)}]);
     } catch (err) { notify(`Error al preparar grabado y corte: ${(err as Error).message}`); }
   };
 
@@ -2319,6 +2319,7 @@ export function App() {
                           </span>
                         </div>
                         <input
+                          aria-label="Compensación de corte (mm)"
                           type="number"
                           step="0.01"
                           min="0"
@@ -2327,7 +2328,7 @@ export function App() {
                           onChange={(e) =>
                             pushStateWithHistory({
                               ...labelDesign,
-                              kerfCompensationMm: Number(e.target.value),
+                              kerfCompensationMm: Math.min(0.5, Math.max(0, Number(e.target.value) || 0)),
                             })
                           }
                           className="w-full bg-slate-900 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
@@ -2657,7 +2658,13 @@ export function App() {
 
                 {!validationReport.isValid && <div className="studio-export-errors" role="alert">
                   <p>Revisá los errores antes de descargar:</p>
-                  <ul>{validationReport.issues.filter(issue => issue.severity === 'error').slice(0, 3).map((issue,index) => <li key={index}>{issue.message.replace(/"[^"]+"/g, 'del logo')}</li>)}</ul>
+                  {validationReport.issues.some(issue => issue.code === 'KERF_COLLAPSES_HOLE') && <div className="space-y-2 my-3">
+                    <p>Compensación actual: {labelDesign.kerfCompensationMm} mm. Se resta al diámetro de cada orificio. No es la separación entre etiquetas ni el margen de costura.</p>
+                    <p>Si todavía no mediste el ancho de corte, podés preparar los contornos con sus medidas nominales, sin compensación.</p>
+                    <button className="px-3 py-2 rounded bg-slate-800 border border-slate-500 text-white" onClick={() => pushStateWithHistory({ ...labelDesign, kerfCompensationMm: 0 })}>Usar medidas nominales (compensación 0 mm)</button>
+                    <button className="px-3 py-2 rounded border border-slate-500 ml-2" onClick={() => { setShowAdvancedProduction(true); setCurrentStep('production'); }}>Revisar compensación en Producción</button>
+                  </div>}
+                  <ul>{validationReport.issues.filter((issue, index, issues) => issue.severity === 'error' && issues.findIndex(other => other.severity === 'error' && other.message === issue.message) === index).map((issue,index) => <li key={index}>{issue.message.replace(/"[^"]+"/g, 'del logo')}</li>)}</ul>
                 </div>}
                 {hasRasterExport && <p className="studio-notice">SVG conserva tu imagen. Para descargar DXF, primero vectorizá el logo.</p>}
                 {/* Acciones principales de exportación */}
@@ -2689,7 +2696,7 @@ export function App() {
                       <span>Descargar Hoja de Taller (TXT)</span>
                     </button>
                   </div>
-                  <p className="text-xs text-slate-400 text-center">Dos SVG separados: grabado y corte con orificios. Se guardan juntos en Astra grabados logo.</p>
+                  <p className="text-xs text-slate-400 text-center">Para LightBurn importá sólo LightBurn_COMPLETO: conserva la alineación entre logo y corte, también en etiquetas para doblar. Incluye además los SVG separados como alternativa; no los importes junto al completo.</p>
                   <button onClick={handleSaveOrderProject} className="studio-secondary-action w-full">Guardar .lhstudio.json</button>
                   <p className="text-xs text-slate-400 text-center">Tanda {activeBatchIndex + 1} de {nestingResult.totalBatches} · {activeBatch?.count ?? 0} etiquetas en el archivo</p>
                 </div>

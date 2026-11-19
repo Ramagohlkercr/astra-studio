@@ -4,3 +4,5 @@ dist_macos/
 src-tauri/target/
 .DS_Store
 *.local
+.claude/
+
