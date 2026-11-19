@@ -2,16 +2,19 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   computeRotaryLayout,
   correctedRotarySteps,
+  isTapered,
   RotaryConfig,
   RotaryType,
 } from '../core/rotary/rotaryEngine';
 import {
   RotaryAccessoryProfile,
   RotaryDirection,
+  CalibrationStatus,
   loadRotaryAccessoryProfiles,
   saveRotaryAccessoryProfile,
   deleteRotaryAccessoryProfile,
-  applyCalibrationToProfile,
+  recordProposedCalibration,
+  confirmPhysicalVerification,
   revertCalibrationOnProfile,
   computeDetailedLinearCalibration,
   LinearMeasurementMode,
@@ -69,6 +72,8 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
   const [measuredLinearMm, setMeasuredLinearMm] = useState<number>(50);
   const [calibHistory, setCalibHistory] = useState<RotaryCalibrationRecord[]>(() => loadRotaryCalibrationHistory());
 
+  const activeProfile = profiles.find((p) => p.id === selectedProfileId);
+
   const angularCorrection = correctedRotarySteps(config.stepsPerRotation ?? 3200, measuredDegrees);
 
   const detailedLinearResult = useMemo(() => {
@@ -78,8 +83,9 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
       measuredValueMm: measuredLinearMm,
       mode: linearMode,
       objectDiameterMm: config.objectDiameterMm,
+      isTapered: isTapered(config),
     });
-  }, [config.stepsPerRotation, expectedLinearMm, measuredLinearMm, linearMode, config.objectDiameterMm]);
+  }, [config.stepsPerRotation, expectedLinearMm, measuredLinearMm, linearMode, config.objectDiameterMm, config.endDiameterMm]);
 
   const [withDxf, setWithDxf] = useState(false);
   const [withGuides, setWithGuides] = useState(false);
@@ -162,6 +168,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
       rollerDiameterMm: config.rotaryType === 'roller' ? (config.rollerDiameterMm ?? 50.0) : undefined,
       stepsPerRotation: config.stepsPerRotation ?? 3200,
       rotationDirection: config.rotationDirection || 'normal',
+      calibrationStatus: 'uncalibrated',
       isCalibrated: false,
       isBuiltIn: false,
     };
@@ -182,52 +189,90 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
     }
   };
 
-  // Aplicar calibración angular
-  const handleApplyAngularCalib = () => {
+  // 1. Proponer calibración angular (Pasa a estado calculated_pending)
+  const handleProposeAngularCalib = () => {
     if (angularCorrection === null) return;
     const oldSteps = config.stepsPerRotation ?? 3200;
     const targetProfileId = config.accessoryProfileId || selectedProfileId;
 
-    const { updatedProfiles, updatedProfile } = applyCalibrationToProfile(
-      targetProfileId,
-      angularCorrection,
-      'angular_360'
-    );
-    setProfiles(updatedProfiles);
+    const res = recordProposedCalibration(targetProfileId, angularCorrection, 'angular_360', {
+      expectedValue: 360,
+      measuredValue: measuredDegrees,
+    });
+    if (!res.success) {
+      setSaveError(res.error || 'Error al registrar propuesta de calibración.');
+      return;
+    }
+    setProfiles(res.updatedProfiles);
     setConfig((c) => ({ ...c, stepsPerRotation: angularCorrection, accessoryProfileId: targetProfileId }));
 
     const record = addRotaryCalibrationRecord({
       accessoryId: targetProfileId,
-      accessoryName: updatedProfile?.name || profiles.find((p) => p.id === targetProfileId)?.name,
+      accessoryName: res.updatedProfile?.name || profiles.find((p) => p.id === targetProfileId)?.name,
       method: 'angular_360',
       initialSteps: oldSteps,
       expectedValue: 360,
       measuredValue: measuredDegrees,
       computedSteps: angularCorrection,
-      operatorNotes: `Giro 360°: medidos ${measuredDegrees}° (Perfil: ${updatedProfile?.name || targetProfileId})`,
+      operatorNotes: `Propuesta calculada por giro 360° (${measuredDegrees}° medidos). Pendiente de prueba en máquina.`,
     });
     setCalibHistory((h) => [record, ...h]);
-    setMeasuredDegrees(360);
   };
 
-  // Aplicar calibración lineal con calibre
-  const handleApplyLinearCalib = () => {
+  // Confirmar verificación física real en máquina (Pasa a verified_physical)
+  const handleConfirmVerificationAngular = () => {
+    const targetProfileId = config.accessoryProfileId || selectedProfileId;
+    const stepsToVerify = activeProfile?.proposedStepsPerRotation || config.stepsPerRotation || 3200;
+
+    const res = confirmPhysicalVerification(targetProfileId, {
+      method: 'angular_360',
+      expectedValue: 360,
+      measuredValue: measuredDegrees,
+      operatorNotes: `Verificado físicamente en la Vank 9060 por el operador: giro exacto de 360° con ${stepsToVerify} pasos/vuelta.`,
+    });
+    if (!res.success) {
+      setSaveError(res.error || 'Error al confirmar verificación física.');
+      return;
+    }
+    setProfiles(res.updatedProfiles);
+    setConfig((c) => ({ ...c, stepsPerRotation: stepsToVerify }));
+
+    const record = addRotaryCalibrationRecord({
+      accessoryId: targetProfileId,
+      accessoryName: res.updatedProfile?.name,
+      method: 'angular_360',
+      initialSteps: config.stepsPerRotation ?? 3200,
+      expectedValue: 360,
+      measuredValue: 360,
+      computedSteps: stepsToVerify,
+      operatorNotes: `VERIFICACIÓN FÍSICA CONFIRMADA por operador en Vank 9060 (${stepsToVerify} pasos).`,
+    });
+    setCalibHistory((h) => [record, ...h]);
+  };
+
+  // 2. Proponer calibración lineal (Pasa a estado calculated_pending)
+  const handleProposeLinearCalib = () => {
     if (!detailedLinearResult.valid) return;
     const newSteps = detailedLinearResult.computedSteps;
     const oldSteps = config.stepsPerRotation ?? 3200;
     const targetProfileId = config.accessoryProfileId || selectedProfileId;
 
-    const { updatedProfiles, updatedProfile } = applyCalibrationToProfile(
-      targetProfileId,
-      newSteps,
-      'linear_caliper'
-    );
-    setProfiles(updatedProfiles);
+    const res = recordProposedCalibration(targetProfileId, newSteps, 'linear_caliper', {
+      expectedValue: expectedLinearMm,
+      measuredValue: measuredLinearMm,
+      effectiveRealArcMm: detailedLinearResult.effectiveRealArcMm,
+      linearMode,
+    });
+    if (!res.success) {
+      setSaveError(res.error || 'Error al registrar propuesta lineal.');
+      return;
+    }
+    setProfiles(res.updatedProfiles);
     setConfig((c) => ({ ...c, stepsPerRotation: newSteps, accessoryProfileId: targetProfileId }));
 
     const record = addRotaryCalibrationRecord({
       accessoryId: targetProfileId,
-      accessoryName: updatedProfile?.name || profiles.find((p) => p.id === targetProfileId)?.name,
+      accessoryName: res.updatedProfile?.name || profiles.find((p) => p.id === targetProfileId)?.name,
       method: 'linear_caliper',
       linearMode,
       effectiveRealArcMm: detailedLinearResult.effectiveRealArcMm,
@@ -236,8 +281,43 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
       measuredValue: measuredLinearMm,
       computedSteps: newSteps,
       operatorNotes: linearMode === 'caliper_chord'
-        ? `Calibre rígido: cuerda ${measuredLinearMm} mm -> arco compensado ${detailedLinearResult.effectiveRealArcMm} mm (Ø ${config.objectDiameterMm} mm)`
-        : `Cinta flexible: arco real superficial ${measuredLinearMm} mm`,
+        ? `Propuesta por calibre rígido: cuerda ${measuredLinearMm}mm -> arco ${detailedLinearResult.effectiveRealArcMm}mm en Ø${config.objectDiameterMm}mm. Pendiente de verificar.`
+        : `Propuesta por cinta flexible: arco superficial ${measuredLinearMm}mm. Pendiente de verificar.`,
+    });
+    setCalibHistory((h) => [record, ...h]);
+  };
+
+  // Confirmar verificación física real de calibración lineal (Pasa a verified_physical)
+  const handleConfirmVerificationLinear = () => {
+    const targetProfileId = config.accessoryProfileId || selectedProfileId;
+    const stepsToVerify = activeProfile?.proposedStepsPerRotation || config.stepsPerRotation || 3200;
+
+    const res = confirmPhysicalVerification(targetProfileId, {
+      method: 'linear_caliper',
+      linearMode,
+      effectiveRealArcMm: detailedLinearResult.effectiveRealArcMm,
+      expectedValue: expectedLinearMm,
+      measuredValue: measuredLinearMm,
+      operatorNotes: `Verificado físicamente en probeta con ${stepsToVerify} pasos/vuelta: dimensión nominal obtenida con precisión.`,
+    });
+    if (!res.success) {
+      setSaveError(res.error || 'Error al confirmar verificación lineal.');
+      return;
+    }
+    setProfiles(res.updatedProfiles);
+    setConfig((c) => ({ ...c, stepsPerRotation: stepsToVerify }));
+
+    const record = addRotaryCalibrationRecord({
+      accessoryId: targetProfileId,
+      accessoryName: res.updatedProfile?.name,
+      method: 'linear_caliper',
+      linearMode,
+      effectiveRealArcMm: expectedLinearMm,
+      initialSteps: config.stepsPerRotation ?? 3200,
+      expectedValue: expectedLinearMm,
+      measuredValue: expectedLinearMm,
+      computedSteps: stepsToVerify,
+      operatorNotes: `VERIFICACIÓN FÍSICA CONFIRMADA por operador con patrón métrico (${stepsToVerify} pasos).`,
     });
     setCalibHistory((h) => [record, ...h]);
   };
@@ -245,10 +325,14 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
   // Deshacer calibración del perfil
   const handleRevertProfileCalibration = () => {
     const targetProfileId = config.accessoryProfileId || selectedProfileId;
-    const { updatedProfiles, revertedProfile } = revertCalibrationOnProfile(targetProfileId);
-    setProfiles(updatedProfiles);
-    if (revertedProfile) {
-      setConfig((c) => ({ ...c, stepsPerRotation: revertedProfile.stepsPerRotation }));
+    const res = revertCalibrationOnProfile(targetProfileId);
+    if (!res.success) {
+      setSaveError(res.error || 'Error al revertir calibración.');
+      return;
+    }
+    setProfiles(res.updatedProfiles);
+    if (res.revertedProfile) {
+      setConfig((c) => ({ ...c, stepsPerRotation: res.revertedProfile?.stepsPerRotation }));
     }
   };
 
@@ -280,10 +364,6 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
 
   // Guardar patrón de prueba
   const handleSaveTestPattern = () => {
-    if (!layout.valid) {
-      setSaveError('No se puede generar el patrón de prueba: verifique que las medidas del objeto sean válidas.');
-      return;
-    }
     try {
       const pat = exportRotaryTestPatternSvg(config, 50);
       onSave([
@@ -299,8 +379,6 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
   const maxW = 440,
     maxH = 220;
   const scale = layout.valid ? Math.min(maxW / layout.canvasWidthMm, maxH / layout.canvasHeightMm) : 1;
-
-  const activeProfile = profiles.find((p) => p.id === selectedProfileId);
 
   return (
     <dialog ref={dialog} className="studio-orders-dialog" aria-labelledby="rotary-title" onCancel={onClose}>
@@ -362,17 +440,21 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
             </div>
           </div>
 
-          {/* Estado de calibración y deshacer */}
+          {/* Tres estados estrictos de calibración */}
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/60 text-xs">
             <div className="flex items-center gap-2">
-              <span className="text-slate-400">Estado de pasos:</span>
-              {activeProfile?.isCalibrated ? (
-                <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
-                  ✓ Calibrado físicamente ({activeProfile.stepsPerRotation} pasos/vuelta)
+              <span className="text-slate-400">Estado de calibración:</span>
+              {activeProfile?.calibrationStatus === 'verified_physical' ? (
+                <span className="px-2.5 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                  ✓ Verificado físicamente ({activeProfile.stepsPerRotation} pasos/vuelta)
+                </span>
+              ) : activeProfile?.calibrationStatus === 'calculated_pending' ? (
+                <span className="px-2.5 py-0.5 rounded text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                  🟡 Corrección propuesta ({activeProfile.proposedStepsPerRotation || config.stepsPerRotation} pasos, pendiente de verificar en máquina)
                 </span>
               ) : (
-                <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
-                  ⚠️ Valor orientativo no verificado ({config.stepsPerRotation ?? 3200} pasos/vuelta ilustrativos)
+                <span className="px-2.5 py-0.5 rounded text-[11px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">
+                  🔴 No calibrado ({config.stepsPerRotation ?? 3200} pasos ilustrativos no verificados)
                 </span>
               )}
             </div>
@@ -381,7 +463,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                 type="button"
                 onClick={handleRevertProfileCalibration}
                 className="text-xs text-amber-400 hover:text-amber-300 underline"
-                title="Restaurar el valor anterior a la última calibración"
+                title="Restaurar el valor anterior a la última modificación"
               >
                 Deshacer calibración (recuperar {activeProfile.previousStepsPerRotation} pasos)
               </button>
@@ -412,17 +494,17 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
           )}
         </div>
 
-        {/* ALERTA DE COMPATIBILIDAD CONOS EN MANDRIL */}
+        {/* ALERTA TÉCNICA DE COMPATIBILIDAD CONOS EN MANDRIL (COMPARATIVA LIGHTBURN DSP) */}
         {layout.tapered && config.rotaryType === 'chuck' && (
-          <div className="p-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-xs space-y-1.5 text-amber-200">
+          <div className="p-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-xs space-y-2 text-amber-200">
             <div className="font-bold flex items-center gap-1.5 text-amber-300">
-              <span>⚠️ MANDRIL SANOU + OBJETO CÓNICO (COMPATIBILIDAD LIGHTBURN)</span>
+              <span>⚠️ MANDRIL SANOU + OBJETO CÓNICO (COMPATIBILIDAD LIGHTBURN DSP)</span>
             </div>
             <p>
-              En LightBurn <strong>Rotary Setup</strong> ingrese exactamente <strong>Ø {layout.referenceDiameterMm} mm</strong> como diámetro del objeto.
+              <strong>Método Astra Studio (Pre-warp integrado):</strong> Este archivo SVG ya contiene la compensación geométrica no lineal del cono. En LightBurn Rotary Setup ingrese como <em>Object Diameter</em> exactamente <strong>Ø {layout.referenceDiameterMm} mm</strong> (diámetro promedio de referencia).
             </p>
             <p className="text-[11px] text-amber-300/90 font-medium">
-              <strong>Evite doble compensación:</strong> El archivo SVG generado por Astra Studio ya incluye la compensación matemática no lineal del cono. No active ninguna herramienta de deformación cónica en LightBurn ni re-escale el dibujo.
+              <strong>Evite doble compensación destructiva:</strong> No active la herramienta <em>Taper Warp</em> de LightBurn sobre este archivo. Si usara la herramienta nativa de LightBurn, requeriría exportar un arte plano sin deformar e ingresar el diámetro mayor (Ø {Math.max(config.objectDiameterMm, config.endDiameterMm ?? 0)} mm) en LightBurn.
             </p>
           </div>
         )}
@@ -561,7 +643,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
         <details className="border border-slate-800 bg-slate-900/50 rounded-lg p-3 space-y-3">
           <summary className="cursor-pointer text-xs font-semibold text-cyan-400 hover:text-cyan-300 flex items-center justify-between">
             <span>Asistente de Calibración, Pasos por Vuelta y Orientación</span>
-            <span className="text-[10px] text-slate-400">Pasos actuales: {config.stepsPerRotation ?? 3200}</span>
+            <span className="text-[10px] text-slate-400">Pasos activos: {config.stepsPerRotation ?? 3200}</span>
           </summary>
 
           <div className="space-y-3 pt-2 text-xs">
@@ -657,7 +739,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
               </div>
 
               {calibMethod === 'angular' ? (
-                <div className="space-y-2 bg-slate-950 p-2.5 rounded border border-slate-800">
+                <div className="space-y-2.5 bg-slate-950 p-3 rounded border border-slate-800">
                   <p className="text-[11px] text-slate-400">
                     Ejecute el botón <em>Test</em> de LightBurn o comande una vuelta de 360° en la Ruida. Si no regresó exactamente
                     al punto inicial, ingrese los grados reales observados:
@@ -676,17 +758,32 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                         onChange={(e) => setMeasuredDegrees(e.target.valueAsNumber)}
                       />
                     </label>
-                    <div className="pt-4">
+                    <div className="pt-4 flex gap-2">
                       <button
                         type="button"
                         disabled={angularCorrection === null}
-                        onClick={handleApplyAngularCalib}
-                        className="px-3 py-2 bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold rounded disabled:opacity-40 text-xs transition-colors"
+                        onClick={handleProposeAngularCalib}
+                        className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 font-bold rounded disabled:opacity-40 text-xs transition-colors"
                       >
-                        Aplicar al perfil {angularCorrection ? `(${angularCorrection} pasos)` : ''}
+                        1. Guardar propuesta ({angularCorrection ? `${angularCorrection} pasos` : '—'})
                       </button>
                     </div>
                   </div>
+
+                  {activeProfile?.calibrationStatus === 'calculated_pending' && (
+                    <div className="p-2.5 bg-cyan-950/40 border border-cyan-500/40 rounded flex items-center justify-between">
+                      <div className="text-[11px] text-cyan-200">
+                        Paso 2: Pruebe en máquina con <strong>{activeProfile.proposedStepsPerRotation || angularCorrection}</strong> pasos. Si el giro es exactamente 360°:
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleConfirmVerificationAngular}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold text-xs rounded transition-colors"
+                      >
+                        Confirmar verificación física
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2.5 bg-slate-950 p-3 rounded border border-slate-800">
@@ -702,7 +799,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                       }`}
                     >
                       <div className="font-bold text-xs">📐 Calibre digital (Pie de rey)</div>
-                      <div className="text-[10px] text-slate-400 mt-0.5">Mide distancia recta (cuerda). Se compensa automáticamente la curvatura.</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Mide distancia recta (cuerda). Válido sólo en cilindros rectos.</div>
                     </button>
                     <button
                       type="button"
@@ -714,7 +811,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                       }`}
                     >
                       <div className="font-bold text-xs">📏 Cinta flexible / Papel</div>
-                      <div className="text-[10px] text-slate-400 mt-0.5">Mide la longitud curvada real directamente sobre la superficie del cilindro.</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Mide arco curvado directamente sobre la superficie (cilindros o conos).</div>
                     </button>
                   </div>
 
@@ -747,15 +844,20 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                     </label>
                   </div>
 
-                  {/* Detalle del cálculo geométrico */}
+                  {/* Detalle y advertencias del cálculo geométrico */}
                   {detailedLinearResult.valid ? (
-                    <div className="p-2 bg-slate-900/80 rounded border border-slate-800 text-[11px] space-y-1">
+                    <div className="p-2.5 bg-slate-900/80 rounded border border-slate-800 text-[11px] space-y-1.5">
                       {linearMode === 'caliper_chord' && (
                         <p className="text-cyan-300">
                           Compensación de curvatura (Ø {config.objectDiameterMm} mm): Cuerda {measuredLinearMm} mm → Arco real: <strong>{detailedLinearResult.effectiveRealArcMm.toFixed(2)} mm</strong>
                         </p>
                       )}
-                      <div className="flex justify-between items-center text-slate-300">
+                      {detailedLinearResult.warning && (
+                        <p className="text-amber-300 bg-amber-500/10 p-1.5 rounded border border-amber-500/30">
+                          ⚠️ {detailedLinearResult.warning}
+                        </p>
+                      )}
+                      <div className="flex justify-between items-center text-slate-300 pt-0.5">
                         <span>Relación de corrección: <strong>{detailedLinearResult.ratio.toFixed(4)}</strong></span>
                         <span className="text-cyan-300 font-bold">Pasos propuestos: {detailedLinearResult.computedSteps}</span>
                       </div>
@@ -766,15 +868,24 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                     </p>
                   )}
 
-                  <div className="flex justify-end pt-1">
+                  <div className="flex justify-end gap-2 pt-1">
                     <button
                       type="button"
                       disabled={!detailedLinearResult.valid}
-                      onClick={handleApplyLinearCalib}
-                      className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold rounded disabled:opacity-40 text-xs transition-colors"
+                      onClick={handleProposeLinearCalib}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 font-bold rounded disabled:opacity-40 text-xs transition-colors"
                     >
-                      Aplicar calibración al perfil ({detailedLinearResult.valid ? `${detailedLinearResult.computedSteps} pasos` : '—'})
+                      1. Guardar propuesta ({detailedLinearResult.valid ? `${detailedLinearResult.computedSteps} pasos` : '—'})
                     </button>
+                    {activeProfile?.calibrationStatus === 'calculated_pending' && (
+                      <button
+                        type="button"
+                        onClick={handleConfirmVerificationLinear}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded text-xs transition-colors"
+                      >
+                        2. Confirmar verificación física
+                      </button>
+                    )}
                   </div>
                 </div>
               )}

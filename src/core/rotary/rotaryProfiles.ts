@@ -4,6 +4,27 @@ import { roundMm } from '../geometry/geometryEngine';
 export type RotaryAccessoryType = 'roller' | 'chuck';
 export type RotaryDirection = 'normal' | 'inverted';
 
+/**
+ * Tres estados de calibración física:
+ * - 'uncalibrated': No calibrado. Los pasos son meramente ilustrativos.
+ * - 'calculated_pending': Corrección calculada matemáticamente, pendiente de probar en la máquina.
+ * - 'verified_physical': Prueba física ejecutada y confirmada explícitamente por el operador.
+ */
+export type CalibrationStatus = 'uncalibrated' | 'calculated_pending' | 'verified_physical';
+
+export type RotaryCalibrationMethod = 'angular_360' | 'linear_caliper';
+export type LinearMeasurementMode = 'surface_arc' | 'caliper_chord';
+
+export interface CalibrationEvidence {
+  method: RotaryCalibrationMethod;
+  expectedValue: number;
+  measuredValue: number;
+  effectiveRealArcMm?: number;
+  linearMode?: LinearMeasurementMode;
+  operatorNotes?: string;
+  verifiedAtIso: string;
+}
+
 export interface RotaryAccessoryProfile {
   id: string;
   name: string;
@@ -12,20 +33,29 @@ export interface RotaryAccessoryProfile {
   rollerDiameterMm?: Millimeters;
   /**
    * Pasos por vuelta del motor/driver (steps per rotation).
-   * ATENCIÓN: Los valores predeterminados (ej. 3200) son ilustrativos;
-   * nunca deben considerarse calibrados hasta realizar la prueba física.
+   * ATENCIÓN: Si calibrationStatus !== 'verified_physical', este valor es sólo orientativo.
    */
   stepsPerRotation: number;
   /** Sentido de giro configurado (orientación de montaje en la ficha técnica) */
   rotationDirection: RotaryDirection;
-  /** Indica si los pasos por vuelta han sido verificados y calibrados físicamente */
-  isCalibrated?: boolean;
-  /** Fecha ISO de la última calibración física aplicada */
-  calibratedAtIso?: string;
-  /** Método utilizado en la última calibración */
-  calibrationMethod?: RotaryCalibrationMethod;
-  /** Valor anterior de pasos por vuelta antes de la última calibración (permite deshacer/recuperar) */
+
+  /** Estado estricto de calibración */
+  calibrationStatus: CalibrationStatus;
+
+  /** Valor de pasos propuesto pendiente de verificación física */
+  proposedStepsPerRotation?: number;
+
+  /** Evidencia explícita registrada por el operador al verificar en máquina */
+  verificationEvidence?: CalibrationEvidence;
+
+  /** Valor anterior de pasos por vuelta antes de la última modificación (permite deshacer) */
   previousStepsPerRotation?: number;
+
+  /** Retrocompatibilidad con esquemas anteriores */
+  isCalibrated?: boolean;
+  calibratedAtIso?: string;
+  calibrationMethod?: RotaryCalibrationMethod;
+
   /** Perfil integrado de taller o creado por el operador */
   isBuiltIn?: boolean;
   notes?: string;
@@ -41,6 +71,7 @@ export const DEFAULT_ROTARY_ACCESSORY_PROFILES: RotaryAccessoryProfile[] = [
     type: 'chuck',
     stepsPerRotation: 3200,
     rotationDirection: 'normal',
+    calibrationStatus: 'uncalibrated',
     isCalibrated: false,
     isBuiltIn: true,
     notes: 'Mandril Sanou conectado al eje Y de la Vank 9060 (Ruida RDC8445S). Los 3200 pasos son ilustrativos; requiere calibración física real con giro 360° o patrón métrico.',
@@ -52,6 +83,7 @@ export const DEFAULT_ROTARY_ACCESSORY_PROFILES: RotaryAccessoryProfile[] = [
     rollerDiameterMm: 50.0,
     stepsPerRotation: 3200,
     rotationDirection: 'normal',
+    calibrationStatus: 'uncalibrated',
     isCalibrated: false,
     isBuiltIn: true,
     notes: 'Accesorio de rodillos dobles. Los 3200 pasos y el diámetro de 50 mm son ilustrativos; deben medirse y calibrarse en el banco de trabajo.',
@@ -62,6 +94,7 @@ export const DEFAULT_ROTARY_ACCESSORY_PROFILES: RotaryAccessoryProfile[] = [
     type: 'chuck',
     stepsPerRotation: 3200,
     rotationDirection: 'normal',
+    calibrationStatus: 'uncalibrated',
     isCalibrated: false,
     isBuiltIn: true,
     notes: 'Plato autocentrante estándar para copas, mates y formas cónicas. Pasos ilustrativos no verificados.',
@@ -93,7 +126,7 @@ export function loadRotaryAccessoryProfiles(): RotaryAccessoryProfile[] {
     const sanitized = parsed.map(sanitizeAccessoryProfile).filter((p): p is RotaryAccessoryProfile => p !== null);
     if (sanitized.length === 0) return structuredClone(DEFAULT_ROTARY_ACCESSORY_PROFILES);
 
-    // Asegurar que perfiles predeterminados clave (Sanou chuck) estén presentes
+    // Asegurar que perfiles clave de fábrica estén presentes
     for (const def of DEFAULT_ROTARY_ACCESSORY_PROFILES) {
       if (!sanitized.some((p) => p.id === def.id)) {
         sanitized.push(structuredClone(def));
@@ -105,13 +138,16 @@ export function loadRotaryAccessoryProfiles(): RotaryAccessoryProfile[] {
   }
 }
 
-export function saveRotaryAccessoryProfiles(profiles: RotaryAccessoryProfile[]): void {
+export function saveRotaryAccessoryProfiles(profiles: RotaryAccessoryProfile[]): { success: boolean; error?: string } {
   const storage = getStorage();
-  if (!storage) return;
+  if (!storage) return { success: false, error: 'Almacenamiento no disponible en este entorno.' };
   try {
     storage.setItem(STORAGE_KEY_ROTARY_PROFILES, JSON.stringify(profiles));
+    return { success: true };
   } catch (err) {
-    console.error('Error al guardar perfiles de accesorios rotativos:', err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('Error al guardar perfiles de accesorios rotativos:', message);
+    return { success: false, error: message };
   }
 }
 
@@ -137,67 +173,139 @@ export function deleteRotaryAccessoryProfile(id: string): RotaryAccessoryProfile
 }
 
 /**
- * Aplica una calibración al perfil persistente, guardando el valor anterior para permitir deshacer.
+ * Registra una propuesta de calibración calculada, dejándola en estado 'calculated_pending'.
+ * NO la marca como verificada físicamente hasta que el operador confirme la prueba en máquina.
  */
-export function applyCalibrationToProfile(
+export function recordProposedCalibration(
   profileId: string,
   computedSteps: number,
-  method: RotaryCalibrationMethod
-): { updatedProfiles: RotaryAccessoryProfile[]; updatedProfile: RotaryAccessoryProfile | null } {
+  method: RotaryCalibrationMethod,
+  evidenceParams?: {
+    expectedValue: number;
+    measuredValue: number;
+    effectiveRealArcMm?: number;
+    linearMode?: LinearMeasurementMode;
+    operatorNotes?: string;
+  }
+): { success: boolean; updatedProfiles: RotaryAccessoryProfile[]; updatedProfile: RotaryAccessoryProfile | null; error?: string } {
   const current = loadRotaryAccessoryProfiles();
   const idx = current.findIndex((p) => p.id === profileId);
   if (idx < 0) {
-    return { updatedProfiles: current, updatedProfile: null };
+    return { success: false, updatedProfiles: current, updatedProfile: null, error: 'Perfil no encontrado.' };
   }
 
   const existing = current[idx];
+  const roundedSteps = roundMm(computedSteps, 3);
   const updatedProfile: RotaryAccessoryProfile = {
     ...existing,
-    previousStepsPerRotation: existing.stepsPerRotation,
-    stepsPerRotation: roundMm(computedSteps, 3),
-    isCalibrated: true,
-    calibratedAtIso: new Date().toISOString(),
+    calibrationStatus: 'calculated_pending',
+    proposedStepsPerRotation: roundedSteps,
+    previousStepsPerRotation: existing.previousStepsPerRotation ?? existing.stepsPerRotation,
+    isCalibrated: false, // Sólo se vuelve true al verificar físicamente
     calibrationMethod: method,
+    notes: existing.notes,
   };
 
   const updatedProfiles = [...current];
   updatedProfiles[idx] = updatedProfile;
-  saveRotaryAccessoryProfiles(updatedProfiles);
-  return { updatedProfiles, updatedProfile };
+  const saveResult = saveRotaryAccessoryProfiles(updatedProfiles);
+  return {
+    success: saveResult.success,
+    updatedProfiles,
+    updatedProfile,
+    error: saveResult.error,
+  };
 }
 
 /**
- * Revierte la calibración de un perfil al valor anterior de pasos por vuelta si existe.
+ * Confirma explícitamente la verificación física de la calibración en máquina real por el operador.
+ * Requiere registrar evidencia y fecha, estableciendo el estado 'verified_physical'.
  */
-export function revertCalibrationOnProfile(
-  profileId: string
-): { updatedProfiles: RotaryAccessoryProfile[]; revertedProfile: RotaryAccessoryProfile | null } {
+export function confirmPhysicalVerification(
+  profileId: string,
+  evidence: Omit<CalibrationEvidence, 'verifiedAtIso'>
+): { success: boolean; updatedProfiles: RotaryAccessoryProfile[]; updatedProfile: RotaryAccessoryProfile | null; error?: string } {
   const current = loadRotaryAccessoryProfiles();
   const idx = current.findIndex((p) => p.id === profileId);
   if (idx < 0) {
-    return { updatedProfiles: current, revertedProfile: null };
+    return { success: false, updatedProfiles: current, updatedProfile: null, error: 'Perfil no encontrado.' };
+  }
+
+  const existing = current[idx];
+  const newSteps = existing.proposedStepsPerRotation || existing.stepsPerRotation;
+  const nowIso = new Date().toISOString();
+
+  const fullEvidence: CalibrationEvidence = {
+    ...evidence,
+    verifiedAtIso: nowIso,
+  };
+
+  const updatedProfile: RotaryAccessoryProfile = {
+    ...existing,
+    stepsPerRotation: newSteps,
+    proposedStepsPerRotation: undefined,
+    previousStepsPerRotation: existing.previousStepsPerRotation ?? existing.stepsPerRotation,
+    calibrationStatus: 'verified_physical',
+    isCalibrated: true,
+    calibratedAtIso: nowIso,
+    calibrationMethod: evidence.method,
+    verificationEvidence: fullEvidence,
+  };
+
+  const updatedProfiles = [...current];
+  updatedProfiles[idx] = updatedProfile;
+  const saveResult = saveRotaryAccessoryProfiles(updatedProfiles);
+  return {
+    success: saveResult.success,
+    updatedProfiles,
+    updatedProfile,
+    error: saveResult.error,
+  };
+}
+
+/**
+ * Reversión directa / Deshacer al valor anterior de pasos.
+ */
+export function revertCalibrationOnProfile(
+  profileId: string
+): { success: boolean; updatedProfiles: RotaryAccessoryProfile[]; revertedProfile: RotaryAccessoryProfile | null; error?: string } {
+  const current = loadRotaryAccessoryProfiles();
+  const idx = current.findIndex((p) => p.id === profileId);
+  if (idx < 0) {
+    return { success: false, updatedProfiles: current, revertedProfile: null, error: 'Perfil no encontrado.' };
   }
 
   const existing = current[idx];
   if (existing.previousStepsPerRotation === undefined) {
-    return { updatedProfiles: current, revertedProfile: existing };
+    return { success: true, updatedProfiles: current, revertedProfile: existing };
   }
 
   const revertedProfile: RotaryAccessoryProfile = {
     ...existing,
     stepsPerRotation: existing.previousStepsPerRotation,
+    proposedStepsPerRotation: undefined,
     previousStepsPerRotation: undefined,
+    calibrationStatus: 'uncalibrated',
     isCalibrated: false,
     calibratedAtIso: undefined,
     calibrationMethod: undefined,
+    verificationEvidence: undefined,
   };
 
   const updatedProfiles = [...current];
   updatedProfiles[idx] = revertedProfile;
-  saveRotaryAccessoryProfiles(updatedProfiles);
-  return { updatedProfiles, revertedProfile };
+  const saveResult = saveRotaryAccessoryProfiles(updatedProfiles);
+  return {
+    success: saveResult.success,
+    updatedProfiles,
+    revertedProfile,
+    error: saveResult.error,
+  };
 }
 
+/**
+ * Sanitiza un perfil asegurando que no se declare como 'verified_physical' sin evidencia registrada.
+ */
 export function sanitizeAccessoryProfile(raw: unknown): RotaryAccessoryProfile | null {
   if (!raw || typeof raw !== 'object') return null;
   const p = raw as Partial<RotaryAccessoryProfile>;
@@ -210,6 +318,24 @@ export function sanitizeAccessoryProfile(raw: unknown): RotaryAccessoryProfile |
   const prevSteps = p.previousStepsPerRotation !== undefined && Number.isFinite(Number(p.previousStepsPerRotation))
     ? roundMm(Number(p.previousStepsPerRotation), 3)
     : undefined;
+  const propSteps = p.proposedStepsPerRotation !== undefined && Number.isFinite(Number(p.proposedStepsPerRotation))
+    ? roundMm(Number(p.proposedStepsPerRotation), 3)
+    : undefined;
+
+  // Validación estricta del estado de calibración
+  let calibrationStatus: CalibrationStatus = 'uncalibrated';
+  const hasEvidence = p.verificationEvidence && typeof p.verificationEvidence.verifiedAtIso === 'string';
+  const hasLegacyCalibration = p.isCalibrated === true && typeof p.calibratedAtIso === 'string';
+
+  if (p.calibrationStatus === 'verified_physical' && (hasEvidence || hasLegacyCalibration)) {
+    calibrationStatus = 'verified_physical';
+  } else if (p.calibrationStatus === 'calculated_pending' || propSteps !== undefined) {
+    calibrationStatus = 'calculated_pending';
+  } else if (hasEvidence || hasLegacyCalibration) {
+    calibrationStatus = 'verified_physical';
+  }
+
+  const isCalibrated = calibrationStatus === 'verified_physical';
 
   return {
     id: p.id,
@@ -218,23 +344,23 @@ export function sanitizeAccessoryProfile(raw: unknown): RotaryAccessoryProfile |
     rollerDiameterMm: type === 'roller' ? roundMm(rollerD ?? 50.0, 2) : undefined,
     stepsPerRotation: roundMm(steps, 3),
     rotationDirection: p.rotationDirection === 'inverted' ? 'inverted' : 'normal',
-    isCalibrated: Boolean(p.isCalibrated),
+    calibrationStatus,
+    proposedStepsPerRotation: propSteps,
+    previousStepsPerRotation: prevSteps,
+    verificationEvidence: p.verificationEvidence,
+    isCalibrated,
     calibratedAtIso: typeof p.calibratedAtIso === 'string' ? p.calibratedAtIso : undefined,
     calibrationMethod: p.calibrationMethod === 'linear_caliper' || p.calibrationMethod === 'angular_360'
       ? p.calibrationMethod
       : undefined,
-    previousStepsPerRotation: prevSteps,
     isBuiltIn: Boolean(p.isBuiltIn),
     notes: typeof p.notes === 'string' ? p.notes : '',
   };
 }
 
 // ============================================================================
-// ASISTENTE DE CALIBRACIÓN: ARCO SUPERFICIAL VS. CUERDA RECTA CON CALIBRE
+// ASISTENTE DE CALIBRACIÓN: CÁLCULO RIGUROSO DE CUERDA VS. ARCO
 // ============================================================================
-
-export type RotaryCalibrationMethod = 'angular_360' | 'linear_caliper';
-export type LinearMeasurementMode = 'surface_arc' | 'caliper_chord';
 
 export interface RotaryCalibrationRecord {
   id: string;
@@ -243,8 +369,8 @@ export interface RotaryCalibrationRecord {
   accessoryName?: string;
   method: RotaryCalibrationMethod;
   initialSteps: number;
-  expectedValue: number; // 360 grados o mm teóricos de arco
-  measuredValue: number; // grados medidos o mm medidos (cuerda o arco)
+  expectedValue: number;
+  measuredValue: number;
   computedSteps: number;
   linearMode?: LinearMeasurementMode;
   effectiveRealArcMm?: number;
@@ -256,17 +382,19 @@ export interface LinearCalibrationParams {
   expectedArcMm: number;
   measuredValueMm: number;
   mode: LinearMeasurementMode;
-  /** Diámetro del objeto (mm). Requerido estrictamente para mode === 'caliper_chord' */
+  /** Diámetro del objeto (mm). Requerido para mode === 'caliper_chord' */
   objectDiameterMm?: number;
+  /** Si el objeto es cónico (diámetro variable) */
+  isTapered?: boolean;
 }
 
 export interface LinearCalibrationResult {
   valid: boolean;
   error?: string;
+  warning?: string;
   expectedArcMm: number;
   measuredValueMm: number;
   mode: LinearMeasurementMode;
-  /** Longitud de arco real resultante sobre la superficie del cilindro (mm) */
   effectiveRealArcMm: number;
   ratio: number;
   computedSteps: number;
@@ -275,18 +403,17 @@ export interface LinearCalibrationResult {
 /**
  * Calcula con rigor geométrico la calibración lineal.
  *
- * Modo 'surface_arc': Medición con cinta flexible o papel milimetrado.
- *   El valor medido es directamente la longitud de arco sobre la superficie: s_real = medida.
- *
- * Modo 'caliper_chord': Medición con calibre rígido (pie de rey).
- *   Las puntas del calibre miden la cuerda recta (c) a través del espacio 3D, no la curva del cilindro.
- *   Fórmula geométrica exacta:
- *     c = D * sin(s / D)  =>  s_real = D * arcsin(c / D)
- *   Donde D es el diámetro del objeto y arcsin está en radianes.
- *   Si c >= D, la medición es físicamente imposible para ese diámetro.
+ * Restricciones geométricas fundamentales:
+ * 1. Restringido a cilindros de diámetro constante: Si el objeto es cónico (isTapered),
+ *    la medición con calibre rígido (cuerda) no es matemáticamente unívoca porque el diámetro
+ *    varía a lo largo de X y el calibre no asienta en un corte ortogonal al eje. En conos
+ *    se debe usar cinta métrica flexible sobre la superficie o calibrar en un cilindro recto.
+ * 2. Cuerda menor al diámetro (c < D): Una cuerda recta no puede ser mayor o igual al diámetro.
+ * 3. Alerta de ángulo crítico: Si c > 0.85 * D (ángulo mayor a 115°), las puntas del calibre
+ *    pierden precisión por el ángulo de deslizamiento tangencial; se advierte al operador.
  */
 export function computeDetailedLinearCalibration(params: LinearCalibrationParams): LinearCalibrationResult {
-  const { currentSteps, expectedArcMm, measuredValueMm, mode, objectDiameterMm } = params;
+  const { currentSteps, expectedArcMm, measuredValueMm, mode, objectDiameterMm, isTapered } = params;
 
   if (
     !Number.isFinite(currentSteps) ||
@@ -308,7 +435,22 @@ export function computeDetailedLinearCalibration(params: LinearCalibrationParams
     };
   }
 
+  // Restricción: No admitir medición con calibre rígido sobre conos
+  if (isTapered && mode === 'caliper_chord') {
+    return {
+      valid: false,
+      error: 'La medición con calibre rígido (cuerda recta) no es unívoca en conos porque el diámetro varía a lo largo del eje. Para calibrar sobre un objeto cónico utilice cinta flexible (arco superficial) o monte una probeta cilíndrica recta.',
+      expectedArcMm,
+      measuredValueMm,
+      mode,
+      effectiveRealArcMm: 0,
+      ratio: 1,
+      computedSteps: currentSteps,
+    };
+  }
+
   let effectiveRealArcMm: number;
+  let warning: string | undefined;
 
   if (mode === 'surface_arc') {
     effectiveRealArcMm = measuredValueMm;
@@ -340,6 +482,11 @@ export function computeDetailedLinearCalibration(params: LinearCalibrationParams
       };
     }
 
+    // Advertencia de ángulo obtuso (c > 0.85 * D)
+    if (measuredValueMm > 0.85 * objectDiameterMm) {
+      warning = `La cuerda medida (${measuredValueMm} mm) supera el 85% del diámetro (${objectDiameterMm} mm). A ángulos mayores a 115°, las puntas del calibre pierden precisión por contacto tangencial. Se sugiere medir un patrón más pequeño o usar cinta métrica flexible.`;
+    }
+
     // s_real = D * arcsin(c / D)
     const sinHalf = measuredValueMm / objectDiameterMm;
     const arcRad = Math.asin(sinHalf);
@@ -361,7 +508,7 @@ export function computeDetailedLinearCalibration(params: LinearCalibrationParams
 
   const ratio = expectedArcMm / effectiveRealArcMm;
 
-  // Descartar lecturas absurdas (más del triple o menos de un tercio)
+  // Descartar lecturas aberrantes
   if (ratio < 0.2 || ratio > 5.0) {
     return {
       valid: false,
@@ -379,6 +526,7 @@ export function computeDetailedLinearCalibration(params: LinearCalibrationParams
 
   return {
     valid: true,
+    warning,
     expectedArcMm,
     measuredValueMm,
     mode,
@@ -389,14 +537,15 @@ export function computeDetailedLinearCalibration(params: LinearCalibrationParams
 }
 
 /**
- * Función simplificada compatible hacia atrás con llamadas anteriores.
+ * Función compatible hacia atrás.
  */
 export function computeLinearCalibratedSteps(
   currentSteps: number,
   expectedMm: number,
   measuredMm: number,
   mode: LinearMeasurementMode = 'surface_arc',
-  objectDiameterMm?: number
+  objectDiameterMm?: number,
+  isTapered?: boolean
 ): number | null {
   const result = computeDetailedLinearCalibration({
     currentSteps,
@@ -404,6 +553,7 @@ export function computeLinearCalibratedSteps(
     measuredValueMm: measuredMm,
     mode,
     objectDiameterMm,
+    isTapered,
   });
   return result.valid ? result.computedSteps : null;
 }
@@ -431,7 +581,7 @@ export function addRotaryCalibrationRecord(record: Omit<RotaryCalibrationRecord,
   if (storage) {
     try {
       const history = loadRotaryCalibrationHistory();
-      const updated = [newRecord, ...history].slice(0, 50); // Mantener últimas 50 calibraciones
+      const updated = [newRecord, ...history].slice(0, 50);
       storage.setItem(STORAGE_KEY_CALIBRATION_LOG, JSON.stringify(updated));
     } catch (err) {
       console.error('Error al guardar registro de calibración:', err);

@@ -2,19 +2,29 @@ import {Millimeters, LabelDesign} from '../types';
 import {roundMm} from '../geometry/geometryEngine';
 import {
   RotaryDirection,
+  CalibrationStatus,
+  CalibrationEvidence,
   LinearMeasurementMode,
   LinearCalibrationParams,
   LinearCalibrationResult,
   computeDetailedLinearCalibration,
   computeLinearCalibratedSteps,
+  recordProposedCalibration,
+  confirmPhysicalVerification,
+  revertCalibrationOnProfile,
 } from './rotaryProfiles';
 
 export {
   computeDetailedLinearCalibration,
   computeLinearCalibratedSteps,
+  recordProposedCalibration,
+  confirmPhysicalVerification,
+  revertCalibrationOnProfile,
 };
 export type {
   RotaryDirection,
+  CalibrationStatus,
+  CalibrationEvidence,
   LinearMeasurementMode,
   LinearCalibrationParams,
   LinearCalibrationResult,

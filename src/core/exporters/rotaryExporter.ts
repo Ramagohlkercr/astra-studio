@@ -1,5 +1,5 @@
 import {compileLabelGeometry, rasterImageTransform, roundMm} from '../geometry/geometryEngine';
-import {computeRotaryLayout, RotaryConfig, RotaryLayout, warpPointForTaper} from '../rotary/rotaryEngine';
+import {computeRotaryLayout, isTapered, RotaryConfig, RotaryLayout, warpPointForTaper} from '../rotary/rotaryEngine';
 import {EngravedItemGeometry, LabelDesign, LIGHTBURN_LAYERS, Point2D} from '../types';
 
 function xml(value: string): string {
@@ -214,10 +214,17 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
     ...(layout.tapered ? [
       '*******************************************************************************',
       'ATENCIÓN — CONFIGURACIÓN DE OBJETO CÓNICO EN LIGHTBURN (MANDRIL SANOU):',
+      '-------------------------------------------------------------------------------',
+      'MÉTODO ASTRA STUDIO (ARTE PRE-COMPENSADO EN SVG):',
       `- Diámetro a ingresar en LightBurn (Object Diameter): EXACTAMENTE ${layout.referenceDiameterMm} mm (diámetro de referencia).`,
       '- ADVERTENCIA DE DOBLE COMPENSACIÓN: El archivo exportado ya incluye la compensación geométrica no lineal para el cono.',
-      '  NO active ninguna deformación cónica en LightBurn ni re-escale el dibujo en Y.',
+      '  NO active la herramienta "Taper Warp" en LightBurn ni re-escale el dibujo en Y.',
       `- Nivelación física: Nivele la generatriz superior del objeto respecto a la mesa láser y enfoque a la cota Ø ${layout.referenceDiameterMm} mm.`,
+      '',
+      'MÉTODO LIGHTBURN DSP ALTERNATIVO (Documentación oficial LightBurn RotaryModeDSP):',
+      `- Si prefiere usar la herramienta nativa Taper Warp de LightBurn, debe exportar un arte plano sin deformar,`,
+      `  ingresar como Object Diameter el DIÁMETRO MAYOR del cono (Ø ${Math.max(config.objectDiameterMm, config.endDiameterMm ?? 0)} mm) y deformar en LightBurn.`,
+      '- ¡ATENCIÓN! No aplique Taper Warp de LightBurn sobre este archivo pre-compensado (generaría doble deformación).',
       '*******************************************************************************',
       '',
     ] : []),
@@ -301,23 +308,44 @@ export function exportRotaryTestPatternSvg(
     throw new Error('La dimensión del patrón de prueba debe ser un valor numérico positivo.');
   }
 
-  const dummyDesign = { widthMm: targetSquareMm, heightMm: targetSquareMm };
-  const layout = computeRotaryLayout(config, dummyDesign);
+  if (!Number.isFinite(config.objectDiameterMm) || config.objectDiameterMm <= 0) {
+    throw new Error('Configuración rotativa inválida para generar patrón de prueba: El diámetro del objeto debe ser mayor a 0.');
+  }
+  if (!Number.isFinite(config.usefulLengthMm) || config.usefulLengthMm <= 0) {
+    throw new Error('Configuración rotativa inválida para generar patrón de prueba: El largo útil debe ser mayor a 0.');
+  }
+  if (config.usefulLengthMm > config.machineBedWidthMm) {
+    throw new Error(`Configuración rotativa inválida para generar patrón de prueba: El largo útil (${config.usefulLengthMm} mm) supera el ancho de la máquina (${config.machineBedWidthMm} mm).`);
+  }
+
+  // 1. Calcular primero una dimensión de patrón que entre de forma segura en el objeto
+  const minD = isTapered(config) && config.endDiameterMm !== undefined
+    ? Math.min(config.objectDiameterMm, config.endDiameterMm)
+    : config.objectDiameterMm;
+  const circumferenceMm = Math.PI * minD;
+  const arcLengthMm = circumferenceMm * (Math.min(Math.max(config.arcDeg, 1), 360) / 360);
+
+  // El patrón no debe exceder el 75% del largo axial ni el 75% del desarrollo del arco
+  const maxAllowedMm = Math.min(config.usefulLengthMm * 0.75, arcLengthMm * 0.75);
+  const sq = roundMm(Math.min(targetSquareMm, maxAllowedMm), 2);
+
+  if (sq < 5.0) {
+    throw new Error(
+      `Dimensiones insuficientes para generar el patrón de prueba (Largo: ${config.usefulLengthMm} mm, Circunferencia: ${roundMm(circumferenceMm, 1)} mm).`
+    );
+  }
+
+  // 2. Validar posteriormente con computeRotaryLayout la geometría real calculada
+  const patternDesign = { widthMm: sq, heightMm: sq };
+  const layout = computeRotaryLayout(config, patternDesign);
 
   if (!layout.valid) {
     throw new Error(`Configuración rotativa inválida para generar patrón de prueba: ${layout.errors.join('; ')}`);
   }
 
-  if (config.usefulLengthMm < 10 || layout.circumferenceMm < 10) {
-    throw new Error(
-      `Dimensiones insuficientes para generar el patrón de prueba (Largo: ${config.usefulLengthMm} mm, Circunferencia: ${layout.circumferenceMm} mm).`
-    );
-  }
-
   const w = layout.canvasWidthMm;
   const h = layout.canvasHeightMm;
 
-  const sq = roundMm(Math.min(targetSquareMm, Math.min(w * 0.75, h * 0.75)), 2);
   const cx = roundMm(w / 2, 2);
   const cy = roundMm(h / 2, 2);
   const minX = roundMm(cx - sq / 2, 2);
