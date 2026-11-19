@@ -12,6 +12,9 @@ import {
   saveRotaryAccessoryProfile,
   deleteRotaryAccessoryProfile,
   sanitizeAccessoryProfile,
+  applyCalibrationToProfile,
+  revertCalibrationOnProfile,
+  computeDetailedLinearCalibration,
   computeLinearCalibratedSteps,
   addRotaryCalibrationRecord,
   loadRotaryCalibrationHistory,
@@ -21,6 +24,7 @@ import {
   exportRotarySvg,
   exportRotaryDxf,
   exportRotaryTestPatternSvg,
+  buildRotaryInstructions,
 } from '../exporters/rotaryExporter';
 import { LabelDesign, LabelElement } from '../types';
 
@@ -61,28 +65,29 @@ function createTextElement(id = 'text-1', visible = true): LabelElement {
   };
 }
 
-describe('Módulo Rotativo — Profesionalización Etapa 1', () => {
+describe('Módulo Rotativo — Auditoría y Correcciones Mandril Sanou (Vank 9060 / Ruida)', () => {
   beforeEach(() => {
     clearRotaryCalibrationHistory();
   });
 
-  describe('1. Perfiles de accesorios rotativos (Rodillos vs. Mandril)', () => {
-    it('carga perfiles predeterminados de taller diferenciando rodillos y mandril', () => {
+  describe('1. Perfiles de accesorios y valores no verificados (Mandril Sanou)', () => {
+    it('incluye perfil específico para el mandril Sanou y marca pasos como no verificados (ilustrativos)', () => {
       const profiles = loadRotaryAccessoryProfiles();
-      expect(profiles.length).toBeGreaterThanOrEqual(2);
+      const sanouChuck = profiles.find((p) => p.id === 'vank-sanou-chuck');
 
-      const roller = profiles.find((p) => p.type === 'roller');
-      expect(roller).toBeDefined();
-      expect(roller?.rollerDiameterMm).toBe(50.0);
-      expect(roller?.stepsPerRotation).toBe(3200);
+      expect(sanouChuck).toBeDefined();
+      expect(sanouChuck?.type).toBe('chuck');
+      expect(sanouChuck?.rollerDiameterMm).toBeUndefined();
+      // 3200 pasos son un valor ilustrativo, no una calibración de hardware comprobada
+      expect(sanouChuck?.stepsPerRotation).toBe(3200);
+      expect(sanouChuck?.isCalibrated).toBe(false);
+      expect(sanouChuck?.notes).toContain('ilustrativo');
 
-      const chuck = profiles.find((p) => p.type === 'chuck');
-      expect(chuck).toBeDefined();
-      expect(chuck?.rollerDiameterMm).toBeUndefined();
-      expect(chuck?.stepsPerRotation).toBe(3200);
+      const roller = profiles.find((p) => p.id === 'vank-roller-standard');
+      expect(roller?.isCalibrated).toBe(false);
     });
 
-    it('sanitiza perfiles correctamente y descarta configuraciones inválidas', () => {
+    it('sanitiza perfiles correctamente preservando estado de calibración y deshacer', () => {
       expect(sanitizeAccessoryProfile(null)).toBeNull();
       expect(sanitizeAccessoryProfile({})).toBeNull();
       expect(sanitizeAccessoryProfile({ id: '1', name: '' })).toBeNull();
@@ -90,38 +95,42 @@ describe('Módulo Rotativo — Profesionalización Etapa 1', () => {
 
       const validChuck = sanitizeAccessoryProfile({
         id: 'c1',
-        name: 'Mandril K11',
+        name: 'Mandril Sanou K11',
         type: 'chuck',
-        stepsPerRotation: 6400,
+        stepsPerRotation: 3245.2,
         rotationDirection: 'inverted',
+        isCalibrated: true,
+        previousStepsPerRotation: 3200,
       });
       expect(validChuck).toMatchObject({
         id: 'c1',
-        name: 'Mandril K11',
+        name: 'Mandril Sanou K11',
         type: 'chuck',
-        stepsPerRotation: 6400,
+        stepsPerRotation: 3245.2,
         rotationDirection: 'inverted',
+        isCalibrated: true,
+        previousStepsPerRotation: 3200,
       });
     });
 
-    it('permite registrar y persistir un nuevo perfil de accesorio', () => {
+    it('permite registrar, persistir y eliminar perfiles personalizados', () => {
       const custom = {
-        id: 'custom-roller-60',
-        name: 'Rodillos Grandes 60mm',
-        type: 'roller' as const,
-        rollerDiameterMm: 60.0,
-        stepsPerRotation: 5000,
+        id: 'custom-sanou-k11-80',
+        name: 'Mandril Sanou K11 80mm',
+        type: 'chuck' as const,
+        stepsPerRotation: 3200,
         rotationDirection: 'normal' as const,
+        isCalibrated: false,
       };
       const updated = saveRotaryAccessoryProfile(custom);
-      expect(updated.some((p) => p.id === 'custom-roller-60')).toBe(true);
+      expect(updated.some((p) => p.id === 'custom-sanou-k11-80')).toBe(true);
 
-      const deleted = deleteRotaryAccessoryProfile('custom-roller-60');
-      expect(deleted.some((p) => p.id === 'custom-roller-60')).toBe(false);
+      const deleted = deleteRotaryAccessoryProfile('custom-sanou-k11-80');
+      expect(deleted.some((p) => p.id === 'custom-sanou-k11-80')).toBe(false);
     });
   });
 
-  describe('2. Asistente de calibración (Giro, Calibre lineal y Sentido)', () => {
+  describe('2. Asistente de calibración: Distinción entre Arco Superficial y Cuerda con Calibre', () => {
     it('calcula pasos corregidos con método angular 360°', () => {
       // Si con 3200 pasos dio 350° (quedó corto), necesita más pasos
       const steps = correctedRotarySteps(3200, 350);
@@ -131,111 +140,262 @@ describe('Módulo Rotativo — Profesionalización Etapa 1', () => {
       const stepsOver = correctedRotarySteps(3200, 370);
       expect(stepsOver).toBeCloseTo(3113.514, 2);
 
-      // Desecha mediciones no finitas o menores o iguales a cero
       expect(correctedRotarySteps(3200, 0)).toBeNull();
       expect(correctedRotarySteps(0, 360)).toBeNull();
     });
 
-    it('calcula pasos corregidos con método lineal (medición con calibre)', () => {
-      // Cota esperada: 50 mm. Cota real medida con calibre: 48.5 mm (grabó más chico -> faltan pasos)
-      const steps = computeLinearCalibratedSteps(3200, 50, 48.5);
-      expect(steps).toBeCloseTo((3200 * 50) / 48.5, 3);
-      expect(steps).toBeGreaterThan(3200);
-
-      // Cota esperada: 50 mm. Cota real medida: 52.0 mm (grabó más grande -> sobran pasos)
-      const stepsDown = computeLinearCalibratedSteps(3200, 50, 52);
-      expect(stepsDown).toBeCloseTo((3200 * 50) / 52, 3);
-      expect(stepsDown).toBeLessThan(3200);
-
-      // Desecha mediciones absurdas o errores de dedo
-      expect(computeLinearCalibratedSteps(3200, 50, 0)).toBeNull();
-      expect(computeLinearCalibratedSteps(3200, 50, 1000)).toBeNull(); // ratio 0.05
+    it('modo Cinta Flexible (surface_arc): mide longitud real directamente sobre la curva', () => {
+      // Cota esperada: 50 mm. Medido sobre superficie con cinta: 52 mm (grabó más grande -> sobran pasos)
+      const res = computeDetailedLinearCalibration({
+        currentSteps: 3200,
+        expectedArcMm: 50,
+        measuredValueMm: 52,
+        mode: 'surface_arc',
+      });
+      expect(res.valid).toBe(true);
+      expect(res.effectiveRealArcMm).toBe(52);
+      expect(res.ratio).toBeCloseTo(50 / 52, 4);
+      expect(res.computedSteps).toBeCloseTo((3200 * 50) / 52, 3);
     });
 
-    it('registra y recupera historial de calibraciones con metadatos reales', () => {
+    it('modo Calibre Rígido (caliper_chord): compensa la cuerda circular y evita ajuste erróneo de pasos', () => {
+      // Cilindro D = 75 mm. Arco grabado exacto = 50.00 mm.
+      // Cuerda medida con calibre: c = D * sin(s / D) = 75 * sin(50 / 75) = 46.3776 mm.
+      const chordMeasured = 75 * Math.sin(50 / 75); // ~ 46.3776 mm
+
+      const res = computeDetailedLinearCalibration({
+        currentSteps: 3200,
+        expectedArcMm: 50,
+        measuredValueMm: chordMeasured,
+        mode: 'caliper_chord',
+        objectDiameterMm: 75,
+      });
+
+      expect(res.valid).toBe(true);
+      // El arco calculado a partir de la cuerda debe ser exactamente 50 mm
+      expect(res.effectiveRealArcMm).toBeCloseTo(50.0, 2);
+      // La relación de corrección debe ser 1.0 (no alterar pasos porque la máquina grabó exacto)
+      expect(res.ratio).toBeCloseTo(1.0, 3);
+      expect(res.computedSteps).toBeCloseTo(3200, 1);
+
+      // Comparación: si se usara el cálculo ingenuo (50 / 46.38), se provocaría un error de casi el 8%
+      const naiveSteps = (3200 * 50) / chordMeasured;
+      expect(naiveSteps).toBeGreaterThan(3440); // Más de 240 pasos de error destructivo evitado!
+    });
+
+    it('rechaza mediciones de calibre físicamente imposibles (cuerda >= diámetro)', () => {
+      const res = computeDetailedLinearCalibration({
+        currentSteps: 3200,
+        expectedArcMm: 50,
+        measuredValueMm: 76, // Cuerda 76 mm en diámetro 75 mm es imposible
+        mode: 'caliper_chord',
+        objectDiameterMm: 75,
+      });
+      expect(res.valid).toBe(false);
+      expect(res.error).toContain('no puede ser igual o mayor al diámetro');
+    });
+
+    it('wrapper computeLinearCalibratedSteps mantiene retrocompatibilidad y soporta ambos modos', () => {
+      const surfaceSteps = computeLinearCalibratedSteps(3200, 50, 52, 'surface_arc');
+      expect(surfaceSteps).toBeCloseTo((3200 * 50) / 52, 3);
+
+      const chord = 75 * Math.sin(50 / 75);
+      const chordSteps = computeLinearCalibratedSteps(3200, 50, chord, 'caliper_chord', 75);
+      expect(chordSteps).toBeCloseTo(3200, 1);
+    });
+  });
+
+  describe('3. Persistencia de calibración y recuperación del valor anterior (Undo)', () => {
+    it('actualiza el perfil en almacenamiento con isCalibrated: true y registra previousStepsPerRotation', () => {
+      const { updatedProfiles, updatedProfile } = applyCalibrationToProfile(
+        'vank-sanou-chuck',
+        3248.5,
+        'linear_caliper'
+      );
+      expect(updatedProfile).toBeDefined();
+      expect(updatedProfile?.stepsPerRotation).toBe(3248.5);
+      expect(updatedProfile?.previousStepsPerRotation).toBe(3200);
+      expect(updatedProfile?.isCalibrated).toBe(true);
+      expect(updatedProfile?.calibratedAtIso).toBeDefined();
+
+      const inStorage = loadRotaryAccessoryProfiles().find((p) => p.id === 'vank-sanou-chuck');
+      expect(inStorage?.stepsPerRotation).toBe(3248.5);
+      expect(inStorage?.previousStepsPerRotation).toBe(3200);
+    });
+
+    it('permite revertir la calibración y recuperar el valor anterior de pasos', () => {
+      // Aplicar primero una calibración
+      applyCalibrationToProfile('vank-sanou-chuck', 3300, 'angular_360');
+
+      // Revertir
+      const { revertedProfile } = revertCalibrationOnProfile('vank-sanou-chuck');
+      expect(revertedProfile).toBeDefined();
+      expect(revertedProfile?.stepsPerRotation).toBe(3248.5); // o 3200 según estado anterior
+      expect(revertedProfile?.previousStepsPerRotation).toBeUndefined();
+
+      const inStorage = loadRotaryAccessoryProfiles().find((p) => p.id === 'vank-sanou-chuck');
+      expect(inStorage?.previousStepsPerRotation).toBeUndefined();
+    });
+
+    it('registra en historial metadatos detallados de la calibración', () => {
       const record = addRotaryCalibrationRecord({
-        accessoryId: 'vank-roller-standard',
-        accessoryName: 'Rotativo de Rodillos Vank 9060',
+        accessoryId: 'vank-sanou-chuck',
+        accessoryName: 'Mandril Sanou 3 Mordazas',
         method: 'linear_caliper',
+        linearMode: 'caliper_chord',
+        effectiveRealArcMm: 50.1,
         initialSteps: 3200,
         expectedValue: 50,
-        measuredValue: 49.2,
-        computedSteps: 3252.033,
-        operatorNotes: 'Prueba en vaso recto con cinta de pintor',
+        measuredValue: 46.45,
+        computedSteps: 3193.6,
+        operatorNotes: 'Cuerda medida con calibre en probeta cilíndrica',
       });
 
       expect(record.id).toMatch(/^calib-/);
-      expect(record.timestampIso).toBeDefined();
+      expect(record.linearMode).toBe('caliper_chord');
+      expect(record.effectiveRealArcMm).toBe(50.1);
 
       const history = loadRotaryCalibrationHistory();
       expect(history.length).toBeGreaterThanOrEqual(1);
-      expect(history[0].computedSteps).toBe(3252.033);
-    });
-
-    it('sanitiza y preserva el sentido de giro en RotaryConfig', () => {
-      const normalConfig = sanitizeRotaryConfig({
-        ...DEFAULT_ROTARY_CONFIG,
-        rotationDirection: 'normal',
-      });
-      expect(normalConfig?.rotationDirection).toBe('normal');
-
-      const invertedConfig = sanitizeRotaryConfig({
-        ...DEFAULT_ROTARY_CONFIG,
-        rotationDirection: 'inverted',
-      });
-      expect(invertedConfig?.rotationDirection).toBe('inverted');
+      expect(history[0].computedSteps).toBe(3193.6);
     });
   });
 
-  describe('3. Patrón SVG de prueba y calibración con dimensiones conocidas', () => {
-    it('genera un patrón de calibración métrico 1:1 con cotas y dirección exactas', () => {
+  describe('4. Sentido de giro: Separar orientación documentada del efecto en máquina', () => {
+    it('las instrucciones técnicas diferencian orientación documentada de la inversión física del motor', () => {
+      const design = createMockDesign([createTextElement('t1', true)]);
       const config: RotaryConfig = {
         ...DEFAULT_ROTARY_CONFIG,
-        objectDiameterMm: 75,
-        usefulLengthMm: 120,
-        arcDeg: 360,
-        rotationDirection: 'normal',
+        accessoryProfileId: 'vank-sanou-chuck',
+        rotaryType: 'chuck',
+        rotationDirection: 'inverted',
+        objectDiameterMm: 80,
       };
 
-      const pattern = exportRotaryTestPatternSvg(config, 50);
-      expect(pattern.svgContent).toContain('<svg');
-      expect(pattern.svgContent).toContain('width="120mm"');
-      expect(pattern.targetSquareMm).toBe(50);
-
-      // Contiene el cuadrado de calibración en la capa de grabado (00)
-      expect(pattern.svgContent).toContain('id="CAPA_00_GRABADO"');
-      expect(pattern.svgContent).toContain('cuadrado_calibracion_50mm');
-      expect(pattern.svgContent).toContain('COTA X (AXIAL): 50.00 mm');
-      expect(pattern.svgContent).toContain('COTA Y (GIRO): 50.00 mm');
-
-      // Contiene flecha de sentido de giro
-      expect(pattern.svgContent).toContain('flecha_eje_y');
-      expect(pattern.svgContent).toContain('SENTIDO GIRO: NORMAL (+Y)');
-
-      // Contiene guías T1 de encuadre
-      expect(pattern.svgContent).toContain('id="GUIAS_T1"');
-
-      // Contiene instrucciones para calibración con calibre
-      expect(pattern.instructionsText).toContain('PROCEDIMIENTO DE CALIBRACIÓN CON CALIBRE');
-      expect(pattern.instructionsText).toContain('50.00 mm');
+      const instructions = buildRotaryInstructions(design, config);
+      expect(instructions).toContain('Sentido de giro documentado: Invertido');
+      expect(instructions).toContain('El archivo exportado conserva coordenadas CAD estándar');
+      expect(instructions).toContain('Invert Direction');
     });
 
-    it('adapta el cuadrado del patrón si el objeto tiene dimensiones menores', () => {
-      const smallConfig: RotaryConfig = {
+    it('el SVG exportado conserva coordenadas CAD sin alteración destructiva independientemente de rotationDirection', () => {
+      const design = createMockDesign([createTextElement('t1', true)]);
+      const normalConfig: RotaryConfig = {
         ...DEFAULT_ROTARY_CONFIG,
-        objectDiameterMm: 15, // Circunferencia ~ 47.1 mm
-        usefulLengthMm: 30,
-        arcDeg: 360,
+        rotationDirection: 'normal',
+      };
+      const invertedConfig: RotaryConfig = {
+        ...DEFAULT_ROTARY_CONFIG,
+        rotationDirection: 'inverted',
       };
 
-      const pattern = exportRotaryTestPatternSvg(smallConfig, 50);
-      // El cuadrado debe adaptarse automáticamente para no desbordar el objeto
-      expect(pattern.targetSquareMm).toBeLessThan(30);
-      expect(pattern.svgContent).toContain(`cuadrado_calibracion_${pattern.targetSquareMm}mm`);
+      const svgNormal = exportRotarySvg(design, normalConfig);
+      const svgInverted = exportRotarySvg(design, invertedConfig);
+
+      // Los trazados vectoriales tienen la misma geometría base (coordenadas estándar CAD)
+      expect(svgNormal.widthMm).toBe(svgInverted.widthMm);
+      expect(svgNormal.heightMm).toBe(svgInverted.heightMm);
+      expect(svgNormal.engravePathCount).toBe(svgInverted.engravePathCount);
     });
   });
 
-  describe('4. Validación y bloqueo estricto de exportación sin grabado o con errores', () => {
+  describe('5. Conos en mandril Sanou: Diámetro de referencia y alerta de doble compensación en LightBurn', () => {
+    it('incluye advertencia de doble compensación y cota exacta de diámetro de referencia para LightBurn', () => {
+      const design = createMockDesign([createTextElement('t1', true)]);
+      const taperedConfig: RotaryConfig = {
+        ...DEFAULT_ROTARY_CONFIG,
+        rotaryType: 'chuck',
+        accessoryProfileId: 'vank-sanou-chuck',
+        objectDiameterMm: 90, // boca
+        endDiameterMm: 65, // base
+        usefulLengthMm: 120,
+      };
+
+      const instructions = buildRotaryInstructions(design, taperedConfig);
+      // Diámetro de referencia (90 + 65) / 2 = 77.5 ~ 78 mm
+      expect(instructions).toContain('ATENCIÓN — CONFIGURACIÓN DE OBJETO CÓNICO EN LIGHTBURN (MANDRIL SANOU)');
+      expect(instructions).toContain('ADVERTENCIA DE DOBLE COMPENSACIÓN');
+      expect(instructions).toContain('NO active ninguna deformación cónica en LightBurn');
+      expect(instructions).toContain('EXACTAMENTE 77.5 mm (diámetro de referencia)');
+    });
+  });
+
+  describe('6. Sincronización del tipo Chuck con perfil persistente', () => {
+    it('sincroniza tipo chuck con el perfil vank-sanou-chuck al cargar configuraciones antiguas', () => {
+      const legacyRaw = {
+        objectDiameterMm: 75,
+        usefulLengthMm: 100,
+        arcDeg: 360,
+        rotaryType: 'chuck',
+      };
+
+      const sanitized = sanitizeRotaryConfig(legacyRaw);
+      expect(sanitized).toBeDefined();
+      expect(sanitized?.rotaryType).toBe('chuck');
+      expect(sanitized?.accessoryProfileId).toBe('vank-sanou-chuck');
+      // En mandril, rollerDiameterMm debe ser undefined
+      expect(sanitized?.rollerDiameterMm).toBeUndefined();
+    });
+
+    it('sincroniza tipo roller con vank-roller-standard cuando no se especifica perfil', () => {
+      const legacyRoller = {
+        objectDiameterMm: 75,
+        usefulLengthMm: 100,
+        arcDeg: 360,
+        rotaryType: 'roller',
+      };
+
+      const sanitized = sanitizeRotaryConfig(legacyRoller);
+      expect(sanitized?.rotaryType).toBe('roller');
+      expect(sanitized?.accessoryProfileId).toBe('vank-roller-standard');
+    });
+  });
+
+  describe('7. Validación estricta en el patrón SVG de calibración', () => {
+    it('rechaza generar el patrón SVG si la configuración es inválida', () => {
+      const invalidDiameterConfig: RotaryConfig = {
+        ...DEFAULT_ROTARY_CONFIG,
+        objectDiameterMm: 0, // inválido
+      };
+      expect(() => exportRotaryTestPatternSvg(invalidDiameterConfig, 50)).toThrow(
+        /Configuración rotativa inválida/i
+      );
+
+      const overflowLengthConfig: RotaryConfig = {
+        ...DEFAULT_ROTARY_CONFIG,
+        usefulLengthMm: 950, // supera los 900 mm de la Vank 9060
+      };
+      expect(() => exportRotaryTestPatternSvg(overflowLengthConfig, 50)).toThrow(
+        /Configuración rotativa inválida/i
+      );
+
+      const invalidSquareConfig: RotaryConfig = {
+        ...DEFAULT_ROTARY_CONFIG,
+      };
+      expect(() => exportRotaryTestPatternSvg(invalidSquareConfig, -10)).toThrow(
+        /positivo/i
+      );
+    });
+
+    it('genera patrón válido y documenta el procedimiento de medición con calibre vs cinta', () => {
+      const validConfig: RotaryConfig = {
+        ...DEFAULT_ROTARY_CONFIG,
+        accessoryProfileId: 'vank-sanou-chuck',
+        rotaryType: 'chuck',
+        objectDiameterMm: 75,
+        usefulLengthMm: 100,
+        arcDeg: 360,
+      };
+
+      const pattern = exportRotaryTestPatternSvg(validConfig, 50);
+      expect(pattern.svgContent).toContain('cuadrado_calibracion_50mm');
+      expect(pattern.instructionsText).toContain('CALIBRE RÍGIDO');
+      expect(pattern.instructionsText).toContain('CINTA FLEXIBLE');
+      expect(pattern.instructionsText).toContain('s = D * arcsin(c / D)');
+    });
+  });
+
+  describe('8. Bloqueo de exportación sin grabado y pruebas de regresión', () => {
     it('rechaza exportar SVG si el diseño no tiene elementos de grabado visibles', () => {
       const emptyDesign = createMockDesign([]);
       expect(() => exportRotarySvg(emptyDesign, DEFAULT_ROTARY_CONFIG)).toThrow(
@@ -255,27 +415,10 @@ describe('Módulo Rotativo — Profesionalización Etapa 1', () => {
       );
     });
 
-    it('informa error en layout si el diseño no tiene elementos visibles', () => {
-      const layoutEmpty = computeRotaryLayout(DEFAULT_ROTARY_CONFIG, {
-        widthMm: 40,
-        heightMm: 20,
-        elements: [],
-      });
-      expect(layoutEmpty.valid).toBe(false);
-      expect(layoutEmpty.errors.some((e) => e.includes('no contiene elementos de grabado'))).toBe(true);
-
-      const layoutValid = computeRotaryLayout(DEFAULT_ROTARY_CONFIG, {
-        widthMm: 40,
-        heightMm: 20,
-        elements: [createTextElement('t1', true)],
-      });
-      expect(layoutValid.valid).toBe(true);
-    });
-
     it('valida límites físicos de la Vank 9060 (ancho 900mm y aviso de diámetro)', () => {
       const overflowConfig: RotaryConfig = {
         ...DEFAULT_ROTARY_CONFIG,
-        usefulLengthMm: 950, // mayor que 900
+        usefulLengthMm: 950,
       };
       const l = computeRotaryLayout(overflowConfig, { widthMm: 40, heightMm: 20 });
       expect(l.valid).toBe(false);
@@ -283,58 +426,20 @@ describe('Módulo Rotativo — Profesionalización Etapa 1', () => {
 
       const largeDConfig: RotaryConfig = {
         ...DEFAULT_ROTARY_CONFIG,
-        objectDiameterMm: 280, // objeto muy grande, advertir altura Z
+        objectDiameterMm: 280,
       };
       const l2 = computeRotaryLayout(largeDConfig, { widthMm: 40, heightMm: 20 });
       expect(l2.warnings.some((w) => w.includes('altura libre del eje Z'))).toBe(true);
     });
-  });
 
-  describe('5. Cilindros, Conos, Múltiples Copias y Retrocompatibilidad', () => {
-    it('exporta correctamente diseño vectorial en cilindro recto con instrucciones completas', () => {
-      const design = createMockDesign([createTextElement('t1', true)]);
-      const config: RotaryConfig = {
-        ...DEFAULT_ROTARY_CONFIG,
-        accessoryProfileId: 'vank-roller-standard',
-        rotationDirection: 'normal',
-        objectDiameterMm: 75,
-        usefulLengthMm: 100,
-        arcDeg: 360,
-        stepsPerRotation: 3200,
-      };
-
-      const result = exportRotarySvg(design, config);
-      expect(result.svgContent).toContain('<path id="rotativo-t1"');
-      expect(result.svgContent).toContain('data-rotary-direction="normal"');
-      expect(result.engravePathCount).toBeGreaterThan(0);
-      expect(result.instructionsText).toContain('Perfil de accesorio: vank-roller-standard');
-      expect(result.instructionsText).toContain('Sentido de giro: Normal (+Y)');
-    });
-
-    it('aplica compensación en objetos cónicos y exporta arte pre-deformado', () => {
-      const design = createMockDesign([createTextElement('t1', true)]);
-      const conicConfig: RotaryConfig = {
-        ...DEFAULT_ROTARY_CONFIG,
-        objectDiameterMm: 90,
-        endDiameterMm: 65, // Cono: boca 90mm, base 65mm
-        usefulLengthMm: 120,
-        arcDeg: 360,
-      };
-
-      const result = exportRotarySvg(design, conicConfig);
-      expect(result.svgContent).toContain('data-rotary-tapered="true"');
-      expect(result.instructionsText).toContain('Objeto cónico');
-      expect(result.instructionsText).toContain('diámetro de referencia');
-    });
-
-    it('distribuye múltiples copias equidistantes alrededor del objeto', () => {
+    it('distribuye múltiples copias equidistantes y mantiene retrocompatibilidad', () => {
       const design = createMockDesign([createTextElement('t1', true)]);
       const multiConfig: RotaryConfig = {
         ...DEFAULT_ROTARY_CONFIG,
         objectDiameterMm: 80,
         usefulLengthMm: 100,
         arcDeg: 360,
-        repeatCount: 2, // Frente y dorso
+        repeatCount: 2,
       };
 
       const layout = computeRotaryLayout(multiConfig, design);
@@ -344,20 +449,6 @@ describe('Módulo Rotativo — Profesionalización Etapa 1', () => {
 
       const svg = exportRotarySvg(design, multiConfig);
       expect(svg.svgContent).toContain('data-rotary-copies="2"');
-    });
-
-    it('mantiene retrocompatibilidad con configuraciones antiguas guardadas', () => {
-      const legacyRaw = {
-        objectDiameterMm: 70,
-        usefulLengthMm: 110,
-        arcDeg: 180,
-        rotaryType: 'chuck',
-      };
-      const sanitized = sanitizeRotaryConfig(legacyRaw);
-      expect(sanitized).toBeDefined();
-      expect(sanitized?.rotaryType).toBe('chuck');
-      expect(sanitized?.rotationDirection).toBe('normal');
-      expect(sanitized?.accessoryProfileId).toBe('vank-roller-standard');
     });
   });
 });

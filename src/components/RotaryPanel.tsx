@@ -11,7 +11,10 @@ import {
   loadRotaryAccessoryProfiles,
   saveRotaryAccessoryProfile,
   deleteRotaryAccessoryProfile,
-  computeLinearCalibratedSteps,
+  applyCalibrationToProfile,
+  revertCalibrationOnProfile,
+  computeDetailedLinearCalibration,
+  LinearMeasurementMode,
   loadRotaryCalibrationHistory,
   addRotaryCalibrationRecord,
   RotaryCalibrationRecord,
@@ -28,7 +31,7 @@ import { LabelDesign } from '../core/types';
 interface Props {
   design: LabelDesign;
   config: RotaryConfig;
-  onConfigChange: (config: RotaryConfig) => void;
+  onConfigChange: (c: RotaryConfig) => void;
   onSave: (files: LogoOutputFile[]) => void;
   onClose: () => void;
 }
@@ -48,21 +51,35 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
 
   // Perfiles de hardware persistentes
   const [profiles, setProfiles] = useState<RotaryAccessoryProfile[]>(() => loadRotaryAccessoryProfiles());
-  const [selectedProfileId, setSelectedProfileId] = useState<string>(
-    () => config.accessoryProfileId || profiles[0]?.id || 'vank-roller-standard'
-  );
+  const [selectedProfileId, setSelectedProfileId] = useState<string>(() => {
+    if (config.accessoryProfileId && profiles.some((p) => p.id === config.accessoryProfileId)) {
+      return config.accessoryProfileId;
+    }
+    const match = profiles.find((p) => p.type === config.rotaryType);
+    return match?.id || (config.rotaryType === 'chuck' ? 'vank-sanou-chuck' : 'vank-roller-standard');
+  });
   const [newProfileName, setNewProfileName] = useState<string>('');
   const [isAddingProfile, setIsAddingProfile] = useState<boolean>(false);
 
   // Asistente de calibración
   const [calibMethod, setCalibMethod] = useState<'angular' | 'linear'>('angular');
   const [measuredDegrees, setMeasuredDegrees] = useState<number>(360);
+  const [linearMode, setLinearMode] = useState<LinearMeasurementMode>('caliper_chord');
   const [expectedLinearMm, setExpectedLinearMm] = useState<number>(50);
   const [measuredLinearMm, setMeasuredLinearMm] = useState<number>(50);
   const [calibHistory, setCalibHistory] = useState<RotaryCalibrationRecord[]>(() => loadRotaryCalibrationHistory());
 
-  const angularCorrection = correctedRotarySteps(config.stepsPerRotation ?? 0, measuredDegrees);
-  const linearCorrection = computeLinearCalibratedSteps(config.stepsPerRotation ?? 0, expectedLinearMm, measuredLinearMm);
+  const angularCorrection = correctedRotarySteps(config.stepsPerRotation ?? 3200, measuredDegrees);
+
+  const detailedLinearResult = useMemo(() => {
+    return computeDetailedLinearCalibration({
+      currentSteps: config.stepsPerRotation ?? 3200,
+      expectedArcMm: expectedLinearMm,
+      measuredValueMm: measuredLinearMm,
+      mode: linearMode,
+      objectDiameterMm: config.objectDiameterMm,
+    });
+  }, [config.stepsPerRotation, expectedLinearMm, measuredLinearMm, linearMode, config.objectDiameterMm]);
 
   const [withDxf, setWithDxf] = useState(false);
   const [withGuides, setWithGuides] = useState(false);
@@ -113,14 +130,29 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
         ...c,
         accessoryProfileId: p.id,
         rotaryType: p.type,
-        rollerDiameterMm: p.rollerDiameterMm ?? c.rollerDiameterMm,
+        rollerDiameterMm: p.type === 'roller' ? (p.rollerDiameterMm ?? 50.0) : undefined,
         stepsPerRotation: p.stepsPerRotation,
         rotationDirection: p.rotationDirection,
       }));
     }
   };
 
-  // Guardar perfil nuevo o actualizado
+  // Alternar tipo de sujeción (Rodillos vs Mandril) manteniendo perfil sincronizado
+  const handleToggleRotaryType = (newType: RotaryType) => {
+    const matchingProfile = profiles.find((p) => p.type === newType);
+    const newProfId = matchingProfile?.id || (newType === 'chuck' ? 'vank-sanou-chuck' : 'vank-roller-standard');
+    setSelectedProfileId(newProfId);
+    setConfig((c) => ({
+      ...c,
+      rotaryType: newType,
+      accessoryProfileId: newProfId,
+      rollerDiameterMm: newType === 'roller' ? (matchingProfile?.rollerDiameterMm ?? 50.0) : undefined,
+      stepsPerRotation: matchingProfile?.stepsPerRotation ?? c.stepsPerRotation,
+      rotationDirection: matchingProfile?.rotationDirection ?? c.rotationDirection,
+    }));
+  };
+
+  // Guardar perfil nuevo personalizado
   const handleSaveProfile = () => {
     if (!newProfileName.trim()) return;
     const newProf: RotaryAccessoryProfile = {
@@ -130,6 +162,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
       rollerDiameterMm: config.rotaryType === 'roller' ? (config.rollerDiameterMm ?? 50.0) : undefined,
       stepsPerRotation: config.stepsPerRotation ?? 3200,
       rotationDirection: config.rotationDirection || 'normal',
+      isCalibrated: false,
       isBuiltIn: false,
     };
     const updated = saveRotaryAccessoryProfile(newProf);
@@ -145,7 +178,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
     const updated = deleteRotaryAccessoryProfile(id);
     setProfiles(updated);
     if (selectedProfileId === id) {
-      handleSelectProfile(updated[0]?.id || 'vank-roller-standard');
+      handleSelectProfile(updated[0]?.id || 'vank-sanou-chuck');
     }
   };
 
@@ -153,16 +186,25 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
   const handleApplyAngularCalib = () => {
     if (angularCorrection === null) return;
     const oldSteps = config.stepsPerRotation ?? 3200;
-    setConfig((c) => ({ ...c, stepsPerRotation: angularCorrection }));
+    const targetProfileId = config.accessoryProfileId || selectedProfileId;
+
+    const { updatedProfiles, updatedProfile } = applyCalibrationToProfile(
+      targetProfileId,
+      angularCorrection,
+      'angular_360'
+    );
+    setProfiles(updatedProfiles);
+    setConfig((c) => ({ ...c, stepsPerRotation: angularCorrection, accessoryProfileId: targetProfileId }));
+
     const record = addRotaryCalibrationRecord({
-      accessoryId: config.accessoryProfileId,
-      accessoryName: profiles.find((p) => p.id === config.accessoryProfileId)?.name,
+      accessoryId: targetProfileId,
+      accessoryName: updatedProfile?.name || profiles.find((p) => p.id === targetProfileId)?.name,
       method: 'angular_360',
       initialSteps: oldSteps,
       expectedValue: 360,
       measuredValue: measuredDegrees,
       computedSteps: angularCorrection,
-      operatorNotes: `Prueba 360°: medidos ${measuredDegrees}°`,
+      operatorNotes: `Giro 360°: medidos ${measuredDegrees}° (Perfil: ${updatedProfile?.name || targetProfileId})`,
     });
     setCalibHistory((h) => [record, ...h]);
     setMeasuredDegrees(360);
@@ -170,21 +212,44 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
 
   // Aplicar calibración lineal con calibre
   const handleApplyLinearCalib = () => {
-    if (linearCorrection === null) return;
+    if (!detailedLinearResult.valid) return;
+    const newSteps = detailedLinearResult.computedSteps;
     const oldSteps = config.stepsPerRotation ?? 3200;
-    setConfig((c) => ({ ...c, stepsPerRotation: linearCorrection }));
+    const targetProfileId = config.accessoryProfileId || selectedProfileId;
+
+    const { updatedProfiles, updatedProfile } = applyCalibrationToProfile(
+      targetProfileId,
+      newSteps,
+      'linear_caliper'
+    );
+    setProfiles(updatedProfiles);
+    setConfig((c) => ({ ...c, stepsPerRotation: newSteps, accessoryProfileId: targetProfileId }));
+
     const record = addRotaryCalibrationRecord({
-      accessoryId: config.accessoryProfileId,
-      accessoryName: profiles.find((p) => p.id === config.accessoryProfileId)?.name,
+      accessoryId: targetProfileId,
+      accessoryName: updatedProfile?.name || profiles.find((p) => p.id === targetProfileId)?.name,
       method: 'linear_caliper',
+      linearMode,
+      effectiveRealArcMm: detailedLinearResult.effectiveRealArcMm,
       initialSteps: oldSteps,
       expectedValue: expectedLinearMm,
       measuredValue: measuredLinearMm,
-      computedSteps: linearCorrection,
-      operatorNotes: `Calibre: esperado ${expectedLinearMm} mm vs medido ${measuredLinearMm} mm`,
+      computedSteps: newSteps,
+      operatorNotes: linearMode === 'caliper_chord'
+        ? `Calibre rígido: cuerda ${measuredLinearMm} mm -> arco compensado ${detailedLinearResult.effectiveRealArcMm} mm (Ø ${config.objectDiameterMm} mm)`
+        : `Cinta flexible: arco real superficial ${measuredLinearMm} mm`,
     });
     setCalibHistory((h) => [record, ...h]);
-    setMeasuredLinearMm(expectedLinearMm);
+  };
+
+  // Deshacer calibración del perfil
+  const handleRevertProfileCalibration = () => {
+    const targetProfileId = config.accessoryProfileId || selectedProfileId;
+    const { updatedProfiles, revertedProfile } = revertCalibrationOnProfile(targetProfileId);
+    setProfiles(updatedProfiles);
+    if (revertedProfile) {
+      setConfig((c) => ({ ...c, stepsPerRotation: revertedProfile.stepsPerRotation }));
+    }
   };
 
   // Guardar archivo del diseño
@@ -215,6 +280,10 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
 
   // Guardar patrón de prueba
   const handleSaveTestPattern = () => {
+    if (!layout.valid) {
+      setSaveError('No se puede generar el patrón de prueba: verifique que las medidas del objeto sean válidas.');
+      return;
+    }
     try {
       const pat = exportRotaryTestPatternSvg(config, 50);
       onSave([
@@ -226,7 +295,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
     }
   };
 
-  const field = 'w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-white';
+  const field = 'w-full bg-slate-900 border border-slate-700 px-2 py-1 rounded text-xs text-white';
   const maxW = 440,
     maxH = 220;
   const scale = layout.valid ? Math.min(maxW / layout.canvasWidthMm, maxH / layout.canvasHeightMm) : 1;
@@ -293,6 +362,32 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
             </div>
           </div>
 
+          {/* Estado de calibración y deshacer */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/60 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-slate-400">Estado de pasos:</span>
+              {activeProfile?.isCalibrated ? (
+                <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                  ✓ Calibrado físicamente ({activeProfile.stepsPerRotation} pasos/vuelta)
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                  ⚠️ Valor orientativo no verificado ({config.stepsPerRotation ?? 3200} pasos/vuelta ilustrativos)
+                </span>
+              )}
+            </div>
+            {activeProfile?.previousStepsPerRotation !== undefined && (
+              <button
+                type="button"
+                onClick={handleRevertProfileCalibration}
+                className="text-xs text-amber-400 hover:text-amber-300 underline"
+                title="Restaurar el valor anterior a la última calibración"
+              >
+                Deshacer calibración (recuperar {activeProfile.previousStepsPerRotation} pasos)
+              </button>
+            )}
+          </div>
+
           {/* Formulario para guardar nuevo perfil */}
           {isAddingProfile && (
             <div className="p-3 bg-slate-950 rounded border border-cyan-500/40 space-y-2 mt-2">
@@ -300,7 +395,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
               <div className="flex gap-2">
                 <input
                   type="text"
-                  placeholder="Nombre del accesorio (ej. Mandril K11 80mm)"
+                  placeholder="Nombre del accesorio (ej. Mandril Sanou K11 100mm)"
                   value={newProfileName}
                   onChange={(e) => setNewProfileName(e.target.value)}
                   className="flex-1 bg-slate-900 border border-slate-700 px-2.5 py-1 rounded text-xs text-white"
@@ -316,6 +411,21 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
             </div>
           )}
         </div>
+
+        {/* ALERTA DE COMPATIBILIDAD CONOS EN MANDRIL */}
+        {layout.tapered && config.rotaryType === 'chuck' && (
+          <div className="p-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-xs space-y-1.5 text-amber-200">
+            <div className="font-bold flex items-center gap-1.5 text-amber-300">
+              <span>⚠️ MANDRIL SANOU + OBJETO CÓNICO (COMPATIBILIDAD LIGHTBURN)</span>
+            </div>
+            <p>
+              En LightBurn <strong>Rotary Setup</strong> ingrese exactamente <strong>Ø {layout.referenceDiameterMm} mm</strong> como diámetro del objeto.
+            </p>
+            <p className="text-[11px] text-amber-300/90 font-medium">
+              <strong>Evite doble compensación:</strong> El archivo SVG generado por Astra Studio ya incluye la compensación matemática no lineal del cono. No active ninguna herramienta de deformación cónica en LightBurn ni re-escale el dibujo.
+            </p>
+          </div>
+        )}
 
         {/* 2. GEOMETRÍA DEL OBJETO */}
         <div className="space-y-2.5">
@@ -345,10 +455,10 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
               <select
                 className={field}
                 value={config.rotaryType}
-                onChange={(e) => setConfig((c) => ({ ...c, rotaryType: e.target.value as RotaryType }))}
+                onChange={(e) => handleToggleRotaryType(e.target.value as RotaryType)}
               >
+                <option value="chuck">Mandril 3 Mordazas (Chuck)</option>
                 <option value="roller">Rodillos (Roller)</option>
-                <option value="chuck">Mandril (Chuck)</option>
               </select>
             </label>
 
@@ -450,8 +560,8 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
         {/* 3. ASISTENTE DE CALIBRACIÓN Y SENTIDO DE GIRO */}
         <details className="border border-slate-800 bg-slate-900/50 rounded-lg p-3 space-y-3">
           <summary className="cursor-pointer text-xs font-semibold text-cyan-400 hover:text-cyan-300 flex items-center justify-between">
-            <span>Asistente de Calibración, Pasos por Vuelta y Sentido de Giro</span>
-            <span className="text-[10px] text-slate-400">Pasos actuales: {config.stepsPerRotation ?? 'Sin definir'}</span>
+            <span>Asistente de Calibración, Pasos por Vuelta y Orientación</span>
+            <span className="text-[10px] text-slate-400">Pasos actuales: {config.stepsPerRotation ?? 3200}</span>
           </summary>
 
           <div className="space-y-3 pt-2 text-xs">
@@ -487,7 +597,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                   min="0.001"
                   step="1"
                   value={val(config.stepsPerRotation)}
-                  placeholder="Valor del driver o calibrado"
+                  placeholder="3200 (ilustrativo)"
                   onChange={(e) =>
                     setConfig((c) => ({
                       ...c,
@@ -498,7 +608,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
               </label>
 
               <label className="space-y-1">
-                <span className="text-slate-400">Sentido de avance del eje Y:</span>
+                <span className="text-slate-400">Orientación de montaje (+Y):</span>
                 <select
                   aria-label="Sentido de giro"
                   className={field}
@@ -513,6 +623,9 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                   <option value="normal">Normal (+Y avance horario)</option>
                   <option value="inverted">Invertido (dirección invertida)</option>
                 </select>
+                <p className="text-[10px] text-slate-400">
+                  Documenta la orientación de trabajo. Para invertir el giro físico del motor, active "Invert Direction" en LightBurn o en la Ruida.
+                </p>
               </label>
             </div>
 
@@ -528,7 +641,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                       : 'bg-slate-950 text-slate-400'
                   }`}
                 >
-                  Método 1: Prueba de Giro 360° (Test)
+                  Método 1: Prueba de Giro 360°
                 </button>
                 <button
                   type="button"
@@ -539,7 +652,7 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                       : 'bg-slate-950 text-slate-400'
                   }`}
                 >
-                  Método 2: Calibración con Calibre
+                  Método 2: Medición Lineal (Calibre o Cinta)
                 </button>
               </div>
 
@@ -570,19 +683,44 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                         onClick={handleApplyAngularCalib}
                         className="px-3 py-2 bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold rounded disabled:opacity-40 text-xs transition-colors"
                       >
-                        Aplicar {angularCorrection ? `${angularCorrection} pasos` : ''}
+                        Aplicar al perfil {angularCorrection ? `(${angularCorrection} pasos)` : ''}
                       </button>
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="space-y-2 bg-slate-950 p-2.5 rounded border border-slate-800">
-                  <p className="text-[11px] text-slate-400">
-                    Grabe el patrón de prueba sobre cinta. Mida con calibre digital el cuadrado de prueba en el eje Y (giro):
-                  </p>
+                <div className="space-y-2.5 bg-slate-950 p-3 rounded border border-slate-800">
+                  <span className="text-[11px] text-slate-300 font-semibold block">Instrumento de medición utilizado:</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setLinearMode('caliper_chord')}
+                      className={`p-2 rounded text-left border ${
+                        linearMode === 'caliper_chord'
+                          ? 'bg-cyan-500/10 border-cyan-500/50 text-cyan-200'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-300'
+                      }`}
+                    >
+                      <div className="font-bold text-xs">📐 Calibre digital (Pie de rey)</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Mide distancia recta (cuerda). Se compensa automáticamente la curvatura.</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLinearMode('surface_arc')}
+                      className={`p-2 rounded text-left border ${
+                        linearMode === 'surface_arc'
+                          ? 'bg-cyan-500/10 border-cyan-500/50 text-cyan-200'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-300'
+                      }`}
+                    >
+                      <div className="font-bold text-xs">📏 Cinta flexible / Papel</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5">Mide la longitud curvada real directamente sobre la superficie del cilindro.</div>
+                    </button>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-2">
                     <label>
-                      <span className="text-[11px] text-slate-400 block mb-0.5">Cota esperada (mm):</span>
+                      <span className="text-[11px] text-slate-400 block mb-0.5">Cota nominal esperada (mm):</span>
                       <input
                         className={field}
                         type="number"
@@ -594,11 +732,13 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                       />
                     </label>
                     <label>
-                      <span className="text-[11px] text-slate-400 block mb-0.5">Cota medida con calibre (mm):</span>
+                      <span className="text-[11px] text-slate-400 block mb-0.5">
+                        {linearMode === 'caliper_chord' ? 'Distancia medida con calibre (cuerda mm):' : 'Medida con cinta flexible (arco mm):'}
+                      </span>
                       <input
                         className={field}
                         type="number"
-                        min="1"
+                        min="0.1"
                         max="300"
                         step="0.05"
                         value={measuredLinearMm}
@@ -606,17 +746,34 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                       />
                     </label>
                   </div>
-                  <div className="flex justify-between items-center pt-1">
-                    <span className="text-[11px] text-cyan-300">
-                      Pasos corregidos propuestos: <strong>{linearCorrection ?? '—'}</strong>
-                    </span>
+
+                  {/* Detalle del cálculo geométrico */}
+                  {detailedLinearResult.valid ? (
+                    <div className="p-2 bg-slate-900/80 rounded border border-slate-800 text-[11px] space-y-1">
+                      {linearMode === 'caliper_chord' && (
+                        <p className="text-cyan-300">
+                          Compensación de curvatura (Ø {config.objectDiameterMm} mm): Cuerda {measuredLinearMm} mm → Arco real: <strong>{detailedLinearResult.effectiveRealArcMm.toFixed(2)} mm</strong>
+                        </p>
+                      )}
+                      <div className="flex justify-between items-center text-slate-300">
+                        <span>Relación de corrección: <strong>{detailedLinearResult.ratio.toFixed(4)}</strong></span>
+                        <span className="text-cyan-300 font-bold">Pasos propuestos: {detailedLinearResult.computedSteps}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 p-2 rounded">
+                      {detailedLinearResult.error}
+                    </p>
+                  )}
+
+                  <div className="flex justify-end pt-1">
                     <button
                       type="button"
-                      disabled={linearCorrection === null}
+                      disabled={!detailedLinearResult.valid}
                       onClick={handleApplyLinearCalib}
                       className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold rounded disabled:opacity-40 text-xs transition-colors"
                     >
-                      Aplicar en accesorio
+                      Aplicar calibración al perfil ({detailedLinearResult.valid ? `${detailedLinearResult.computedSteps} pasos` : '—'})
                     </button>
                   </div>
                 </div>
@@ -627,8 +784,10 @@ export function RotaryPanel({ design, config, onConfigChange, onSave, onClose }:
                 <span className="text-[11px] text-slate-400">¿Necesita un archivo de prueba con cotas conocidas?</span>
                 <button
                   type="button"
+                  disabled={!layout.valid}
                   onClick={handleSaveTestPattern}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 rounded text-xs font-semibold"
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 rounded text-xs font-semibold disabled:opacity-40"
+                  title={!layout.valid ? 'Configure medidas válidas del objeto antes de generar el patrón' : 'Genera SVG de prueba 1:1'}
                 >
                   Generar Patrón SVG de Calibración
                 </button>

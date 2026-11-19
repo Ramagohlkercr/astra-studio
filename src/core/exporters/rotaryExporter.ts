@@ -211,14 +211,28 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
     ...(config.axisOffsetMm || config.angularOffsetDeg ? [`Desplazamiento: ${config.axisOffsetMm ?? 0} mm axial, ${config.angularOffsetDeg ?? 0}° de giro`] : []),
     `Lienzo del archivo: ${layout.canvasWidthMm} x ${layout.canvasHeightMm} mm`,
     '',
+    ...(layout.tapered ? [
+      '*******************************************************************************',
+      'ATENCIÓN — CONFIGURACIÓN DE OBJETO CÓNICO EN LIGHTBURN (MANDRIL SANOU):',
+      `- Diámetro a ingresar en LightBurn (Object Diameter): EXACTAMENTE ${layout.referenceDiameterMm} mm (diámetro de referencia).`,
+      '- ADVERTENCIA DE DOBLE COMPENSACIÓN: El archivo exportado ya incluye la compensación geométrica no lineal para el cono.',
+      '  NO active ninguna deformación cónica en LightBurn ni re-escale el dibujo en Y.',
+      `- Nivelación física: Nivele la generatriz superior del objeto respecto a la mesa láser y enfoque a la cota Ø ${layout.referenceDiameterMm} mm.`,
+      '*******************************************************************************',
+      '',
+    ] : []),
     'ANTES DE GRABAR (a cargar por el operador, la app NO los inventa):',
     '- Activar el rotativo en LightBurn (Rotary Setup), eje Y, y elegir el tipo de accesorio.',
-    `- Pasos por vuelta: ${config.stepsPerRotation ?? 'PENDIENTE de medir o confirmar con el fabricante'}.`,
+    `- Pasos por vuelta: ${config.stepsPerRotation ?? 'PENDIENTE de medir o calibrar físicamente'}.`,
     config.rotaryType === 'roller'
       ? `- Cargar el diámetro de los rodillos${config.rollerDiameterMm ? ` (referencia: ${config.rollerDiameterMm} mm)` : ''} y verificar los pasos por vuelta.`
       : `- Cargar el diámetro del objeto: ${layout.referenceDiameterMm} mm.`,
-    config.rotaryType === 'roller' ? '- En rodillos, la escala depende del diámetro del rodillo motriz, no del diámetro del objeto.' : '- En mandril, la escala depende del diámetro del objeto.',
-    `- Sentido de giro: verificar que el texto avance en sentido ${config.rotationDirection === 'inverted' ? 'invertido' : 'normal'}. Si gira al revés, invertir la dirección del eje en Rotary Setup.`,
+    config.rotaryType === 'roller'
+      ? '- En rodillos, la escala depende del diámetro del rodillo motriz, no del diámetro del objeto.'
+      : '- En mandril, la escala depende del diámetro del objeto.',
+    `- Sentido de giro documentado: ${config.rotationDirection === 'inverted' ? 'Invertido' : 'Normal (+Y)'}.`,
+    '  * Nota: El archivo exportado conserva coordenadas CAD estándar.',
+    '  * Si al probar el objeto gira en sentido opuesto al avance del dibujo, active "Invert Direction" / "Mirror Output" en LightBurn (Rotary Setup) o cambie la polaridad DIR en la Ruida.',
     '- Test de LightBurn: debe completar una vuelta del rodillo MOTRIZ o del MANDRIL y regresar. En rodillos no se mide la vuelta del objeto.',
     '- Estos valores son una ficha de configuración: Astra no configura ni mueve la máquina.',
     '- Potencia, velocidad e intervalo de línea: validar con una prueba sobre un objeto de descarte.',
@@ -283,8 +297,23 @@ export function exportRotaryTestPatternSvg(
   config: RotaryConfig,
   targetSquareMm = 50
 ): RotaryPatternArtifact {
+  if (!Number.isFinite(targetSquareMm) || targetSquareMm <= 0) {
+    throw new Error('La dimensión del patrón de prueba debe ser un valor numérico positivo.');
+  }
+
   const dummyDesign = { widthMm: targetSquareMm, heightMm: targetSquareMm };
   const layout = computeRotaryLayout(config, dummyDesign);
+
+  if (!layout.valid) {
+    throw new Error(`Configuración rotativa inválida para generar patrón de prueba: ${layout.errors.join('; ')}`);
+  }
+
+  if (config.usefulLengthMm < 10 || layout.circumferenceMm < 10) {
+    throw new Error(
+      `Dimensiones insuficientes para generar el patrón de prueba (Largo: ${config.usefulLengthMm} mm, Circunferencia: ${layout.circumferenceMm} mm).`
+    );
+  }
+
   const w = layout.canvasWidthMm;
   const h = layout.canvasHeightMm;
 
@@ -364,22 +393,26 @@ export function exportRotaryTestPatternSvg(
     `Diámetro del objeto probado: ${config.objectDiameterMm} mm`,
     `Circunferencia calculada: ${layout.circumferenceMm} mm`,
     `Cota de prueba cuadrada: ${sq.toFixed(2)} mm x ${sq.toFixed(2)} mm`,
-    `Sentido de giro configurado: ${config.rotationDirection === 'inverted' ? 'Invertido' : 'Normal (+Y)'}`,
+    `Orientación de montaje (+Y): ${config.rotationDirection === 'inverted' ? 'Invertido' : 'Normal (+Y)'}`,
+    ...(layout.tapered ? [
+      `ATENCIÓN OBJETO CÓNICO: En LightBurn ingresar Object Diameter = ${layout.referenceDiameterMm} mm. No activar compensación cónica adicional en CAM.`
+    ] : []),
     '',
-    'PROCEDIMIENTO DE CALIBRACIÓN CON CALIBRE:',
+    'PROCEDIMIENTO DE CALIBRACIÓN LINEAL:',
     '1. Pegue una tira de cinta de pintor (enmascarar) alrededor del objeto cilíndrico de descarte.',
-    '2. Enfoque el láser en el punto más alto del cilindro.',
-    '3. Importe el archivo SVG en LightBurn (o DXF en RDWorks) a escala 1:1.',
+    '2. Enfoque el láser en la generatriz superior del cilindro.',
+    '3. Importe el archivo SVG en LightBurn (o DXF en RDWorks) a escala 1:1 en mm.',
     '4. Asigne baja potencia para marcar la cinta sin quemar el material subyacente.',
     '5. Ejecute el grabado del patrón.',
-    '6. Con calibre digital, mida la distancia entre las líneas paralelas en el eje Y (giro del objeto).',
+    '6. Mida la cota Y grabada según su instrumento:',
+    '   a) Con CALIBRE RÍGIDO (Pie de rey): Mida la distancia recta entre los bordes en Y.',
+    '      * En el asistente de Astra Studio elija "Calibre digital / Pie de rey rígido".',
+    '      * El sistema compensará la cuerda circular con s = D * arcsin(c / D) para evitar distorsión.',
+    '   b) Con CINTA FLEXIBLE O PAPEL ENROLLADO: Mida el arco directamente sobre la curvatura del cilindro.',
+    '      * En el asistente elija "Cinta flexible / Papel enrollado (Arco sobre superficie)".',
     '7. COTA ESPERADA: ' + sq.toFixed(2) + ' mm.',
-    '8. Si la cota medida difiere de ' + sq.toFixed(2) + ' mm:',
-    '   - Abra el Asistente de Calibración en Astra Studio (pestaña Calibración con Calibre).',
-    '   - Ingrese el valor medido real (ej. 48.6 mm o 51.2 mm).',
-    '   - El software calculará los pasos corregidos por vuelta sin cálculos manuales.',
-    '   - Ingrese el nuevo valor en la ventana Rotary Setup de LightBurn o Ruida.',
-    '9. Verifique que la flecha grabada coincida con el sentido de giro real del objeto.',
+    '8. Presione "Aplicar calibración al perfil" para actualizar los pasos y guardarlos en el perfil.',
+    '9. Si el objeto gira en sentido contrario al esperado, active "Invert Direction" en LightBurn Rotary Setup.',
   ].join('\n') + '\n';
 
   return {

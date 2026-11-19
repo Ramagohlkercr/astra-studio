@@ -1,9 +1,24 @@
 import {Millimeters, LabelDesign} from '../types';
 import {roundMm} from '../geometry/geometryEngine';
-import {RotaryDirection, computeLinearCalibratedSteps} from './rotaryProfiles';
+import {
+  RotaryDirection,
+  LinearMeasurementMode,
+  LinearCalibrationParams,
+  LinearCalibrationResult,
+  computeDetailedLinearCalibration,
+  computeLinearCalibratedSteps,
+} from './rotaryProfiles';
 
-export {computeLinearCalibratedSteps};
-export type {RotaryDirection};
+export {
+  computeDetailedLinearCalibration,
+  computeLinearCalibratedSteps,
+};
+export type {
+  RotaryDirection,
+  LinearMeasurementMode,
+  LinearCalibrationParams,
+  LinearCalibrationResult,
+};
 
 /**
  * Accesorio rotativo (Vank 9060 / Ruida RDC8445S).
@@ -250,10 +265,15 @@ export function sanitizeRotaryConfig(raw: unknown): RotaryConfig | undefined {
   const r = raw as Partial<RotaryConfig>;
   const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
   if (!ok(r.objectDiameterMm) || !ok(r.usefulLengthMm) || !ok(r.arcDeg)) return undefined;
+
+  const rotaryType: RotaryType = r.rotaryType === 'chuck' ? 'chuck' : 'roller';
+  const defaultProfileId = rotaryType === 'chuck' ? 'vank-sanou-chuck' : 'vank-roller-standard';
+  const profileId = typeof r.accessoryProfileId === 'string' ? r.accessoryProfileId : defaultProfileId;
+
   return {
     ...DEFAULT_ROTARY_CONFIG,
-    rotaryType: r.rotaryType === 'chuck' ? 'chuck' : 'roller',
-    accessoryProfileId: typeof r.accessoryProfileId === 'string' ? r.accessoryProfileId : DEFAULT_ROTARY_CONFIG.accessoryProfileId,
+    rotaryType,
+    accessoryProfileId: profileId,
     rotationDirection: r.rotationDirection === 'inverted' ? 'inverted' : 'normal',
     stepsPerRotation: ok(r.stepsPerRotation) && r.stepsPerRotation > 0 ? r.stepsPerRotation : undefined,
     objectDiameterMm: r.objectDiameterMm,
@@ -263,7 +283,9 @@ export function sanitizeRotaryConfig(raw: unknown): RotaryConfig | undefined {
     repeatCount: ok(r.repeatCount) ? r.repeatCount : undefined,
     axisOffsetMm: ok(r.axisOffsetMm) ? r.axisOffsetMm : undefined,
     angularOffsetDeg: ok(r.angularOffsetDeg) ? r.angularOffsetDeg : undefined,
-    rollerDiameterMm: ok(r.rollerDiameterMm) ? r.rollerDiameterMm : DEFAULT_ROTARY_CONFIG.rollerDiameterMm,
+    rollerDiameterMm: rotaryType === 'roller'
+      ? (ok(r.rollerDiameterMm) ? r.rollerDiameterMm : DEFAULT_ROTARY_CONFIG.rollerDiameterMm)
+      : undefined,
   };
 }
 
