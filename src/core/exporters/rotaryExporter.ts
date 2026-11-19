@@ -94,6 +94,10 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
     }
   }
 
+  if (engravePathCount === 0) {
+    throw new Error('No hay elementos de grabado visibles para exportar. Asegúrese de que el diseño contenga texto o gráficos activos.');
+  }
+
   const w = layout.canvasWidthMm;
   const h = layout.canvasHeightMm;
   const lines = [
@@ -101,6 +105,7 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
     `<!--`,
     `  ASTRA STUDIO — ARCHIVO ROTATIVO (ESCALA REAL 1:1 EN MM, SÓLO GRABADO)`,
     `  Máquina destino : Vank 9060 CO2 + accesorio rotativo (${config.rotaryType === 'roller' ? 'rodillos' : 'mandril'})`,
+    `  Sentido de giro : ${config.rotationDirection === 'inverted' ? 'Invertido' : 'Normal (+Y)'}`,
     `  Objeto          : ${layout.tapered ? `cónico Ø ${config.objectDiameterMm} → ${config.endDiameterMm} mm (referencia ${layout.referenceDiameterMm} mm)` : `Ø ${config.objectDiameterMm} mm`} (circunferencia ${layout.circumferenceMm} mm), arco ${config.arcDeg}°`,
     `  Copias          : ${layout.repeatCount}`,
     `  Lienzo          : ${w} mm (eje X, largo del objeto) x ${h} mm (eje Y, giro del objeto)`,
@@ -108,7 +113,7 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
     `-->`,
     `<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"`,
     `  width="${w}mm" height="${h}mm" viewBox="0 0 ${w} ${h}" version="1.1"`,
-    `  data-generator="Astra Studio rotary" data-units="mm" data-rotary-diameter-mm="${layout.referenceDiameterMm}" data-rotary-tapered="${layout.tapered}" data-rotary-arc-deg="${config.arcDeg}" data-rotary-copies="${layout.repeatCount}">`,
+    `  data-generator="Astra Studio rotary" data-units="mm" data-rotary-diameter-mm="${layout.referenceDiameterMm}" data-rotary-tapered="${layout.tapered}" data-rotary-arc-deg="${config.arcDeg}" data-rotary-copies="${layout.repeatCount}" data-rotary-direction="${config.rotationDirection || 'normal'}">`,
     `  <g id="CAPA_00_GRABADO" inkscape:groupmode="layer" inkscape:label="00_GRABADO" data-layer="ENGRAVE" data-lightburn-layer="00">`,
     ...nodes,
     `  </g>`,
@@ -181,6 +186,11 @@ export function exportRotaryDxf(design: LabelDesign, config: RotaryConfig): Rota
     }
   }
   pair(0, 'ENDSEC'); pair(0, 'EOF');
+
+  if (polylineCount === 0) {
+    throw new Error('No hay trazados vectoriales de grabado para exportar en DXF rotativo.');
+  }
+
   return {dxfContent: out.join('\n') + '\n', filename: `${rotaryBaseName(design, config, layout)}_RDWORKS.dxf`, polylineCount};
 }
 
@@ -190,6 +200,8 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
     '',
     `Diseño: ${design.name} (${design.widthMm} mm a lo largo del eje x ${design.heightMm} mm alrededor del objeto)`,
     `Tipo de rotativo: ${config.rotaryType === 'roller' ? 'rodillos' : 'mandril'}`,
+    `Sentido de giro: ${config.rotationDirection === 'inverted' ? 'Invertido' : 'Normal (+Y)'}`,
+    ...(config.accessoryProfileId ? [`Perfil de accesorio: ${config.accessoryProfileId}`] : []),
     layout.tapered
       ? `Objeto cónico: Ø ${config.objectDiameterMm} mm (X=0) → Ø ${config.endDiameterMm} mm (X=${config.usefulLengthMm}). CARGAR EN LA MÁQUINA: ${config.rotaryType === 'chuck' ? `Ø ${layout.referenceDiameterMm} mm del objeto (referencia)` : 'diámetro medido del rodillo motriz; el diámetro de referencia del dibujo no reemplaza al del rodillo'}. El arte ya está pre-compensado en Y.`
       : `Diámetro del objeto: ${config.objectDiameterMm} mm`,
@@ -206,6 +218,7 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
       ? `- Cargar el diámetro de los rodillos${config.rollerDiameterMm ? ` (referencia: ${config.rollerDiameterMm} mm)` : ''} y verificar los pasos por vuelta.`
       : `- Cargar el diámetro del objeto: ${layout.referenceDiameterMm} mm.`,
     config.rotaryType === 'roller' ? '- En rodillos, la escala depende del diámetro del rodillo motriz, no del diámetro del objeto.' : '- En mandril, la escala depende del diámetro del objeto.',
+    `- Sentido de giro: verificar que el texto avance en sentido ${config.rotationDirection === 'inverted' ? 'invertido' : 'normal'}. Si gira al revés, invertir la dirección del eje en Rotary Setup.`,
     '- Test de LightBurn: debe completar una vuelta del rodillo MOTRIZ o del MANDRIL y regresar. En rodillos no se mide la vuelta del objeto.',
     '- Estos valores son una ficha de configuración: Astra no configura ni mueve la máquina.',
     '- Potencia, velocidad e intervalo de línea: validar con una prueba sobre un objeto de descarte.',
@@ -250,4 +263,132 @@ export function exportRotaryGuideSvg(design: LabelDesign, config: RotaryConfig):
     `</svg>`,
   ].join('\n');
   return {svgContent: svg, filename: `${sanitizeName(design.name)}_ROTATIVO_GUIAS_ALINEACION_${w}x${h}mm.svg`};
+}
+
+export interface RotaryPatternArtifact {
+  svgContent: string;
+  instructionsText: string;
+  filename: string;
+  instructionsFilename: string;
+  targetSquareMm: number;
+  widthMm: number;
+  heightMm: number;
+}
+
+/**
+ * Genera un patrón SVG de prueba y calibración con dimensiones métricas conocidas (cuadrado patrón,
+ * retícula métrica, marcas cada 10 mm y flecha de sentido de giro +Y) para verificar escala con calibre.
+ */
+export function exportRotaryTestPatternSvg(
+  config: RotaryConfig,
+  targetSquareMm = 50
+): RotaryPatternArtifact {
+  const dummyDesign = { widthMm: targetSquareMm, heightMm: targetSquareMm };
+  const layout = computeRotaryLayout(config, dummyDesign);
+  const w = layout.canvasWidthMm;
+  const h = layout.canvasHeightMm;
+
+  const sq = roundMm(Math.min(targetSquareMm, Math.min(w * 0.75, h * 0.75)), 2);
+  const cx = roundMm(w / 2, 2);
+  const cy = roundMm(h / 2, 2);
+  const minX = roundMm(cx - sq / 2, 2);
+  const maxX = roundMm(cx + sq / 2, 2);
+  const minY = roundMm(cy - sq / 2, 2);
+  const maxY = roundMm(cy + sq / 2, 2);
+
+  const black = LIGHTBURN_LAYERS.ENGRAVE.hexColor;
+  const guideColor = LIGHTBURN_LAYERS.GUIDE.hexColor;
+
+  const tickLines: string[] = [];
+  for (let x = minX; x <= maxX + 0.01; x += 10) {
+    const rx = roundMm(x, 2);
+    tickLines.push(`<line x1="${rx}" y1="${maxY}" x2="${rx}" y2="${maxY + 2}" stroke="${black}" stroke-width="0.15" />`);
+  }
+  for (let y = minY; y <= maxY + 0.01; y += 10) {
+    const ry = roundMm(y, 2);
+    tickLines.push(`<line x1="${maxX}" y1="${ry}" x2="${maxX + 2}" y2="${ry}" stroke="${black}" stroke-width="0.15" />`);
+  }
+
+  const dirY = config.rotationDirection === 'inverted' ? -1 : 1;
+  const arrowY2 = dirY === 1 ? cy + 18 : cy + 6;
+  const arrowHead = dirY === 1
+    ? `${cx - 2} ${cy + 15} L ${cx} ${cy + 18} L ${cx + 2} ${cy + 15}`
+    : `${cx - 2} ${cy + 9} L ${cx} ${cy + 6} L ${cx + 2} ${cy + 9}`;
+
+  const nodes = [
+    `    <!-- Cuadrado patrón de calibración métrica ${sq} x ${sq} mm -->`,
+    `    <rect id="cuadrado_calibracion_${sq}mm" x="${minX}" y="${minY}" width="${sq}" height="${sq}" fill="none" stroke="${black}" stroke-width="0.2" />`,
+    `    <line id="cruz_h" x1="${minX}" y1="${cy}" x2="${maxX}" y2="${cy}" stroke="${black}" stroke-width="0.1" stroke-dasharray="1 0.5" />`,
+    `    <line id="cruz_v" x1="${cx}" y1="${minY}" x2="${cx}" y2="${maxY}" stroke="${black}" stroke-width="0.1" stroke-dasharray="1 0.5" />`,
+    ...tickLines.map(t => `    ${t}`),
+    `    <!-- Flecha de Sentido de Giro (+Y) -->`,
+    `    <line id="flecha_eje_y" x1="${cx}" y1="${cy + 6}" x2="${cx}" y2="${arrowY2}" stroke="${black}" stroke-width="0.25" />`,
+    `    <path id="punta_flecha_y" d="M ${arrowHead}" fill="none" stroke="${black}" stroke-width="0.25" />`,
+    `    <!-- Textos de referencia grabados -->`,
+    `    <text x="${cx}" y="${roundMm(minY - 2.5, 2)}" text-anchor="middle" font-family="monospace" font-size="2.6" font-weight="bold" fill="${black}">COTA X (AXIAL): ${sq.toFixed(2)} mm</text>`,
+    `    <text x="${cx}" y="${roundMm(cy - 3, 2)}" text-anchor="middle" font-family="monospace" font-size="2.6" font-weight="bold" fill="${black}">COTA Y (GIRO): ${sq.toFixed(2)} mm</text>`,
+    `    <text x="${cx}" y="${roundMm(cy + 3, 2)}" text-anchor="middle" font-family="monospace" font-size="2.0" fill="${black}">MEDIR Y CON CALIBRE</text>`,
+    `    <text x="${cx}" y="${roundMm(maxY + 6, 2)}" text-anchor="middle" font-family="monospace" font-size="2.2" font-weight="bold" fill="${black}">SENTIDO GIRO: ${config.rotationDirection === 'inverted' ? 'INVERTIDO' : 'NORMAL (+Y)'}</text>`,
+    `    <text x="${cx}" y="${roundMm(maxY + 10, 2)}" text-anchor="middle" font-family="monospace" font-size="1.8" fill="${black}">Ø OBJ: ${config.objectDiameterMm} mm | CIRC: ${layout.circumferenceMm} mm | Vank 9060</text>`,
+  ];
+
+  const guideNodes = [
+    `    <rect id="marco_lienzo" x="0" y="0" width="${w}" height="${h}" fill="none" stroke="${guideColor}" stroke-width="0.1" stroke-dasharray="2 1" />`,
+    `    <line id="linea_costura" x1="0" y1="0" x2="${w}" y2="0" stroke="${guideColor}" stroke-width="0.15" stroke-dasharray="3 2" />`,
+  ];
+
+  const svgContent = [
+    `<?xml version="1.0" encoding="UTF-8" standalone="no"?>`,
+    `<!--`,
+    `  ASTRA STUDIO — PATRÓN DE CALIBRACIÓN ROTATIVO (ESCALA REAL 1:1 EN MM)`,
+    `  Cota esperada en Y (giro): ${sq.toFixed(2)} mm | Cota esperada en X (axial): ${sq.toFixed(2)} mm`,
+    `  Instrucción: Grabe en cinta o material de prueba, mida con calibre la cota Y y cargue el valor en el asistente.`,
+    `-->`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}mm" height="${h}mm" viewBox="0 0 ${w} ${h}" version="1.1" data-units="mm">`,
+    `  <g id="CAPA_00_GRABADO" data-layer="ENGRAVE" data-lightburn-layer="00">`,
+    ...nodes,
+    `  </g>`,
+    `  <g id="GUIAS_T1" data-layer="GUIDE" data-lightburn-layer="T1">`,
+    ...guideNodes,
+    `  </g>`,
+    `</svg>`,
+  ].join('\n');
+
+  const baseName = `PATRON_CALIBRACION_ROTATIVO_${config.rotaryType.toUpperCase()}_${sq}mm_D${config.objectDiameterMm}mm`;
+
+  const instructionsText = [
+    'ASTRA STUDIO — GUÍA DE CALIBRACIÓN DEL ROTATIVO (Vank 9060 / Ruida RDC8445S)',
+    '=========================================================================',
+    '',
+    `Tipo de accesorio: ${config.rotaryType === 'roller' ? 'Rodillos (Roller)' : 'Mandril (Chuck)'}`,
+    `Diámetro del objeto probado: ${config.objectDiameterMm} mm`,
+    `Circunferencia calculada: ${layout.circumferenceMm} mm`,
+    `Cota de prueba cuadrada: ${sq.toFixed(2)} mm x ${sq.toFixed(2)} mm`,
+    `Sentido de giro configurado: ${config.rotationDirection === 'inverted' ? 'Invertido' : 'Normal (+Y)'}`,
+    '',
+    'PROCEDIMIENTO DE CALIBRACIÓN CON CALIBRE:',
+    '1. Pegue una tira de cinta de pintor (enmascarar) alrededor del objeto cilíndrico de descarte.',
+    '2. Enfoque el láser en el punto más alto del cilindro.',
+    '3. Importe el archivo SVG en LightBurn (o DXF en RDWorks) a escala 1:1.',
+    '4. Asigne baja potencia para marcar la cinta sin quemar el material subyacente.',
+    '5. Ejecute el grabado del patrón.',
+    '6. Con calibre digital, mida la distancia entre las líneas paralelas en el eje Y (giro del objeto).',
+    '7. COTA ESPERADA: ' + sq.toFixed(2) + ' mm.',
+    '8. Si la cota medida difiere de ' + sq.toFixed(2) + ' mm:',
+    '   - Abra el Asistente de Calibración en Astra Studio (pestaña Calibración con Calibre).',
+    '   - Ingrese el valor medido real (ej. 48.6 mm o 51.2 mm).',
+    '   - El software calculará los pasos corregidos por vuelta sin cálculos manuales.',
+    '   - Ingrese el nuevo valor en la ventana Rotary Setup de LightBurn o Ruida.',
+    '9. Verifique que la flecha grabada coincida con el sentido de giro real del objeto.',
+  ].join('\n') + '\n';
+
+  return {
+    svgContent,
+    instructionsText,
+    filename: `${baseName}.svg`,
+    instructionsFilename: `${baseName}_INSTRUCCIONES.txt`,
+    targetSquareMm: sq,
+    widthMm: w,
+    heightMm: h,
+  };
 }

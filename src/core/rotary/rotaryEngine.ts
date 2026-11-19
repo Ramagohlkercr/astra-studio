@@ -1,5 +1,9 @@
 import {Millimeters, LabelDesign} from '../types';
 import {roundMm} from '../geometry/geometryEngine';
+import {RotaryDirection, computeLinearCalibratedSteps} from './rotaryProfiles';
+
+export {computeLinearCalibratedSteps};
+export type {RotaryDirection};
 
 /**
  * Accesorio rotativo (Vank 9060 / Ruida RDC8445S).
@@ -12,6 +16,10 @@ export type RotaryType = 'roller' | 'chuck';
 
 export interface RotaryConfig {
   rotaryType: RotaryType;
+  /** ID del perfil de accesorio persistente (opcional) */
+  accessoryProfileId?: string;
+  /** Sentido de giro del eje Y: normal o invertido */
+  rotationDirection?: RotaryDirection;
   /** Pasos por vuelta del rodillo motriz o mandril, informados por el operador. */
   stepsPerRotation?: number;
   /** Diámetro del objeto (mm) en el extremo X=0; si no hay endDiameterMm, cilindro recto */
@@ -43,6 +51,8 @@ export interface RotaryPlacement {
 
 export const DEFAULT_ROTARY_CONFIG: RotaryConfig = {
   rotaryType: 'roller',
+  accessoryProfileId: 'vank-roller-standard',
+  rotationDirection: 'normal',
   objectDiameterMm: 75,
   usefulLengthMm: 100,
   arcDeg: 360,
@@ -107,16 +117,29 @@ export function rotaryCircumferenceMm(diameterMm: Millimeters): Millimeters {
   return roundMm(Math.PI * diameterMm);
 }
 
-export function computeRotaryLayout(config: RotaryConfig, design: Pick<LabelDesign, 'widthMm' | 'heightMm'>): RotaryLayout {
+export function computeRotaryLayout(
+  config: RotaryConfig,
+  design: Pick<LabelDesign, 'widthMm' | 'heightMm'> & { elements?: LabelDesign['elements'] }
+): RotaryLayout {
   const errors: string[] = [];
   const warnings: string[] = [];
   const finite = (v: number) => Number.isFinite(v);
+
+  if (Array.isArray(design.elements)) {
+    const hasVisible = design.elements.some((el) => el.visible);
+    if (!hasVisible) {
+      errors.push('El diseño no contiene elementos de grabado visibles para exportar al rotativo.');
+    }
+  }
 
   if (![config.objectDiameterMm, config.usefulLengthMm, config.arcDeg, config.machineBedWidthMm, design.widthMm, design.heightMm].every(finite)) {
     errors.push('Hay valores no numéricos en la configuración del rotativo.');
   }
   if (config.objectDiameterMm < MIN_OBJECT_DIAMETER_MM || config.objectDiameterMm > MAX_OBJECT_DIAMETER_MM) {
     errors.push(`El diámetro del objeto debe estar entre ${MIN_OBJECT_DIAMETER_MM} y ${MAX_OBJECT_DIAMETER_MM} mm.`);
+  }
+  if (config.objectDiameterMm > 250) {
+    warnings.push(`Diámetro elevado (${config.objectDiameterMm} mm): verifique la altura libre del eje Z en la Vank 9060 con el accesorio montado.`);
   }
   if (config.endDiameterMm !== undefined && (!finite(config.endDiameterMm) || config.endDiameterMm < MIN_OBJECT_DIAMETER_MM || config.endDiameterMm > MAX_OBJECT_DIAMETER_MM)) {
     errors.push(`El diámetro del extremo final debe estar entre ${MIN_OBJECT_DIAMETER_MM} y ${MAX_OBJECT_DIAMETER_MM} mm.`);
@@ -230,7 +253,9 @@ export function sanitizeRotaryConfig(raw: unknown): RotaryConfig | undefined {
   return {
     ...DEFAULT_ROTARY_CONFIG,
     rotaryType: r.rotaryType === 'chuck' ? 'chuck' : 'roller',
-    stepsPerRotation: ok(r.stepsPerRotation) && r.stepsPerRotation>0 ? r.stepsPerRotation : undefined,
+    accessoryProfileId: typeof r.accessoryProfileId === 'string' ? r.accessoryProfileId : DEFAULT_ROTARY_CONFIG.accessoryProfileId,
+    rotationDirection: r.rotationDirection === 'inverted' ? 'inverted' : 'normal',
+    stepsPerRotation: ok(r.stepsPerRotation) && r.stepsPerRotation > 0 ? r.stepsPerRotation : undefined,
     objectDiameterMm: r.objectDiameterMm,
     endDiameterMm: ok(r.endDiameterMm) ? r.endDiameterMm : undefined,
     usefulLengthMm: r.usefulLengthMm,
