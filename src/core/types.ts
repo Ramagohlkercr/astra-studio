@@ -344,7 +344,7 @@ export interface MaterialProfile {
 
 export interface NestingConfig {
   sharedCutLines?: boolean;
-  layoutMode?: 'sheet' | 'blocks' | '5x10' | '10x5' | '5x5';
+  layoutMode?: 'zero_waste' | 'sheet' | 'blocks' | '5x10' | '10x5' | '5x5';
   /** Cantidad total de etiquetas solicitadas en el pedido */
   requestedQuantity: number;
   /** Ancho de la mesa de la máquina en mm (Vank 9060 = 900 mm) */

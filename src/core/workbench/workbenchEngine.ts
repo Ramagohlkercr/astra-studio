@@ -1130,11 +1130,8 @@ export function analyzeStepMaterialSavings(
     : 0;
   const currentAdvanceCm = roundMm(currentAdvanceMm / 10, 1);
 
-  const maxColsInSheet = Math.max(1, nesting.maxColumnsPerSheet);
   const batchCount = batch?.count ?? nesting.config.requestedQuantity;
-  const lastRowCount = batchCount % maxColsInSheet;
-  const freeSlotsInLastRow =
-    lastRowCount === 0 ? 0 : Math.max(0, maxColsInSheet - lastRowCount);
+  const freeSlotsInLastRow = Math.max(0, currentCols * currentRows - batchCount);
   const freeWidthInLastRowMm = roundMm(
     freeSlotsInLastRow * (nesting.pieceWidthMm + nesting.config.gapXMm),
     1
@@ -1159,9 +1156,10 @@ export function analyzeStepMaterialSavings(
   const savedAdvanceCm = roundMm(savedAdvanceMm / 10, 1);
 
   const isAlreadyOptimal =
-    nesting.config.layoutMode === 'sheet' &&
+    (nesting.config.layoutMode === 'zero_waste' || nesting.config.layoutMode === 'sheet') &&
     nesting.config.marginLeftMm <= 2.1 &&
     nesting.config.gapXMm <= 0.51 &&
+    freeSlotsInLastRow === 0 &&
     savedAdvanceMm < 1.0;
 
   return {
@@ -1188,7 +1186,8 @@ export function analyzeStepMaterialSavings(
 export function buildOptimalSavingNestingConfig(
   design: LabelDesign,
   currentConfig: NestingConfig,
-  useSharedCutsIfPossible = false
+  useSharedCutsIfPossible = false,
+  targetMode: 'zero_waste' | 'sheet' = 'zero_waste'
 ): NestingConfig {
   const canShare =
     useSharedCutsIfPossible &&
@@ -1220,7 +1219,7 @@ export function buildOptimalSavingNestingConfig(
 
   return {
     ...currentConfig,
-    layoutMode: 'sheet',
+    layoutMode: targetMode,
     sharedCutLines: canShare,
     gapXMm: compactGap,
     gapYMm: compactGap,

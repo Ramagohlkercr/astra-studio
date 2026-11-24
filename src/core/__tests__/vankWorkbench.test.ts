@@ -552,4 +552,32 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     );
     expect(stepAnalysis.isAlreadyOptimal).toBe(true);
   });
+
+  it('12. Caso Real Captura 100 u. (20x10 mm): evita dejar 32 lugares vacíos en la 3ra fila (44x3) formando un rectángulo 100% lleno (0 lugares vacíos) dentro de los 73 cm', () => {
+    const design = sampleOrder.labelDesign; // 20 x 10 mm
+    const optCfg = buildOptimalSavingNestingConfig(
+      design,
+      {
+        ...sampleOrder.nestingConfig,
+        requestedQuantity: 100,
+        sheetWidthMm: 730,
+        sheetHeightMm: 600,
+      },
+      false,
+      'zero_waste'
+    );
+
+    const res = computeNestingLayout(design, optCfg);
+    const batch = res.batches[0];
+
+    expect(batch.count).toBe(100);
+    // 0 lugares vacíos en la última fila: columnsUsed * rowsUsed === 100 exactos
+    expect(batch.columnsUsed * batch.rowsUsed).toBe(100);
+    // Entra dentro del rollo de 73 cm (730 mm)
+    expect(batch.occupiedBounds.maxX).toBeLessThanOrEqual(730);
+    // El área del bloque es mucho menor que los 26706 mm2 del armado desbalanceado 44x3
+    const blockAreaMm2 =
+      batch.occupiedBounds.width * batch.occupiedBounds.height;
+    expect(blockAreaMm2).toBeLessThan(21500);
+  });
 });

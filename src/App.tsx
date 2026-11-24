@@ -227,9 +227,20 @@ export function App() {
   );
 
   const [labelDesign, setLabelDesign] = useState<LabelDesign>(initialOrder.labelDesign);
-  const [nestingConfig, setNestingConfig] = useState<NestingConfig>(
-    compatibleCutConfig(initialOrder.labelDesign, {...initialOrder.nestingConfig, layoutMode: initialOrder.nestingConfig.layoutMode ?? 'blocks'})
-  );
+  const [nestingConfig, setNestingConfig] = useState<NestingConfig>(() => {
+    const isInitialEco =
+      initialOrder.materialId === 'ECOCUERO_SUELA' ||
+      isEcocueroMaterial(initialOrder.materialProfileSnapshot);
+    const shouldNormalizeTo73cm =
+      isInitialEco && initialOrder.nestingConfig.sheetWidthMm === 900;
+    return compatibleCutConfig(initialOrder.labelDesign, {
+      ...initialOrder.nestingConfig,
+      sheetWidthMm: shouldNormalizeTo73cm
+        ? ECOCUERO_ROLL_WIDTH_MM
+        : initialOrder.nestingConfig.sheetWidthMm,
+      layoutMode: initialOrder.nestingConfig.layoutMode ?? 'blocks',
+    });
+  });
 
   // Navegación principal del Asistente de 6 pasos
   const [currentStep, setCurrentStep] = useState<WizardStepId>('logo');
@@ -2337,13 +2348,14 @@ export function App() {
                   <select aria-label="Distribución de etiquetas" value={nestingConfig.layoutMode ?? 'blocks'}
                     onChange={e => pushStateWithHistory(labelDesign, {...nestingConfig, layoutMode: e.target.value as NonNullable<typeof nestingConfig.layoutMode>})}
                     className="w-full bg-slate-900 border border-slate-700 p-2 rounded">
+                    <option value="zero_waste">Rectángulo exacto sin huecos (0 lugares vacíos)</option>
+                    <option value="sheet">Franja balanceada a lo ancho (Rollo 73 cm)</option>
+                    <option value="blocks">Automática según cantidad</option>
                     <option value="5x10">5 columnas × 10 filas</option>
                     <option value="10x5">10 columnas × 5 filas</option>
                     <option value="5x5">5 columnas × 5 filas</option>
-                    <option value="blocks">Automática según cantidad</option>
-                    <option value="sheet">Aprovechar ancho de plancha</option>
                   </select>
-                  <p className="text-xs text-slate-400">Las columnas van a lo ancho y las filas hacia abajo. Si la cantidad supera el bloque, se generan más tandas; si el material es pequeño, se adapta al espacio disponible.</p>
+                  <p className="text-xs text-slate-400">«Rectángulo exacto sin huecos» busca una grilla cerrada donde todas las filas tengan la misma cantidad de etiquetas (0 lugares vacíos en la última fila) para no desperdiciar ningún rincón del recorte.</p>
                 </label>
                 <label className="block rounded border border-cyan-900 bg-slate-900 p-3 space-y-2">
                   <span className="flex items-center gap-2"><input type="checkbox" aria-label="Corte por líneas compartidas" disabled={!supportsSharedCuts(labelDesign) || labelDesign.kerfCompensationMm!==0} checked={nestingConfig.sharedCutLines ?? false} onChange={e=>pushStateWithHistory(labelDesign,{...nestingConfig,sharedCutLines:e.target.checked,gapXMm:e.target.checked?0:0.1,gapYMm:e.target.checked?0:0.1})} />Corte por líneas compartidas</span>

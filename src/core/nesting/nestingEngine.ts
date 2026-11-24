@@ -185,9 +185,45 @@ export function computeNestingLayout(
     const remaining = totalToProduce - (globalIndex - 1);
     const batchCount = Math.min(maxCap, remaining);
 
-    // Calcular filas y columnas reales ocupadas en esta tanda
-    const colsInBatch = Math.min(maxCols, batchCount);
-    const rowsInBatch = Math.ceil(batchCount / maxCols);
+    // Calcular filas y columnas reales ocupadas en esta tanda sin dejar la última fila semi-vacía
+    let rowsInBatch = Math.ceil(batchCount / maxCols);
+    let colsInBatch = Math.min(maxCols, Math.ceil(batchCount / rowsInBatch));
+
+    if (config.layoutMode === 'zero_waste' && batchCount > 1) {
+      // Buscar la grilla (C x R) que minimice los lugares vacíos en la última fila (idealmente 0 vacíos = rectángulo 100% lleno)
+      // y dentro de las de mínimo desperdicio, la que tenga menor avance vertical R.
+      let bestC = colsInBatch;
+      let bestR = rowsInBatch;
+      let bestEmptySlots = bestC * bestR - batchCount;
+      let bestArea =
+        (bestC * pieceW + Math.max(0, bestC - 1) * config.gapXMm) *
+        (bestR * pieceH + Math.max(0, bestR - 1) * config.gapYMm);
+
+      const minR = Math.max(1, Math.ceil(batchCount / maxCols));
+      const maxSearchR = Math.min(maxRows, Math.max(minR + 8, Math.ceil(Math.sqrt(batchCount) * 2)));
+
+      for (let r = minR; r <= maxSearchR; r++) {
+        const c = Math.ceil(batchCount / r);
+        if (c > maxCols) continue;
+        const emptySlots = c * r - batchCount;
+        const w = c * pieceW + Math.max(0, c - 1) * config.gapXMm;
+        const h = r * pieceH + Math.max(0, r - 1) * config.gapYMm;
+        const area = w * h;
+
+        if (
+          emptySlots < bestEmptySlots ||
+          (emptySlots === bestEmptySlots && area < bestArea - 0.1)
+        ) {
+          bestC = c;
+          bestR = r;
+          bestEmptySlots = emptySlots;
+          bestArea = area;
+          if (bestEmptySlots === 0) break; // Encontramos el rectángulo exacto de menor avance vertical
+        }
+      }
+      colsInBatch = bestC;
+      rowsInBatch = bestR;
+    }
 
     const blockWidthMm = roundMm(
       colsInBatch * pieceW + Math.max(0, colsInBatch - 1) * config.gapXMm
@@ -211,8 +247,8 @@ export function computeNestingLayout(
     let maxY = -Infinity;
 
     for (let i = 0; i < batchCount; i++) {
-      const row = Math.floor(i / maxCols);
-      const col = i % maxCols;
+      const row = Math.floor(i / colsInBatch);
+      const col = i % colsInBatch;
 
       const xMm = roundMm(startXMm + col * (pieceW + config.gapXMm));
       const yMm = roundMm(startYMm + row * (pieceH + config.gapYMm));
