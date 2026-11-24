@@ -23,6 +23,15 @@ pub struct OpenLightBurnResponse {
     pub message: String,
 }
 
+#[derive(Serialize)]
+pub struct RuidaProbeResponse {
+    pub reachable: bool,
+    pub ip: String,
+    pub port: u16,
+    pub local_port_40200_free: bool,
+    pub message: String,
+}
+
 fn parse_ipv4(ip_str: &str) -> Result<Ipv4Addr, String> {
     ip_str
         .trim()
@@ -180,6 +189,51 @@ pub fn open_lbrn2_in_lightburn(
     Ok(OpenLightBurnResponse {
         saved_path: path_str,
         launched_lightburn: launched,
+        message,
+    })
+}
+
+/// Verifica conectividad de red hacia la IP de la Vank 9060 (192.168.0.195) y disponibilidad del socket UDP local 40200,
+/// sin enviar ningún paquete de movimiento ni comando láser a la controladora Ruida.
+#[tauri::command]
+pub fn probe_ruida_connection(ip: String, port: u16) -> Result<RuidaProbeResponse, String> {
+    let target_ip = parse_ipv4(&ip)?;
+    if port == 0 {
+        return Err("El puerto UDP de la Ruida debe ser mayor a 0 (estándar: 50200).".into());
+    }
+
+    let local_port_40200_free = UdpSocket::bind("0.0.0.0:40200").is_ok();
+
+    let ip_str = target_ip.to_string();
+    let ping_ok = Command::new("ping")
+        .args(["-c", "1", "-W", "1000", &ip_str])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let port_note = if local_port_40200_free {
+        "Puerto UDP local 40200 libre para envío directo."
+    } else {
+        "El puerto local 40200 está siendo usado por LightBurn (podés enviar directo con 'Abrir en LightBurn (.lbrn2)' o cerrar LightBurn para envío directo UDP)."
+    };
+
+    let message = if ping_ok {
+        format!(
+            "✓ Vank 9060 detectada en red ({}:{}). {}",
+            ip_str, port, port_note
+        )
+    } else {
+        format!(
+            "No hubo respuesta de ping desde {}:{}. Verificá que la Vank 9060 esté encendida y conectada a la misma red Wi-Fi / LAN. {}",
+            ip_str, port, port_note
+        )
+    };
+
+    Ok(RuidaProbeResponse {
+        reachable: ping_ok,
+        ip: ip_str,
+        port,
+        local_port_40200_free,
         message,
     })
 }

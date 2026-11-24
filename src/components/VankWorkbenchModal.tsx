@@ -181,7 +181,21 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   const [selectedJobId, setSelectedJobId] = useState<string | null>(
     () => workbenchJobs[0]?.id ?? null
   );
-  const [cameraView, setCameraView] = useState<'sheet' | 'machine' | 'occupied'>('sheet');
+  const [cameraView, setCameraView] = useState<
+    'tirada_roll' | 'occupied' | 'sheet' | 'machine'
+  >('tirada_roll');
+  const [canvasVisualMode, setCanvasVisualMode] = useState<
+    'technical_lightburn' | 'realistic_material'
+  >('technical_lightburn');
+  const [canvasZoom, setCanvasZoom] = useState<number>(1.0);
+  const [showSingleLabelLoupe, setShowSingleLabelLoupe] =
+    useState<boolean>(true);
+  const [isProbingRuida, setIsProbingRuida] = useState<boolean>(false);
+  const [ruidaProbeResult, setRuidaProbeResult] = useState<{
+    reachable: boolean;
+    localPortFree: boolean;
+    message: string;
+  } | null>(null);
   const [showSimulation, setShowSimulation] = useState<boolean>(false);
   const [isPlayingSim, setIsPlayingSim] = useState<boolean>(false);
   const [simProgress, setSimProgress] = useState<number>(100);
@@ -1138,29 +1152,130 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     }
   };
 
-  // Calcular ViewBox del SVG según la vista de cámara
-  let vbMinX = -28;
-  let vbMinY = -28;
-  let vbWidth = workbenchConfig.machineBedWidthMm + 48;
-  let vbHeight = workbenchConfig.machineBedHeightMm + 48;
+  // Probar alcance de red hacia la Vank 9060 (192.168.0.195:50200) sin mover el láser
+  const handleProbeRuidaConnection = async () => {
+    setIsProbingRuida(true);
+    setRuidaStatusMsg(null);
+    try {
+      const cleanIp = workbenchConfig.ruidaIpAddress.trim();
+      const ipv4Regex =
+        /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+      if (!ipv4Regex.test(cleanIp)) {
+        const msg = `Dirección IP inválida: "${cleanIp}". Debe tener formato IPv4 como 192.168.0.195.`;
+        setRuidaProbeResult({
+          reachable: false,
+          localPortFree: false,
+          message: msg,
+        });
+        setRuidaStatusMsg({ type: 'error', text: msg });
+        return;
+      }
 
-  if (cameraView === 'sheet') {
+      if (!isTauri()) {
+        const compiled = validateWorkbenchState(workbenchJobs, workbenchConfig);
+        const msg = `✓ Red lista hacia Vank 9060 (${cleanIp}:${workbenchConfig.ruidaPort}). Tirada preparada (${compiled.totalPieces} u. en ${rollMetrics.usedLengthCm} cm). Abrí la app nativa macOS para transmisión UDP directa o usá "Abrir en LightBurn (.lbrn2)" / "Guardar .RD".`;
+        setRuidaProbeResult({
+          reachable: true,
+          localPortFree: true,
+          message: msg,
+        });
+        setRuidaStatusMsg({ type: 'info', text: msg });
+        onNotify(msg);
+        return;
+      }
+
+      const res = await invoke<{
+        reachable: boolean;
+        ip: string;
+        port: number;
+        local_port_40200_free: boolean;
+        message: string;
+      }>('probe_ruida_connection', {
+        ip: cleanIp,
+        port: workbenchConfig.ruidaPort,
+      });
+
+      setRuidaProbeResult({
+        reachable: res.reachable,
+        localPortFree: res.local_port_40200_free,
+        message: res.message,
+      });
+      setRuidaStatusMsg({
+        type: res.reachable ? 'success' : 'error',
+        text: res.message,
+      });
+      onNotify(res.message);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setRuidaProbeResult({
+        reachable: false,
+        localPortFree: false,
+        message: msg,
+      });
+      setRuidaStatusMsg({ type: 'error', text: msg });
+    } finally {
+      setIsProbingRuida(false);
+    }
+  };
+
+  // Calcular ViewBox del SVG según la vista de cámara + zoom interactivo
+  let baseMinX = -28;
+  let baseMinY = -28;
+  let baseWidth = workbenchConfig.machineBedWidthMm + 48;
+  let baseHeight = workbenchConfig.machineBedHeightMm + 48;
+
+  if (cameraView === 'tirada_roll') {
+    // Vista inteligente de tirada activa sobre el ancho del rollo de 73 cm:
+    // Muestra de punta a punta el ancho del rollo (730 mm) pero recorta el espacio muerto inferior
+    // para que las etiquetas se vean más de 3 veces más grandes y nítidas.
+    const padX = 18;
+    const padTop = 16;
+    const activeUsedH = Math.max(45, rollMetrics.usedLengthMm || 60);
+    const visibleSheetH = Math.min(
+      workbenchConfig.sheetHeightMm,
+      Math.max(120, activeUsedH + 35)
+    );
+    baseMinX = workbenchConfig.sheetOffsetXMm - padX;
+    baseMinY = workbenchConfig.sheetOffsetYMm - padTop;
+    baseWidth = workbenchConfig.sheetWidthMm + padX * 2;
+    baseHeight = visibleSheetH + padTop + 16;
+  } else if (cameraView === 'sheet') {
     const pad = Math.max(
       22,
       Math.max(workbenchConfig.sheetWidthMm, workbenchConfig.sheetHeightMm) * 0.06
     );
-    vbMinX = workbenchConfig.sheetOffsetXMm - pad;
-    vbMinY = workbenchConfig.sheetOffsetYMm - pad;
-    vbWidth = workbenchConfig.sheetWidthMm + pad * 2;
-    vbHeight = workbenchConfig.sheetHeightMm + pad * 2;
+    baseMinX = workbenchConfig.sheetOffsetXMm - pad;
+    baseMinY = workbenchConfig.sheetOffsetYMm - pad;
+    baseWidth = workbenchConfig.sheetWidthMm + pad * 2;
+    baseHeight = workbenchConfig.sheetHeightMm + pad * 2;
   } else if (cameraView === 'occupied' && validation.occupiedBoundsMm) {
     const ob = validation.occupiedBoundsMm;
-    const pad = Math.max(15, Math.max(ob.width, ob.height) * 0.1);
-    vbMinX = ob.minX - pad;
-    vbMinY = ob.minY - pad;
-    vbWidth = ob.width + pad * 2;
-    vbHeight = ob.height + pad * 2;
+    const padX = Math.max(12, ob.width * 0.04);
+    const padY = Math.max(12, ob.height * 0.18);
+    baseMinX = ob.minX - padX;
+    baseMinY = ob.minY - padY;
+    baseWidth = ob.width + padX * 2;
+    baseHeight = ob.height + padY * 2;
   }
+
+  const safeZoom = Math.max(0.75, Math.min(8, canvasZoom));
+  const vbWidth = roundMm(baseWidth / safeZoom, 2);
+  const vbHeight = roundMm(baseHeight / safeZoom, 2);
+  // Al hacer zoom, enfocamos hacia el centro superior de la tirada activa
+  const focusCenterX = validation.occupiedBoundsMm
+    ? (validation.occupiedBoundsMm.minX + validation.occupiedBoundsMm.maxX) / 2
+    : baseMinX + baseWidth / 2;
+  const focusCenterY = validation.occupiedBoundsMm
+    ? (validation.occupiedBoundsMm.minY + validation.occupiedBoundsMm.maxY) / 2
+    : baseMinY + baseHeight / 3;
+  const vbMinX = roundMm(
+    safeZoom === 1 ? baseMinX : focusCenterX - vbWidth / 2,
+    2
+  );
+  const vbMinY = roundMm(
+    safeZoom === 1 ? baseMinY : focusCenterY - vbHeight / 2,
+    2
+  );
 
   const machineHomeCoords = useMemo(() => {
     const w = workbenchConfig.machineBedWidthMm;
@@ -1306,39 +1421,31 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
       {/* 2. CUERPO PRINCIPAL: LIENZO 900x600 MM + DOCKS LATERALES ESTILO LIGHTBURN */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* ÁREA IZQUIERDA/CENTRAL: MESA DE TRABAJO Y SIMULADOR */}
+        {/* ÁREA IZQUIERDA/CENTRAL: MESA DE TRABAJO, LUPA 1:1 Y SIMULADOR */}
         <div className="flex-1 flex flex-col bg-[#080b10] relative min-w-0 overflow-hidden">
-          {/* Sub-barra de vista de cámara y reproductor de simulación */}
+          {/* Sub-barra de vista de cámara, zoom interactivo, modo visual y simulador */}
           <div className="min-h-10 py-1.5 bg-[#0e131b] border-b border-slate-800/90 px-3 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
             <div className="flex flex-wrap items-center gap-1">
-              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mr-0.5">
-                Vista:
-              </span>
               <button
                 type="button"
-                onClick={() => setCameraView('sheet')}
-                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
-                  cameraView === 'sheet'
-                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                onClick={() => {
+                  setCameraView('tirada_roll');
+                  setCanvasZoom(1.0);
+                }}
+                className={`px-2 py-1 rounded text-[11px] font-bold transition whitespace-nowrap ${
+                  cameraView === 'tirada_roll'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                Rollo/Plancha ({workbenchConfig.sheetWidthMm}×{workbenchConfig.sheetHeightMm} mm)
+                🔍 Tirada en Rollo 73 cm
               </button>
               <button
                 type="button"
-                onClick={() => setCameraView('machine')}
-                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
-                  cameraView === 'machine'
-                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                    : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
-                }`}
-              >
-                Mesa Vank 900×600
-              </button>
-              <button
-                type="button"
-                onClick={() => setCameraView('occupied')}
+                onClick={() => {
+                  setCameraView('occupied');
+                  setCanvasZoom(1.0);
+                }}
                 className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
                   cameraView === 'occupied'
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
@@ -1347,10 +1454,104 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               >
                 Enfocar Tirada
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCameraView('sheet');
+                  setCanvasZoom(1.0);
+                }}
+                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
+                  cameraView === 'sheet'
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                    : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+                }`}
+              >
+                Plancha ({workbenchConfig.sheetWidthMm}×{workbenchConfig.sheetHeightMm})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCameraView('machine');
+                  setCanvasZoom(1.0);
+                }}
+                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
+                  cameraView === 'machine'
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                    : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+                }`}
+              >
+                Mesa 900×600
+              </button>
+
+              {/* Controles de Zoom Interactivo */}
+              <div className="flex items-center bg-slate-900 border border-slate-800 rounded px-1 py-0.5 ml-1 gap-1">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCanvasZoom((z) => roundMm(Math.max(0.75, z / 1.35), 2))
+                  }
+                  className="px-1.5 py-0.2 rounded hover:bg-slate-800 text-slate-300 font-mono font-bold"
+                  title="Alejar vista"
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCanvasZoom(1.0)}
+                  className="px-1.5 py-0.2 rounded hover:bg-slate-800 text-cyan-300 font-mono text-[10px] font-bold"
+                  title="Restablecer zoom 100%"
+                >
+                  {Math.round(canvasZoom * 100)}%
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCanvasZoom((z) => roundMm(Math.min(8, z * 1.35), 2))
+                  }
+                  className="px-1.5 py-0.2 rounded hover:bg-slate-800 text-slate-300 font-mono font-bold"
+                  title="Acercar vista para ver etiquetas en grande"
+                >
+                  +
+                </button>
+              </div>
             </div>
 
-            {/* Controles del Simulador de Recorrido (Preview LightBurn) */}
-            <div className="flex flex-wrap items-center gap-2">
+            {/* Selector de Estilo Visual + Lupa 1:1 + Simulador */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  setCanvasVisualMode(
+                    canvasVisualMode === 'technical_lightburn'
+                      ? 'realistic_material'
+                      : 'technical_lightburn'
+                  )
+                }
+                className={`px-2 py-1 rounded text-[11px] font-bold border transition whitespace-nowrap ${
+                  canvasVisualMode === 'technical_lightburn'
+                    ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
+                    : 'bg-amber-950/60 border-amber-700/60 text-amber-200'
+                }`}
+                title="Alternar entre Vista Técnica LightBurn (Alto Contraste C00/C01/C02) y Textura Realista de Material"
+              >
+                {canvasVisualMode === 'technical_lightburn'
+                  ? '🎨 Vista LightBurn (Alto Contraste)'
+                  : '🪵 Textura Material'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowSingleLabelLoupe(!showSingleLabelLoupe)}
+                className={`px-2 py-1 rounded text-[11px] font-bold border transition whitespace-nowrap ${
+                  showSingleLabelLoupe
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                }`}
+                title="Mostrar u ocultar ventana flotante con 1 etiqueta ampliada en detalle 1:1"
+              >
+                🔬 Lupa 1 Etiqueta
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
@@ -1396,9 +1597,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       setSimProgress(Number(e.target.value));
                     }}
                     aria-label="Progreso de simulación láser"
-                    className="w-20 accent-cyan-400 cursor-pointer"
+                    className="w-16 accent-cyan-400 cursor-pointer"
                   />
-                  <span className="font-mono text-[10px] text-cyan-300 w-8 text-right">
+                  <span className="font-mono text-[10px] text-cyan-300 w-7 text-right">
                     {Math.round(simProgress)}%
                   </span>
                 </div>
@@ -1420,15 +1621,27 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             </div>
           </div>
 
-          {/* LIENZO INTERACTIVO SVG DE LA MESA 900x600 MM */}
-          <div className="flex-1 relative overflow-hidden flex items-center justify-center p-3">
+          {/* LIENZO INTERACTIVO SVG DE LA MESA 900x600 MM CON ZOOM Y ENCUADRE LÁSER */}
+          <div className="flex-1 relative overflow-hidden flex items-center justify-center p-2">
             <svg
               ref={svgRef}
               viewBox={`${vbMinX} ${vbMinY} ${vbWidth} ${vbHeight}`}
               onPointerMove={handleSvgPointerMove}
               onPointerUp={handleSvgPointerUp}
+              onWheel={(e) => {
+                e.preventDefault();
+                const factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
+                setCanvasZoom((z) =>
+                  roundMm(Math.max(0.75, Math.min(8, z * factor)), 2)
+                );
+              }}
               className="w-full h-full max-h-full select-none"
-              style={{ background: '#06080c' }}
+              style={{
+                background:
+                  canvasVisualMode === 'technical_lightburn'
+                    ? '#090d14'
+                    : '#06080c',
+              }}
             >
               <defs>
                 <pattern
@@ -1440,7 +1653,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   <path
                     d="M 10 0 L 0 0 0 10"
                     fill="none"
-                    stroke="#1e293b"
+                    stroke={
+                      canvasVisualMode === 'technical_lightburn'
+                        ? '#1e293b'
+                        : '#162032'
+                    }
                     strokeWidth="0.25"
                   />
                 </pattern>
@@ -1454,7 +1671,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   <path
                     d="M 50 0 L 0 0 0 50"
                     fill="none"
-                    stroke="#334155"
+                    stroke={
+                      canvasVisualMode === 'technical_lightburn'
+                        ? '#334155'
+                        : '#283548'
+                    }
                     strokeWidth="0.45"
                   />
                 </pattern>
@@ -1463,7 +1684,13 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   .filter((j) => j.visible)
                   .map((job, jobIndex) => {
                     const isSelected = selectedJob?.id === job.id;
-                    const jobColors = ['#22d3ee', '#34d399', '#fbbf24', '#a78bfa', '#f472b6'];
+                    const jobColors = [
+                      '#22d3ee',
+                      '#34d399',
+                      '#fbbf24',
+                      '#a78bfa',
+                      '#f472b6',
+                    ];
                     const jobAccentColor = jobColors[jobIndex % jobColors.length];
                     const master = compileLabelGeometry(job.labelDesign, {
                       offsetXMm: 0,
@@ -1471,6 +1698,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       rotated90: job.blockRotationDeg === 90,
                       instanceIdPrefix: `master_${job.id}`,
                     });
+                    const isTech = canvasVisualMode === 'technical_lightburn';
                     return (
                       <g key={`def-${job.id}`} id={`wb-master-${job.id}`}>
                         <rect
@@ -1478,8 +1706,12 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                           y={0}
                           width={master.effectiveCutWidthMm}
                           height={master.effectiveCutHeightMm}
-                          fill={material.visual.surfaceColor}
-                          fillOpacity={0.68}
+                          fill={
+                            isTech
+                              ? '#f1f5f9'
+                              : material.visual.surfaceColor
+                          }
+                          fillOpacity={isTech ? 0.92 : 0.72}
                           stroke={isSelected ? jobAccentColor : undefined}
                           strokeWidth={isSelected ? '0.35' : undefined}
                         />
@@ -1490,10 +1722,12 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                                 <path
                                   key={eng.id}
                                   d={eng.svgPathD}
-                                  fill={eng.filled ? '#111827' : 'none'}
+                                  fill={eng.filled ? '#090d14' : 'none'}
                                   fillRule={eng.fillRule || 'evenodd'}
-                                  stroke="#111827"
-                                  strokeWidth={eng.filled ? 0.05 : eng.strokeWidthMm || 0.25}
+                                  stroke="#090d14"
+                                  strokeWidth={
+                                    eng.filled ? 0.05 : eng.strokeWidthMm || 0.25
+                                  }
                                 />
                               );
                             }
@@ -1518,9 +1752,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                             <path
                               key={hole.id}
                               d={hole.svgPathD}
-                              fill="#090c10"
+                              fill={isTech ? '#dbeafe' : '#090c10'}
                               stroke="#2563eb"
-                              strokeWidth="0.35"
+                              strokeWidth="0.45"
                             />
                           ))}
                         {(!cutLayerCfg || cutLayerCfg.visible) &&
@@ -1529,7 +1763,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                               d={master.outerCutContour.svgPathD}
                               fill="none"
                               stroke="#ef4444"
-                              strokeWidth="0.45"
+                              strokeWidth="0.55"
                             />
                           )}
                       </g>
@@ -1612,7 +1846,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   width={workbenchConfig.sheetWidthMm}
                   height={workbenchConfig.sheetHeightMm}
                   fill={material.visual.surfaceColor}
-                  fillOpacity={0.22}
+                  fillOpacity={
+                    canvasVisualMode === 'technical_lightburn' ? 0.14 : 0.28
+                  }
                   stroke="#38bdf8"
                   strokeWidth="0.9"
                 />
@@ -1650,50 +1886,51 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     <g pointerEvents="none">
                       <line
                         x1={workbenchConfig.sheetOffsetXMm}
-                        y1={workbenchConfig.sheetOffsetYMm + rollMetrics.usedLengthMm}
+                        y1={
+                          workbenchConfig.sheetOffsetYMm + rollMetrics.usedLengthMm
+                        }
                         x2={
                           workbenchConfig.sheetOffsetXMm +
                           workbenchConfig.sheetWidthMm
                         }
-                        y2={workbenchConfig.sheetOffsetYMm + rollMetrics.usedLengthMm}
+                        y2={
+                          workbenchConfig.sheetOffsetYMm + rollMetrics.usedLengthMm
+                        }
                         stroke="#10b981"
-                        strokeWidth="0.7"
+                        strokeWidth="0.9"
                         strokeDasharray="4 2"
                       />
-                      <text
-                        x={
-                          workbenchConfig.sheetOffsetXMm +
-                          workbenchConfig.sheetWidthMm -
-                          4
-                        }
+                      <rect
+                        x={workbenchConfig.sheetOffsetXMm + 4}
                         y={
                           workbenchConfig.sheetOffsetYMm +
                           rollMetrics.usedLengthMm +
-                          5
+                          2
                         }
-                        textAnchor="end"
-                        fill="#34d399"
-                        fontSize="4.6"
+                        width={295}
+                        height={8}
+                        rx={1.5}
+                        fill="#064e3b"
+                        fillOpacity={0.92}
+                        stroke="#10b981"
+                        strokeWidth="0.35"
+                      />
+                      <text
+                        x={workbenchConfig.sheetOffsetXMm + 8}
+                        y={
+                          workbenchConfig.sheetOffsetYMm +
+                          rollMetrics.usedLengthMm +
+                          7.4
+                        }
+                        fill="#6ee7b7"
+                        fontSize="4.2"
                         fontFamily="monospace"
                         fontWeight="bold"
                       >
-                        ▲ AVANCE DE ROLLO EN ESTA TIRADA: {rollMetrics.usedLengthCm} cm ({rollMetrics.usedLengthMm} mm) · Restan {rollMetrics.remainingRollLengthCm} cm de 5 m
+                        ✂ CORTE DE TIRADA: {rollMetrics.usedLengthCm} cm ({rollMetrics.usedLengthMm} mm) · Restan {rollMetrics.remainingRollLengthCm} cm de 5 m
                       </text>
                     </g>
                   )}
-
-                <text
-                  x={workbenchConfig.sheetOffsetXMm + 4}
-                  y={workbenchConfig.sheetOffsetYMm + workbenchConfig.sheetHeightMm - 3}
-                  fill="#38bdf8"
-                  fontSize="4.8"
-                  fontFamily="monospace"
-                  opacity={0.85}
-                >
-                  {workbenchConfig.sheetWidthMm === 730
-                    ? `ROLLO ECOCUERO 73 CM × 5 M (Tirada activa en mesa: 730×${workbenchConfig.sheetHeightMm} mm)`
-                    : `PLANCHA: ${material.name} (${workbenchConfig.sheetWidthMm}×${workbenchConfig.sheetHeightMm} mm)`}
-                </text>
               </g>
 
               {/* 3. TRABAJOS POSICIONADOS EN LA PLANCHA / ROLLO */}
@@ -1701,7 +1938,13 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 .filter((j) => j.visible)
                 .map((job, jobIndex) => {
                   const isSelected = selectedJob?.id === job.id;
-                  const jobColors = ['#22d3ee', '#34d399', '#fbbf24', '#a78bfa', '#f472b6'];
+                  const jobColors = [
+                    '#22d3ee',
+                    '#34d399',
+                    '#fbbf24',
+                    '#a78bfa',
+                    '#f472b6',
+                  ];
                   const jobAccentColor = jobColors[jobIndex % jobColors.length];
                   const isContinuousFlow = (job.firstRowIndentMm ?? 0) > 0;
                   const firstInst = job.instances[0];
@@ -1775,7 +2018,44 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   );
                 })}
 
-              {/* 4. SUPERPOSICIÓN DEL SIMULADOR DE RECORRIDO LÁSER */}
+              {/* 4. MARCO DE ENCUADRE LÁSER (FRAME / BOUNDING BOX) Y COTAS AUTOMÁTICAS */}
+              {validation.occupiedBoundsMm && (
+                <g pointerEvents="none">
+                  <rect
+                    x={validation.occupiedBoundsMm.minX - 1.2}
+                    y={validation.occupiedBoundsMm.minY - 1.2}
+                    width={validation.occupiedBoundsMm.width + 2.4}
+                    height={validation.occupiedBoundsMm.height + 2.4}
+                    fill="none"
+                    stroke="#22c55e"
+                    strokeWidth="0.65"
+                    strokeDasharray="3 1.5"
+                  />
+                  <rect
+                    x={validation.occupiedBoundsMm.minX}
+                    y={Math.max(-13, validation.occupiedBoundsMm.minY - 8.5)}
+                    width={245}
+                    height={6.5}
+                    rx={1.2}
+                    fill="#052e16"
+                    fillOpacity={0.92}
+                    stroke="#22c55e"
+                    strokeWidth="0.35"
+                  />
+                  <text
+                    x={validation.occupiedBoundsMm.minX + 3}
+                    y={Math.max(-8.5, validation.occupiedBoundsMm.minY - 4)}
+                    fill="#86efac"
+                    fontSize="3.8"
+                    fontFamily="monospace"
+                    fontWeight="bold"
+                  >
+                    📐 ENCUADRE LÁSER (FRAME): {validation.occupiedBoundsMm.width} × {validation.occupiedBoundsMm.height} mm ({roundMm(validation.occupiedBoundsMm.width / 10, 1)} × {roundMm(validation.occupiedBoundsMm.height / 10, 1)} cm)
+                  </text>
+                </g>
+              )}
+
+              {/* 5. SUPERPOSICIÓN DEL SIMULADOR DE RECORRIDO LÁSER */}
               {showSimulation && simulation.segments.length > 0 && (
                 <g id="workbench-toolpath-simulation" pointerEvents="none">
                   {simulation.segments.map((seg) => {
@@ -1849,7 +2129,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 </g>
               )}
 
-              {/* 5. INDICADOR DE HOME DE MÁQUINA RUIDA (Círculo Rojo) */}
+              {/* 6. INDICADOR DE HOME DE MÁQUINA RUIDA (Círculo Rojo) */}
               <g
                 transform={`translate(${machineHomeCoords.x}, ${machineHomeCoords.y})`}
                 pointerEvents="none"
@@ -1863,40 +2143,131 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 <circle r="1.3" fill="#ef4444" />
               </g>
 
-              {/* 6. INDICADOR DE ORIGEN DEL TRABAJO (Cuadrado Verde estilo LightBurn) */}
+              {/* 7. INDICADOR DE ORIGEN DEL TRABAJO (Cuadrado Verde Brillante estilo LightBurn) */}
               <g
                 transform={`translate(${validation.jobOriginPointMm.x}, ${validation.jobOriginPointMm.y})`}
                 pointerEvents="none"
               >
+                <circle
+                  r="6"
+                  fill="rgba(34, 197, 94, 0.22)"
+                  stroke="#22c55e"
+                  strokeWidth="0.5"
+                />
                 <rect
                   x={-2.8}
                   y={-2.8}
                   width={5.6}
                   height={5.6}
                   fill="#22c55e"
-                  fillOpacity={0.85}
+                  fillOpacity={0.95}
                   stroke="#ffffff"
-                  strokeWidth="0.5"
+                  strokeWidth="0.6"
                 />
               </g>
             </svg>
 
-            {/* Leyenda inferior flotante estilo LightBurn */}
-            <div className="absolute bottom-3 left-4 bg-[#11161f]/90 border border-slate-800 rounded-lg px-3 py-1.5 flex flex-wrap items-center gap-3 text-[11px] text-slate-300 backdrop-blur-sm">
+            {/* VENTANA FLOTANTE DE LUPA 1:1 (DETALLE DE 1 ETIQUETA Y CAPAS C00/C01/C02 EN GRANDE) */}
+            {showSingleLabelLoupe && selectedJob && (
+              <div className="absolute bottom-12 right-3 w-72 bg-[#0d121c]/95 border border-cyan-500/50 rounded-xl shadow-2xl p-2.5 space-y-2 backdrop-blur-md">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-1">
+                  <span className="text-[11px] font-extrabold text-cyan-300 flex items-center gap-1">
+                    <span>🔬 Lupa 1:1 — {selectedJob.labelDesign.widthMm}×{selectedJob.labelDesign.heightMm} mm</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowSingleLabelLoupe(false)}
+                    className="text-slate-400 hover:text-white text-[10px] px-1"
+                    title="Cerrar lupa"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* SVG ampliado de 1 sola etiqueta del trabajo seleccionado */}
+                <div className="h-24 bg-[#070a0f] rounded-lg border border-slate-800 flex items-center justify-center p-1.5">
+                  <svg
+                    viewBox={`-2 -2 ${
+                      (selectedJob.blockRotationDeg === 90
+                        ? selectedJob.labelDesign.heightMm
+                        : selectedJob.labelDesign.widthMm) + 4
+                    } ${
+                      (selectedJob.blockRotationDeg === 90
+                        ? selectedJob.labelDesign.widthMm
+                        : selectedJob.labelDesign.heightMm) + 4
+                    }`}
+                    className="w-full h-full"
+                  >
+                    <use href={`#wb-master-${selectedJob.id}`} x={0} y={0} />
+                  </svg>
+                </div>
+
+                {/* Resumen visual de cómo se va a grabar y cortar esta etiqueta en la Vank 9060 */}
+                <div className="space-y-1 text-[10px] font-mono">
+                  {sortedLayers.map((l) => (
+                    <div
+                      key={`loupe-layer-${l.cutIndex}`}
+                      className="flex items-center justify-between bg-slate-900/90 px-2 py-0.5 rounded border border-slate-800"
+                    >
+                      <span className="flex items-center gap-1.5 text-slate-200 font-bold">
+                        <span
+                          className="w-2.5 h-2.5 rounded-sm inline-block border border-white/40"
+                          style={{ backgroundColor: l.hexColor }}
+                        />
+                        <span>
+                          {l.code}{' '}
+                          {l.role === 'ENGRAVE'
+                            ? 'Grabado'
+                            : l.role === 'HOLES'
+                              ? 'Orificios'
+                              : 'Corte'}
+                        </span>
+                      </span>
+                      <span
+                        className={
+                          l.speedMmPerSec && l.maxPowerPercent
+                            ? 'text-emerald-300 font-bold'
+                            : 'text-amber-400'
+                        }
+                      >
+                        {l.speedMmPerSec && l.maxPowerPercent
+                          ? `${l.speedMmPerSec} mm/s · ${l.maxPowerPercent}%${
+                              l.mode !== 'line' ? ` · ${l.lineIntervalMm}mm` : ''
+                            }`
+                          : 'Sin calibrar'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Leyenda inferior flotante con guía de puntero láser y encuadre */}
+            <div className="absolute bottom-2.5 left-3 bg-[#11161f]/95 border border-slate-700 rounded-lg px-3 py-1.5 flex flex-wrap items-center gap-3 text-[11px] text-slate-200 backdrop-blur-sm shadow-lg">
               <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block border border-white/60" />
+                <span className="w-3 h-3 rounded-sm bg-emerald-500 inline-block border border-white" />
                 <span>
-                  Origen ({validation.jobOriginPointMm.x},{' '}
-                  {validation.jobOriginPointMm.y} mm)
+                  <strong>Puntero Láser (Origin):</strong>{' '}
+                  {JOB_ORIGIN_ANCHORS.find(
+                    (a) => a.id === workbenchConfig.jobOriginAnchor
+                  )?.label ?? workbenchConfig.jobOriginAnchor}{' '}
+                  ({validation.jobOriginPointMm.x}, {validation.jobOriginPointMm.y}{' '}
+                  mm)
                 </span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" />
-                <span>Home ({workbenchConfig.machineOriginCorner})</span>
-              </div>
+              {validation.occupiedBoundsMm && (
+                <>
+                  <span className="text-slate-500">•</span>
+                  <span className="text-cyan-300 font-mono font-bold">
+                    Encuadre (Frame):{' '}
+                    {roundMm(validation.occupiedBoundsMm.width / 10, 1)} ×{' '}
+                    {roundMm(validation.occupiedBoundsMm.height / 10, 1)} cm
+                  </span>
+                </>
+              )}
               <span className="text-slate-500">•</span>
-              <span className="text-emerald-300 font-mono">
-                Avance tirada: {rollMetrics.usedLengthCm} cm de 500 cm (5 m)
+              <span className="text-emerald-300 font-mono font-bold">
+                Rollo usado: {rollMetrics.usedLengthCm} cm de 500 cm
               </span>
             </div>
           </div>
@@ -3217,59 +3588,127 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   </div>
                 </div>
 
-                {/* Dispositivo Vank 9060 (192.168.0.195) + Nombre de archivo */}
-                <div className="grid grid-cols-3 gap-2 p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs">
-                  <label className="col-span-1">
-                    <span className="text-[10px] text-slate-400 block">
-                      Dispositivo / IP Vank 9060
+                {/* Dispositivo Vank 9060 (192.168.0.195) + Prueba de Conexión en Vivo */}
+                <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-cyan-300 flex items-center gap-1.5">
+                      <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Conexión Red LAN / Wi-Fi con Vank 9060</span>
                     </span>
-                    <input
-                      type="text"
-                      value={workbenchConfig.ruidaIpAddress}
-                      onChange={(e) =>
-                        onUpdateConfig({
-                          ...workbenchConfig,
-                          ruidaIpAddress: e.target.value,
-                        })
-                      }
-                      placeholder="192.168.0.195"
-                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-cyan-300"
-                    />
-                  </label>
-                  <label className="col-span-1">
-                    <span className="text-[10px] text-slate-400 block">
-                      Puerto UDP Ruida
-                    </span>
-                    <input
-                      type="number"
-                      value={workbenchConfig.ruidaPort}
-                      onChange={(e) =>
-                        onUpdateConfig({
-                          ...workbenchConfig,
-                          ruidaPort: Number(e.target.value) || 50200,
-                        })
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-slate-300"
-                    />
-                  </label>
-                  <label className="col-span-1">
-                    <span className="text-[10px] text-slate-400 block">
-                      Nombre de archivo
-                    </span>
-                    <input
-                      type="text"
-                      maxLength={8}
-                      value={workbenchConfig.ruidaJobName}
-                      onChange={(e) =>
-                        onUpdateConfig({
-                          ...workbenchConfig,
-                          ruidaJobName: e.target.value.toUpperCase(),
-                        })
-                      }
-                      placeholder="ASTRA01"
-                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-emerald-300 uppercase"
-                    />
-                  </label>
+                    <button
+                      type="button"
+                      disabled={isProbingRuida}
+                      onClick={() => void handleProbeRuidaConnection()}
+                      className="px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-bold text-[10px] shadow"
+                    >
+                      {isProbingRuida
+                        ? 'Probando red...'
+                        : `🔌 Probar Conexión (${workbenchConfig.ruidaIpAddress})`}
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="col-span-1">
+                      <span className="text-[10px] text-slate-400 block">
+                        IP Vank 9060
+                      </span>
+                      <input
+                        type="text"
+                        value={workbenchConfig.ruidaIpAddress}
+                        onChange={(e) =>
+                          onUpdateConfig({
+                            ...workbenchConfig,
+                            ruidaIpAddress: e.target.value,
+                          })
+                        }
+                        placeholder="192.168.0.195"
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-cyan-300 font-bold"
+                      />
+                    </label>
+                    <label className="col-span-1">
+                      <span className="text-[10px] text-slate-400 block">
+                        Puerto UDP Ruida
+                      </span>
+                      <input
+                        type="number"
+                        value={workbenchConfig.ruidaPort}
+                        onChange={(e) =>
+                          onUpdateConfig({
+                            ...workbenchConfig,
+                            ruidaPort: Number(e.target.value) || 50200,
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-slate-300"
+                      />
+                    </label>
+                    <label className="col-span-1">
+                      <span className="text-[10px] text-slate-400 block">
+                        Nombre en Vank
+                      </span>
+                      <input
+                        type="text"
+                        maxLength={8}
+                        value={workbenchConfig.ruidaJobName}
+                        onChange={(e) =>
+                          onUpdateConfig({
+                            ...workbenchConfig,
+                            ruidaJobName: e.target.value.toUpperCase(),
+                          })
+                        }
+                        placeholder="ASTRA01"
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-emerald-300 uppercase font-bold"
+                      />
+                    </label>
+                  </div>
+
+                  {/* Guía rápida de preparación física en la Vank 9060 */}
+                  <div className="p-2 rounded bg-slate-950/90 border border-slate-800/90 space-y-1 text-[10px] text-slate-300">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-emerald-300">
+                        Pasos en la máquina antes de darle Start:
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUpdateConfig({
+                            ...workbenchConfig,
+                            startFromMode: 'user_origin',
+                            jobOriginAnchor: 'top_right',
+                            machineOriginCorner: 'top_right',
+                          });
+                          onNotify(
+                            'Origen configurado igual a tu LightBurn: Iniciar desde Origen del usuario · Origen del trabajo Superior Derecha.'
+                          );
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 font-semibold"
+                      >
+                        Usar Origen Superior Derecha (LightBurn)
+                      </button>
+                    </div>
+                    <div>
+                      1. Posicioná el puntero láser rojo en la esquina{' '}
+                      <strong className="text-white">
+                        {JOB_ORIGIN_ANCHORS.find(
+                          (a) => a.id === workbenchConfig.jobOriginAnchor
+                        )?.label ?? workbenchConfig.jobOriginAnchor}
+                      </strong>{' '}
+                      del rollo de Ecocuero de 73 cm y apretá{' '}
+                      <strong className="text-amber-300">ORIGIN</strong> en el panel de la Vank.
+                    </div>
+                    <div>
+                      2. Enviá el trabajo a{' '}
+                      <strong className="text-cyan-300">
+                        {workbenchConfig.ruidaIpAddress}
+                      </strong>{' '}
+                      (o abrilo en LightBurn con 1 clic) y presioná{' '}
+                      <strong className="text-emerald-300">FRAME</strong> para verificar el rectángulo de{' '}
+                      <strong className="text-white">
+                        {validation.occupiedBoundsMm
+                          ? `${roundMm(validation.occupiedBoundsMm.width / 10, 1)} × ${roundMm(validation.occupiedBoundsMm.height / 10, 1)} cm`
+                          : '0 × 0 cm'}
+                      </strong>.
+                    </div>
+                  </div>
                 </div>
 
                 {validation.issues.length > 0 && (
@@ -3477,6 +3916,102 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </div>
             )}
           </div>
+          )}
+
+          {/* DOCK FIJO INFERIOR DE CONEXIÓN Y ENVÍO RÁPIDO A VANK 9060 (SIEMPRE A MANO) */}
+          {(sidebarView === 'layers' || sidebarView === 'jobs') && (
+            <div className="sticky bottom-0 z-20 mt-auto bg-[#0f1520]/95 backdrop-blur border-t border-slate-700 p-2.5 space-y-2 text-xs shadow-2xl">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full ${
+                      ruidaProbeResult?.reachable
+                        ? 'bg-emerald-400 animate-pulse'
+                        : validation.isValidForMachineSend
+                          ? 'bg-cyan-400'
+                          : 'bg-amber-400'
+                    }`}
+                  />
+                  <span className="font-bold text-white text-[11px]">
+                    Vank 9060 ({workbenchConfig.ruidaIpAddress}:{workbenchConfig.ruidaPort})
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={isProbingRuida}
+                    onClick={() => void handleProbeRuidaConnection()}
+                    className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-cyan-300 font-bold text-[10px]"
+                  >
+                    {isProbingRuida ? 'Probando...' : '🔌 Probar Red'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSidebarView('laser')}
+                    className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 text-[10px]"
+                  >
+                    Ajustar Origen
+                  </button>
+                </div>
+              </div>
+
+              {ruidaStatusMsg && (
+                <div
+                  className={`p-1.5 rounded border text-[10px] leading-tight ${
+                    ruidaStatusMsg.type === 'success'
+                      ? 'bg-emerald-950/70 border-emerald-700 text-emerald-200'
+                      : ruidaStatusMsg.type === 'error'
+                        ? 'bg-red-950/70 border-red-700 text-red-200'
+                        : 'bg-cyan-950/70 border-cyan-700 text-cyan-200'
+                  }`}
+                >
+                  {ruidaStatusMsg.text}
+                </div>
+              )}
+
+              <label className="flex items-center gap-1.5 text-[10px] text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={safetyConfirmed}
+                  onChange={(e) => setSafetyConfirmed(e.target.checked)}
+                  className="accent-emerald-500"
+                />
+                <span>
+                  Confirmo foco Z, extracción/chiller encendidos y parámetros validados
+                </span>
+              </label>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  disabled={!validation.isValidForMachineSend || isSendingToRuida}
+                  onClick={() => void handleSendToVankRuida()}
+                  className="py-2 px-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-extrabold text-[11px] flex items-center justify-center gap-1 shadow"
+                >
+                  <Send className="w-3.5 h-3.5 shrink-0" />
+                  <span>Enviar a Vank</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!validation.isValidForExport}
+                  onClick={() => void handleOpenOrSaveLbrn2(true)}
+                  className="py-2 px-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white font-bold text-[11px] flex items-center justify-center gap-1 shadow"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                  <span>Abrir LightBurn</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!validation.isValidForMachineSend}
+                  onClick={handleDownloadRdFile}
+                  className="py-2 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-emerald-300 font-bold text-[11px] flex items-center justify-center gap-1"
+                >
+                  <Download className="w-3.5 h-3.5 shrink-0" />
+                  <span>Guardar .RD</span>
+                </button>
+              </div>
+            </div>
           )}
         </aside>
       </div>

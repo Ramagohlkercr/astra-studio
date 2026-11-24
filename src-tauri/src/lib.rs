@@ -6,7 +6,8 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       logo_storage::save_logo_files,
       ruida_transport::upload_rd_to_ruida,
-      ruida_transport::open_lbrn2_in_lightburn
+      ruida_transport::open_lbrn2_in_lightburn,
+      ruida_transport::probe_ruida_connection
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
