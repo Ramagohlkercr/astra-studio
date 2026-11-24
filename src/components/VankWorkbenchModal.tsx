@@ -117,6 +117,7 @@ interface VankWorkbenchModalProps {
   ordersCatalog: OrderProject[];
   workbenchConfig: WorkbenchConfig;
   workbenchJobs: WorkbenchJobItem[];
+  initialSidebarView?: 'all' | 'layers' | 'jobs' | 'laser';
   onUpdateConfig: (next: WorkbenchConfig) => void;
   onUpdateJobs: (next: WorkbenchJobItem[]) => void;
   onSaveMaterialParameters: (updatedMaterial: MaterialProfile) => void;
@@ -166,6 +167,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   ordersCatalog,
   workbenchConfig,
   workbenchJobs,
+  initialSidebarView = 'all',
   onUpdateConfig,
   onUpdateJobs,
   onSaveMaterialParameters,
@@ -173,6 +175,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   onNotify,
   onClose,
 }) => {
+  const [sidebarView, setSidebarView] = useState<
+    'all' | 'layers' | 'jobs' | 'laser'
+  >(initialSidebarView);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(
     () => workbenchJobs[0]?.id ?? null
   );
@@ -1226,20 +1231,44 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
           </div>
         </div>
 
-        {/* Botonera rápida de inserción multi-trabajo en plancha */}
+        {/* Botonera rápida de inserción multi-trabajo y acceso directo a calibración de capas */}
         <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setSidebarView('layers')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-extrabold shadow transition-colors whitespace-nowrap border ${
+              sidebarView === 'layers'
+                ? 'bg-orange-500 text-slate-950 border-orange-300'
+                : 'bg-orange-600/90 hover:bg-orange-500 text-white border-orange-400/60'
+            }`}
+            title="Ir directo a calibrar Velocidad (mm/s), Potencia (%) e Intervalo (mm/DPI) de las 3 capas C00, C01 y C02"
+          >
+            <Sliders className="w-3.5 h-3.5 shrink-0" />
+            <span>⚡ Calibrar Velocidad y Potencia (Capas)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowCalibrationMatrixModal(true)}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/60 text-amber-300 text-xs font-bold whitespace-nowrap"
+            title="Abrir Generador de Matriz de Prueba de Potencia × Velocidad"
+          >
+            <FlaskConical className="w-3.5 h-3.5 shrink-0" />
+            <span>🧪 Matriz Vel × Pot</span>
+          </button>
+
           <button
             type="button"
             disabled={isUploadingLogos}
             onClick={() => multiLogoInputRef.current?.click()}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow transition-colors whitespace-nowrap"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow transition-colors whitespace-nowrap"
             title="Seleccionar varios archivos de logos (PNG, JPG o SVG) para combinarlos en la misma tirada"
           >
             <Upload className="w-3.5 h-3.5 shrink-0" />
             <span>
               {isUploadingLogos
                 ? 'Cargando logos...'
-                : '+ Subir Varios Logos a la Tirada'}
+                : '+ Subir Varios Logos'}
             </span>
           </button>
 
@@ -1250,7 +1279,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             title="Agregar el diseño actual del editor a la tirada"
           >
             <Plus className="w-3.5 h-3.5 shrink-0" />
-            <span>+ Sumar Diseño Actual</span>
+            <span>+ Sumar Diseño</span>
           </button>
 
           <button
@@ -1261,20 +1290,8 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             title="Activar Ahorro Extremo: Flujo continuo sin huecos entre logos, margen 2 mm, separación 0.5 mm y rotación óptima"
           >
             <Sparkles className="w-3.5 h-3.5 shrink-0" />
-            <span>🔥 Ahorro Extremo {roundMm(workbenchConfig.sheetWidthMm / 10, 1)} cm</span>
+            <span>🔥 Ahorro {roundMm(workbenchConfig.sheetWidthMm / 10, 1)} cm</span>
           </button>
-
-          {rollMetrics.freeSlotsInLastRow > 0 && (
-            <button
-              type="button"
-              onClick={handleFillLastRowFreeSlots}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-950 hover:bg-emerald-900 border border-emerald-500/70 text-emerald-300 text-xs font-bold transition-colors whitespace-nowrap"
-              title="Rellenar los lugares vacíos de la última fila sin gastar ni 1 mm adicional de rollo"
-            >
-              <Plus className="w-3.5 h-3.5 shrink-0" />
-              <span>Completar Fila (+{rollMetrics.freeSlotsInLastRow} u. gratis)</span>
-            </button>
-          )}
 
           <button
             type="button"
@@ -1885,15 +1902,711 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
           </div>
         </div>
 
-        {/* PANEL LATERAL DERECHO: ROLLO 73CM + MULTI-TRABAJO + CAPAS + CONTROL VANK 9060 */}
-        <aside className="w-[420px] xl:w-[475px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0 divide-y divide-slate-800">
-          {/* SECCIÓN 1: ROLLO ECOCUERO 73 CM × 5 M Y TIRADA MULTI-TRABAJO */}
+        {/* PANEL LATERAL DERECHO: CAPAS ARRIBA DEL TODO + ROLLO 73CM + CONTROL VANK 9060 */}
+        <aside className="w-[450px] xl:w-[520px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0 divide-y divide-slate-800">
+          {/* BARRA DE NAVEGACIÓN FIJA (STICKY) PARA ENCONTRAR TODO EN 1 CLIC */}
+          <div className="sticky top-0 z-20 bg-[#111621]/95 backdrop-blur border-b border-slate-800 p-2 grid grid-cols-4 gap-1 text-[11px]">
+            <button
+              type="button"
+              onClick={() => setSidebarView('layers')}
+              className={`py-1.5 px-2 rounded-lg font-extrabold flex items-center justify-center gap-1 border transition ${
+                sidebarView === 'layers'
+                  ? 'bg-orange-500 text-slate-950 border-orange-300 shadow'
+                  : 'bg-slate-900 hover:bg-slate-800 text-orange-300 border-orange-500/40'
+              }`}
+            >
+              <span>⚡ 1. Capas (Vel/Pot)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSidebarView('jobs')}
+              className={`py-1.5 px-2 rounded-lg font-bold flex items-center justify-center gap-1 border transition ${
+                sidebarView === 'jobs'
+                  ? 'bg-amber-500 text-slate-950 border-amber-300 shadow'
+                  : 'bg-slate-900 hover:bg-slate-800 text-amber-300 border-slate-700'
+              }`}
+            >
+              <span>📐 2. Rollo 73cm</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSidebarView('laser')}
+              className={`py-1.5 px-2 rounded-lg font-bold flex items-center justify-center gap-1 border transition ${
+                sidebarView === 'laser'
+                  ? 'bg-emerald-500 text-slate-950 border-emerald-300 shadow'
+                  : 'bg-slate-900 hover:bg-slate-800 text-emerald-300 border-slate-700'
+              }`}
+            >
+              <span>🚀 3. Enviar Vank</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSidebarView('all')}
+              className={`py-1.5 px-2 rounded-lg font-bold flex items-center justify-center gap-1 border transition ${
+                sidebarView === 'all'
+                  ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow'
+                  : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+            >
+              <span>Ver Todo</span>
+            </button>
+          </div>
+
+          {/* =====================================================================
+              SECCIÓN 1 (ARRIBA DEL TODO): CALIBRACIÓN DE VELOCIDAD Y POTENCIA
+              DE LAS 3 CAPAS (C00 GRABADO · C01 ORIFICIOS · C02 CORTE EXTERIOR)
+             ===================================================================== */}
+          {(sidebarView === 'all' || sidebarView === 'layers') && (
+            <div className="p-3.5 space-y-3 bg-[#0b0f16]">
+              {/* Cabecera clara estilo LightBurn */}
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-gradient-to-r from-orange-950/60 via-slate-900 to-orange-600/25 border border-orange-500/40 rounded-lg px-3 py-2">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <Sliders className="w-4 h-4 text-orange-400 shrink-0" />
+                    <h3 className="text-xs font-extrabold uppercase tracking-wide text-white">
+                      1. Calibrar Velocidad y Potencia de las 3 Capas
+                    </h3>
+                  </div>
+                  <p className="text-[10px] text-slate-300 mt-0.5">
+                    Acá tenés las 3 capas (<strong className="text-white">C00 Grabado</strong>,{' '}
+                    <strong className="text-sky-300">C01 Orificios</strong> y{' '}
+                    <strong className="text-red-300">C02 Corte</strong>) abiertas al mismo tiempo para editar directo.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowCalibrationMatrixModal(true)}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-extrabold shadow"
+                  >
+                    <FlaskConical className="w-3.5 h-3.5" />
+                    <span>🧪 Matriz de Prueba (Vel × Pot)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSyncFromMaterial}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-200 border border-slate-700 font-semibold"
+                  >
+                    Cargar de {material.code}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveLayersToMaterial}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-[10px] text-white font-bold shadow"
+                  >
+                    <Save className="w-3 h-3" />
+                    <span>Guardar en {material.code}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Botón de 1 Clic para cargar la calibración exacta de tu captura LightBurn Vank 9060 */}
+              <button
+                type="button"
+                onClick={() => {
+                  const nextLayers = workbenchConfig.layers.map((l) => {
+                    if (l.cutIndex === 0) {
+                      return {
+                        ...l,
+                        mode: 'image' as LightBurnCutMode,
+                        speedMmPerSec: 600,
+                        maxPowerPercent: 30,
+                        minPowerPercent: 30,
+                        lineIntervalMm: 0.073,
+                        passes: 1,
+                        airAssist: true,
+                        operatorValidated: true,
+                      };
+                    }
+                    return {
+                      ...l,
+                      mode: 'line' as LightBurnCutMode,
+                      speedMmPerSec: 100,
+                      maxPowerPercent: 100,
+                      minPowerPercent: 100,
+                      passes: 1,
+                      airAssist: true,
+                      operatorValidated: true,
+                    };
+                  });
+                  onUpdateConfig({ ...workbenchConfig, layers: nextLayers });
+                  onNotify(
+                    '✓ Calibración LightBurn Vank 9060 aplicada a todas las capas: C00 Grabado 600 mm/s · 30% · Int. 0.073 mm (348 DPI) | C01 y C02 Corte 100 mm/s · 100%.'
+                  );
+                }}
+                className="w-full py-2 px-3 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/70 text-emerald-200 text-[11px] font-bold flex items-center justify-between gap-2 shadow transition"
+              >
+                <span>
+                  ⚡ Cargar Preset de tu LightBurn Vank 9060 (C00: 600/30 · 0.073mm | C01 y C02: 100/100)
+                </span>
+                <span className="px-2 py-0.5 rounded bg-emerald-500 text-slate-950 font-extrabold text-[10px] shrink-0">
+                  Aplicar en 1 Clic
+                </span>
+              </button>
+
+              {/* LAS 3 TARJETAS DE CAPAS SIEMPRE ABIERTAS Y EDITABLES AL MISMO TIEMPO */}
+              <div className="space-y-2.5">
+                {sortedLayers.map((layer, idx) => {
+                  const isEngraveLayer = layer.role === 'ENGRAVE';
+                  const isHolesLayer = layer.role === 'HOLES';
+                  const isCutLayer = layer.role === 'CUT';
+                  const isMissingParams =
+                    layer.outputEnabled &&
+                    (layer.speedMmPerSec === null ||
+                      layer.speedMmPerSec <= 0 ||
+                      layer.maxPowerPercent === null ||
+                      layer.maxPowerPercent <= 0);
+
+                  const roleTitle = isEngraveLayer
+                    ? 'CAPA C00 (NEGRO) — GRABADO DEL LOGO'
+                    : isHolesLayer
+                      ? 'CAPA C01 (AZUL) — CORTE DE ORIFICIOS / COSTURA'
+                      : 'CAPA C02 (ROJO) — CORTE DEL CONTORNO EXTERIOR';
+
+                  const roleBorderColor = isEngraveLayer
+                    ? 'border-slate-600 bg-slate-900/95'
+                    : isHolesLayer
+                      ? 'border-blue-500/60 bg-blue-950/20'
+                      : 'border-red-500/60 bg-red-950/20';
+
+                  return (
+                    <div
+                      key={layer.cutIndex}
+                      onClick={() => setSelectedLayerCutIndex(layer.cutIndex)}
+                      className={`p-3 rounded-xl border-2 space-y-2.5 text-xs transition ${roleBorderColor} ${
+                        isMissingParams ? 'ring-1 ring-amber-500/70' : ''
+                      }`}
+                    >
+                      {/* FILA 1: TÍTULO DE LA CAPA + MODO (IMAGEN / RELLENO / LÍNEA) + SWITCHES SALIDA/AIRE */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="w-6 h-6 rounded-md font-mono text-xs font-extrabold flex items-center justify-center border border-white/40 shadow"
+                            style={{
+                              backgroundColor: layer.hexColor,
+                              color: '#ffffff',
+                            }}
+                          >
+                            {layer.cutIndex.toString().padStart(2, '0')}
+                          </span>
+                          <div>
+                            <div className="font-extrabold text-white text-xs tracking-wide">
+                              {roleTitle}
+                            </div>
+                            <div className="text-[10px] font-mono text-slate-300">
+                              Orden #{idx + 1} ·{' '}
+                              {layer.speedMmPerSec !== null &&
+                              layer.maxPowerPercent !== null ? (
+                                <span className="text-emerald-300 font-bold">
+                                  {layer.speedMmPerSec} mm/s · {layer.maxPowerPercent}%
+                                  {layer.mode !== 'line'
+                                    ? ` · Int. ${layer.lineIntervalMm} mm (${Math.round(
+                                        25.4 / Math.max(0.02, layer.lineIntervalMm)
+                                      )} DPI)`
+                                    : ''}
+                                </span>
+                              ) : (
+                                <span className="text-amber-300 font-bold">
+                                  ⚠ Ingresá Velocidad y Potencia abajo
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={idx === 0}
+                            onClick={() =>
+                              handleMoveLayerPriority(layer.cutIndex, 'up')
+                            }
+                            title="Subir prioridad (ejecutar antes)"
+                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-200"
+                          >
+                            <ArrowUp className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={idx === sortedLayers.length - 1}
+                            onClick={() =>
+                              handleMoveLayerPriority(layer.cutIndex, 'down')
+                            }
+                            title="Bajar prioridad (ejecutar después)"
+                            className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-200"
+                          >
+                            <ArrowDown className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Si es C01 Orificios, botón rápido para copiar la misma velocidad y potencia de C02 Corte */}
+                      {isHolesLayer && cutLayerCfg && (
+                        <div className="flex items-center justify-between bg-slate-950/70 px-2.5 py-1.5 rounded-lg border border-blue-800/50">
+                          <span className="text-[10px] text-slate-300">
+                            ¿Usás la misma velocidad y potencia que en el corte exterior?
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (
+                                cutLayerCfg.speedMmPerSec !== null ||
+                                cutLayerCfg.maxPowerPercent !== null
+                              ) {
+                                handleUpdateLayer(layer.cutIndex, {
+                                  speedMmPerSec: cutLayerCfg.speedMmPerSec,
+                                  maxPowerPercent: cutLayerCfg.maxPowerPercent,
+                                  minPowerPercent: cutLayerCfg.minPowerPercent,
+                                  passes: cutLayerCfg.passes,
+                                  airAssist: cutLayerCfg.airAssist,
+                                });
+                                onNotify(
+                                  'Velocidad y potencia de C02 Corte copiadas a C01 Orificios.'
+                                );
+                              }
+                            }}
+                            className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-bold text-[10px]"
+                          >
+                            🔗 Copiar de C02 Corte
+                          </button>
+                        </div>
+                      )}
+
+                      {/* FILA 2: LOS 4 CAMPOS PRINCIPALES GRANDES Y VISIBLES (MODO · VELOCIDAD · POTENCIA MÁX · POTENCIA MÍN) */}
+                      <div className="grid grid-cols-4 gap-2">
+                        <label className="block">
+                          <span className="text-[10px] font-bold text-cyan-300 block mb-0.5">
+                            Modo LightBurn
+                          </span>
+                          <select
+                            aria-label={`Modo de capa ${layer.code}`}
+                            value={layer.mode}
+                            onChange={(e) =>
+                              handleUpdateLayer(layer.cutIndex, {
+                                mode: e.target.value as LightBurnCutMode,
+                              })
+                            }
+                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white font-bold"
+                          >
+                            <option value="image">Imagen</option>
+                            <option value="fill">Relleno (Fill)</option>
+                            <option value="line">Línea (Corte)</option>
+                            <option value="offset_fill">Relleno Offset</option>
+                          </select>
+                        </label>
+
+                        <label className="block">
+                          <span className="text-[10px] font-bold text-emerald-300 block mb-0.5">
+                            Velocidad (mm/s)
+                          </span>
+                          <input
+                            type="number"
+                            min={0.1}
+                            max={1000}
+                            step={1}
+                            aria-label={`Velocidad ${layer.code}`}
+                            placeholder={isEngraveLayer ? 'Ej: 600' : 'Ej: 100'}
+                            value={layer.speedMmPerSec ?? ''}
+                            onChange={(e) => {
+                              const val =
+                                e.target.value === ''
+                                  ? null
+                                  : Number(e.target.value);
+                              handleUpdateLayer(layer.cutIndex, {
+                                speedMmPerSec: val,
+                              });
+                            }}
+                            className={`w-full bg-slate-950 border-2 rounded-lg px-2 py-1 text-sm font-mono font-extrabold ${
+                              layer.speedMmPerSec === null ||
+                              layer.speedMmPerSec <= 0
+                                ? 'border-amber-500 text-amber-200'
+                                : 'border-emerald-500/70 text-white'
+                            }`}
+                          />
+                        </label>
+
+                        <label className="block">
+                          <span className="text-[10px] font-bold text-amber-300 block mb-0.5">
+                            Potencia Máx (%)
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step={0.5}
+                            aria-label={`Potencia máxima ${layer.code}`}
+                            placeholder={isEngraveLayer ? 'Ej: 30' : 'Ej: 100'}
+                            value={layer.maxPowerPercent ?? ''}
+                            onChange={(e) => {
+                              const val =
+                                e.target.value === ''
+                                  ? null
+                                  : Number(e.target.value);
+                              handleUpdateLayer(layer.cutIndex, {
+                                maxPowerPercent: val,
+                                minPowerPercent:
+                                  layer.minPowerPercent === null && val !== null
+                                    ? val
+                                    : layer.minPowerPercent,
+                              });
+                            }}
+                            className={`w-full bg-slate-950 border-2 rounded-lg px-2 py-1 text-sm font-mono font-extrabold ${
+                              layer.maxPowerPercent === null ||
+                              layer.maxPowerPercent <= 0
+                                ? 'border-amber-500 text-amber-200'
+                                : 'border-amber-500/70 text-white'
+                            }`}
+                          />
+                        </label>
+
+                        <label className="block">
+                          <span className="text-[10px] font-bold text-slate-300 block mb-0.5">
+                            Potencia Mín (%)
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            step={0.5}
+                            aria-label={`Potencia mínima ${layer.code}`}
+                            placeholder={isEngraveLayer ? 'Ej: 30' : 'Ej: 100'}
+                            value={layer.minPowerPercent ?? ''}
+                            onChange={(e) => {
+                              const val =
+                                e.target.value === ''
+                                  ? null
+                                  : Number(e.target.value);
+                              handleUpdateLayer(layer.cutIndex, {
+                                minPowerPercent: val,
+                              });
+                            }}
+                            className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-sm font-mono font-bold text-white"
+                          />
+                        </label>
+                      </div>
+
+                      {/* FILA 3: PARÁMETROS ESPECÍFICOS DE GRABADO (INTERVALO 0.073mm / DPI / TRAMADO) O DE CORTE (PASADAS / KERF / OVERCUT) */}
+                      {layer.mode !== 'line' ? (
+                        <div className="p-2 rounded-lg bg-slate-950/90 border border-slate-800 space-y-2">
+                          <div className="grid grid-cols-4 gap-2">
+                            <label className="block">
+                              <span className="text-[10px] font-bold text-cyan-300 block">
+                                Intervalo (mm)
+                              </span>
+                              <input
+                                type="number"
+                                min={0.02}
+                                max={1.0}
+                                step={0.001}
+                                aria-label={`Intervalo ${layer.code}`}
+                                value={layer.lineIntervalMm}
+                                onChange={(e) => {
+                                  const val = Math.max(
+                                    0.02,
+                                    Math.min(1.0, Number(e.target.value) || 0.073)
+                                  );
+                                  handleUpdateLayer(layer.cutIndex, {
+                                    lineIntervalMm: roundMm(val, 3),
+                                  });
+                                }}
+                                className="w-full bg-slate-900 border border-cyan-500/60 rounded px-2 py-1 font-mono text-xs text-cyan-300 font-bold"
+                              />
+                            </label>
+
+                            <label className="block">
+                              <span className="text-[10px] font-bold text-slate-300 block">
+                                Pasadas
+                              </span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={20}
+                                step={1}
+                                aria-label={`Pasadas ${layer.code}`}
+                                value={layer.passes}
+                                onChange={(e) =>
+                                  handleUpdateLayer(layer.cutIndex, {
+                                    passes: Math.max(
+                                      1,
+                                      Number(e.target.value) || 1
+                                    ),
+                                  })
+                                }
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-white"
+                              />
+                            </label>
+
+                            <label className="block">
+                              <span className="text-[10px] text-slate-400 block">
+                                Tramado Imagen
+                              </span>
+                              <select
+                                value={layer.imageDitherMode ?? 'jarvis'}
+                                onChange={(e) =>
+                                  handleUpdateLayer(layer.cutIndex, {
+                                    imageDitherMode:
+                                      e.target.value as LightBurnImageDitherMode,
+                                  })
+                                }
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-white"
+                              >
+                                <option value="threshold">Umbral</option>
+                                <option value="jarvis">Jarvis</option>
+                                <option value="stucki">Stucki</option>
+                                <option value="halftone">Semitono</option>
+                                <option value="grayscale">Escala grises</option>
+                              </select>
+                            </label>
+
+                            <label className="block">
+                              <span className="text-[10px] text-slate-400 block">
+                                Overscan (%)
+                              </span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={20}
+                                step={0.5}
+                                value={layer.overscanPercent ?? 2.5}
+                                onChange={(e) =>
+                                  handleUpdateLayer(layer.cutIndex, {
+                                    overscanPercent: Math.max(
+                                      0,
+                                      Number(e.target.value) || 0
+                                    ),
+                                  })
+                                }
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-white"
+                              />
+                            </label>
+                          </div>
+
+                          {/* Botones rápidos de intervalo (0.073mm = 348 DPI) y switches de grabado */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/80">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="text-[10px] text-slate-400">
+                                Intervalos:
+                              </span>
+                              {[
+                                { mm: 0.073, label: '0.073 mm (348 DPI)' },
+                                { mm: 0.08, label: '0.080 mm (318 DPI)' },
+                                { mm: 0.1, label: '0.100 mm (254 DPI)' },
+                              ].map((p) => (
+                                <button
+                                  key={p.mm}
+                                  type="button"
+                                  onClick={() =>
+                                    handleUpdateLayer(layer.cutIndex, {
+                                      lineIntervalMm: p.mm,
+                                    })
+                                  }
+                                  className={`px-1.5 py-0.5 rounded font-mono text-[10px] border ${
+                                    Math.abs(layer.lineIntervalMm - p.mm) < 0.001
+                                      ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200 font-bold'
+                                      : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                                  }`}
+                                >
+                                  {p.label}
+                                </button>
+                              ))}
+                            </div>
+
+                            <div className="flex items-center gap-2.5 text-[11px]">
+                              <label className="flex items-center gap-1 cursor-pointer text-slate-300">
+                                <input
+                                  type="checkbox"
+                                  checked={layer.bidirectional ?? true}
+                                  onChange={(e) =>
+                                    handleUpdateLayer(layer.cutIndex, {
+                                      bidirectional: e.target.checked,
+                                    })
+                                  }
+                                  className="accent-emerald-500"
+                                />
+                                <span>Bidireccional</span>
+                              </label>
+                              <label className="flex items-center gap-1 cursor-pointer text-slate-300">
+                                <input
+                                  type="checkbox"
+                                  checked={layer.crossHatch ?? false}
+                                  onChange={(e) =>
+                                    handleUpdateLayer(layer.cutIndex, {
+                                      crossHatch: e.target.checked,
+                                    })
+                                  }
+                                  className="accent-cyan-500"
+                                />
+                                <span>Cruzado 90°</span>
+                              </label>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-2 p-2 rounded-lg bg-slate-950/90 border border-slate-800">
+                          <label className="block">
+                            <span className="text-[10px] font-bold text-slate-300 block">
+                              Pasadas de Corte
+                            </span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={20}
+                              step={1}
+                              aria-label={`Pasadas ${layer.code}`}
+                              value={layer.passes}
+                              onChange={(e) =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  passes: Math.max(
+                                    1,
+                                    Number(e.target.value) || 1
+                                  ),
+                                })
+                              }
+                              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-white"
+                            />
+                          </label>
+
+                          <label className="block">
+                            <span className="text-[10px] text-slate-400 block">
+                              Kerf Offset (mm)
+                            </span>
+                            <input
+                              type="number"
+                              min={-1}
+                              max={1}
+                              step={0.02}
+                              aria-label={`Kerf ${layer.code}`}
+                              value={layer.kerfOffsetMm ?? 0}
+                              onChange={(e) =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  kerfOffsetMm: roundMm(
+                                    Number(e.target.value) || 0,
+                                    3
+                                  ),
+                                })
+                              }
+                              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-white"
+                            />
+                          </label>
+
+                          <label className="block">
+                            <span className="text-[10px] text-slate-400 block">
+                              Overcut / Cierre (mm)
+                            </span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={5}
+                              step={0.1}
+                              value={layer.overcutMm ?? 0}
+                              onChange={(e) =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  overcutMm: Math.max(
+                                    0,
+                                    Number(e.target.value) || 0
+                                  ),
+                                })
+                              }
+                              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-white"
+                            />
+                          </label>
+                        </div>
+                      )}
+
+                      {/* FILA 4: INTERRUPTORES TIPO PÍLDORA VERDE LIGHTBURN (SALIDA · MOSTRAR · AIRE) */}
+                      <div className="flex items-center justify-between pt-1 text-[11px]">
+                        <div className="flex items-center gap-3">
+                          <label className="flex items-center gap-1.5 cursor-pointer text-slate-200 font-semibold">
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={layer.outputEnabled}
+                              aria-label={`Salida ${layer.code}`}
+                              onClick={() =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  outputEnabled: !layer.outputEnabled,
+                                })
+                              }
+                              className={`w-8 h-4 rounded-full inline-flex items-center px-0.5 transition-colors border ${
+                                layer.outputEnabled
+                                  ? 'bg-emerald-500 border-emerald-300 justify-end'
+                                  : 'bg-slate-800 border-slate-600 justify-start'
+                              }`}
+                            >
+                              <span className="w-3 h-3 rounded-full bg-white shadow" />
+                            </button>
+                            <span>Salida</span>
+                          </label>
+
+                          <label className="flex items-center gap-1.5 cursor-pointer text-slate-200 font-semibold">
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={layer.visible}
+                              aria-label={`Mostrar ${layer.code}`}
+                              onClick={() =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  visible: !layer.visible,
+                                })
+                              }
+                              className={`w-8 h-4 rounded-full inline-flex items-center px-0.5 transition-colors border ${
+                                layer.visible
+                                  ? 'bg-emerald-500 border-emerald-300 justify-end'
+                                  : 'bg-slate-800 border-slate-600 justify-start'
+                              }`}
+                            >
+                              <span className="w-3 h-3 rounded-full bg-white shadow" />
+                            </button>
+                            <span>Mostrar</span>
+                          </label>
+
+                          <label className="flex items-center gap-1.5 cursor-pointer text-slate-200 font-semibold">
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={layer.airAssist}
+                              aria-label={`Aire ${layer.code}`}
+                              onClick={() =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  airAssist: !layer.airAssist,
+                                })
+                              }
+                              className={`w-8 h-4 rounded-full inline-flex items-center px-0.5 transition-colors border ${
+                                layer.airAssist
+                                  ? 'bg-emerald-500 border-emerald-300 justify-end'
+                                  : 'bg-slate-800 border-slate-600 justify-start'
+                              }`}
+                            >
+                              <span className="w-3 h-3 rounded-full bg-white shadow" />
+                            </button>
+                            <span>Aire (Air Assist)</span>
+                          </label>
+                        </div>
+
+                        {isCutLayer && (
+                          <span className="text-[10px] text-emerald-300 font-mono">
+                            Se ejecuta al final
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* =====================================================================
+              SECCIÓN 2: ROLLO ECOCUERO 73 CM × 5 M Y TIRADA MULTI-TRABAJO
+             ===================================================================== */}
+          {(sidebarView === 'all' || sidebarView === 'jobs') && (
           <div className="p-3.5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-1.5">
               <h3 className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5">
                 <Ruler className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>
-                  Rollo Ecocuero 73 cm × 5 m · Trabajos ({workbenchJobs.length})
+                  2. Rollo Ecocuero 73 cm × 5 m · Trabajos ({workbenchJobs.length})
                 </span>
               </h3>
               {workbenchConfig.sheetWidthMm !== 730 && (
@@ -2365,725 +3078,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </div>
             </div>
           </div>
+          )}
 
-          {/* SECCIÓN 2: CORTES / CAPAS (CUTS / LAYERS ESTILO LIGHTBURN PRO 2.2) */}
-          <div className="p-3 space-y-2.5">
-            {/* Barra de título estilo LightBurn con acento naranja */}
-            <div className="flex flex-wrap items-center justify-between gap-1.5 bg-gradient-to-r from-slate-900 via-slate-900 to-orange-600/30 border border-slate-800 rounded px-2.5 py-1.5">
-              <div className="flex items-center gap-1.5">
-                <Layers className="w-3.5 h-3.5 text-orange-400 shrink-0" />
-                <h3 className="text-xs font-bold tracking-wide text-white">
-                  Cortes/Capas
-                </h3>
-              </div>
-              <div className="flex flex-wrap items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => setShowCalibrationMatrixModal(true)}
-                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-extrabold shadow"
-                  title="Abrir Generador de Matriz de Calibración de Potencia × Velocidad estilo LightBurn"
-                >
-                  <FlaskConical className="w-3 h-3" />
-                  <span>🧪 Matriz Calibración</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSyncFromMaterial}
-                  className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 border border-slate-700"
-                  title="Cargar parámetros guardados en el material activo"
-                >
-                  Cargar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveLayersToMaterial}
-                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-cyan-950/90 hover:bg-cyan-900 text-[10px] text-cyan-300 border border-cyan-800 font-semibold"
-                  title={`Guardar velocidades y potencias en ${material.name}`}
-                >
-                  <Save className="w-2.5 h-2.5" />
-                  <span>Guardar</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Tabla compacta estilo LightBurn 2.2: # | Capa | Modo | Veloc./Potencia | Salida | Mostrar | Aire */}
-            <div className="flex items-stretch gap-1.5">
-              <div className="flex-1 rounded border border-slate-800 bg-[#080b10] overflow-hidden">
-                <table className="w-full text-[11px] border-collapse">
-                  <thead>
-                    <tr className="bg-slate-900/95 text-slate-300 border-b border-slate-800 text-[10px]">
-                      <th className="py-1 px-1.5 text-left font-semibold">#</th>
-                      <th className="py-1 px-1 text-left font-semibold">Capa</th>
-                      <th className="py-1 px-1.5 text-left font-semibold">Modo</th>
-                      <th className="py-1 px-1.5 text-left font-semibold">
-                        Veloc./Potencia
-                      </th>
-                      <th className="py-1 px-1 text-center font-semibold">Salida</th>
-                      <th className="py-1 px-1 text-center font-semibold">Mostrar</th>
-                      <th className="py-1 px-1 text-center font-semibold">Aire</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/70">
-                    {sortedLayers.map((layer) => {
-                      const isSelected =
-                        selectedLayer?.cutIndex === layer.cutIndex;
-                      const isMissingParams =
-                        layer.outputEnabled &&
-                        (layer.speedMmPerSec === null ||
-                          layer.speedMmPerSec <= 0 ||
-                          layer.maxPowerPercent === null ||
-                          layer.maxPowerPercent <= 0);
-
-                      return (
-                        <tr
-                          key={layer.cutIndex}
-                          onClick={() => setSelectedLayerCutIndex(layer.cutIndex)}
-                          className={`cursor-pointer transition-colors ${
-                            isSelected
-                              ? 'bg-sky-500/25 text-white'
-                              : isMissingParams
-                                ? 'bg-amber-950/20 hover:bg-slate-900/90 text-slate-200'
-                                : 'hover:bg-slate-900/80 text-slate-200'
-                          }`}
-                        >
-                          <td className="py-1.5 px-1.5 font-mono font-bold text-[11px]">
-                            {layer.code}
-                          </td>
-                          <td className="py-1.5 px-1">
-                            <span
-                              className="inline-flex items-center justify-center w-6 h-4 rounded-sm font-mono text-[10px] font-bold border border-white/30 shadow-inner"
-                              style={{
-                                backgroundColor: layer.hexColor,
-                                color:
-                                  layer.cutIndex === 0 || layer.cutIndex === 1
-                                    ? '#ffffff'
-                                    : '#ffffff',
-                              }}
-                              title={layer.name}
-                            >
-                              {layer.cutIndex.toString().padStart(2, '0')}
-                            </span>
-                          </td>
-                          <td
-                            className="py-1 px-1"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <select
-                              aria-label={`Modo de capa ${layer.code}`}
-                              value={layer.mode}
-                              onChange={(e) => {
-                                setSelectedLayerCutIndex(layer.cutIndex);
-                                handleUpdateLayer(layer.cutIndex, {
-                                  mode: e.target.value as LightBurnCutMode,
-                                });
-                              }}
-                              className="w-full bg-slate-950/90 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-white font-medium"
-                            >
-                              <option value="image">Imagen</option>
-                              <option value="fill">Relleno</option>
-                              <option value="line">Línea</option>
-                              <option value="offset_fill">Relleno Offset</option>
-                            </select>
-                          </td>
-                          <td className="py-1.5 px-1.5 font-mono text-[11px]">
-                            {layer.speedMmPerSec !== null &&
-                            layer.maxPowerPercent !== null ? (
-                              <span className="text-white font-semibold">
-                                {layer.speedMmPerSec} / {layer.maxPowerPercent}
-                              </span>
-                            ) : (
-                              <span className="text-amber-400 text-[10px] font-semibold">
-                                Sin calibrar
-                              </span>
-                            )}
-                          </td>
-                          {/* Interruptor Píldora Verde: Salida */}
-                          <td
-                            className="py-1.5 px-1 text-center"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={layer.outputEnabled}
-                              aria-label={`Salida ${layer.code}`}
-                              onClick={() =>
-                                handleUpdateLayer(layer.cutIndex, {
-                                  outputEnabled: !layer.outputEnabled,
-                                })
-                              }
-                              className={`w-7 h-3.5 rounded-full inline-flex items-center px-0.5 transition-colors border ${
-                                layer.outputEnabled
-                                  ? 'bg-emerald-500 border-emerald-300 justify-end'
-                                  : 'bg-slate-800 border-slate-600 justify-start'
-                              }`}
-                            >
-                              <span className="w-2.5 h-2.5 rounded-full bg-white shadow" />
-                            </button>
-                          </td>
-                          {/* Interruptor Píldora Verde: Mostrar */}
-                          <td
-                            className="py-1.5 px-1 text-center"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={layer.visible}
-                              aria-label={`Mostrar ${layer.code}`}
-                              onClick={() =>
-                                handleUpdateLayer(layer.cutIndex, {
-                                  visible: !layer.visible,
-                                })
-                              }
-                              className={`w-7 h-3.5 rounded-full inline-flex items-center px-0.5 transition-colors border ${
-                                layer.visible
-                                  ? 'bg-emerald-500 border-emerald-300 justify-end'
-                                  : 'bg-slate-800 border-slate-600 justify-start'
-                              }`}
-                            >
-                              <span className="w-2.5 h-2.5 rounded-full bg-white shadow" />
-                            </button>
-                          </td>
-                          {/* Interruptor Píldora Verde: Aire */}
-                          <td
-                            className="py-1.5 px-1 text-center"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              role="switch"
-                              aria-checked={layer.airAssist}
-                              aria-label={`Aire ${layer.code}`}
-                              onClick={() =>
-                                handleUpdateLayer(layer.cutIndex, {
-                                  airAssist: !layer.airAssist,
-                                })
-                              }
-                              className={`w-7 h-3.5 rounded-full inline-flex items-center px-0.5 transition-colors border ${
-                                layer.airAssist
-                                  ? 'bg-emerald-500 border-emerald-300 justify-end'
-                                  : 'bg-slate-800 border-slate-600 justify-start'
-                              }`}
-                            >
-                              <span className="w-2.5 h-2.5 rounded-full bg-white shadow" />
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Botones laterales ▲ / ▼ de prioridad estilo LightBurn */}
-              <div className="flex flex-col justify-center gap-1">
-                <button
-                  type="button"
-                  onClick={() =>
-                    selectedLayer &&
-                    handleMoveLayerPriority(selectedLayer.cutIndex, 'up')
-                  }
-                  title="Subir prioridad de la capa seleccionada (ejecutar antes)"
-                  className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200"
-                >
-                  <ArrowUp className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    selectedLayer &&
-                    handleMoveLayerPriority(selectedLayer.cutIndex, 'down')
-                  }
-                  title="Bajar prioridad de la capa seleccionada (ejecutar después)"
-                  className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200"
-                >
-                  <ArrowDown className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* INSPECTOR DE PARÁMETROS DE LA CAPA SELECCIONADA (IDÉNTICO A LIGHTBURN PRO 2.2) */}
-            {selectedLayer && (
-              <div className="p-2.5 rounded-lg bg-slate-900/95 border border-slate-800 space-y-2.5 text-xs">
-                <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-                  {/* Columna Izquierda: Color de capa, Contador de pasadas, Intervalo (mm) */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
-                        Color de capa
-                      </span>
-                      <div
-                        className="w-24 h-5 rounded border border-white/30 flex items-center justify-center font-mono text-[10px] font-bold shadow-inner"
-                        style={{ backgroundColor: selectedLayer.hexColor }}
-                      >
-                        {selectedLayer.code} ·{' '}
-                        {selectedLayer.role === 'ENGRAVE'
-                          ? 'Grabado'
-                          : selectedLayer.role === 'HOLES'
-                            ? 'Orificios'
-                            : 'Corte'}
-                      </div>
-                    </div>
-
-                    <label className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
-                        Contador de pasadas
-                      </span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={20}
-                        step={1}
-                        aria-label={`Pasadas ${selectedLayer.code}`}
-                        value={selectedLayer.passes}
-                        onChange={(e) =>
-                          handleUpdateLayer(selectedLayer.cutIndex, {
-                            passes: Math.max(1, Number(e.target.value) || 1),
-                          })
-                        }
-                        className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-right font-mono text-xs text-white"
-                      />
-                    </label>
-
-                    {selectedLayer.mode !== 'line' ? (
-                      <label className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] text-slate-300 whitespace-nowrap">
-                          Intervalo (mm)
-                        </span>
-                        <input
-                          type="number"
-                          min={0.02}
-                          max={1.0}
-                          step={0.001}
-                          aria-label={`Intervalo ${selectedLayer.code}`}
-                          value={selectedLayer.lineIntervalMm}
-                          onChange={(e) => {
-                            const val = Math.max(
-                              0.02,
-                              Math.min(1.0, Number(e.target.value) || 0.073)
-                            );
-                            handleUpdateLayer(selectedLayer.cutIndex, {
-                              lineIntervalMm: roundMm(val, 3),
-                            });
-                          }}
-                          className="w-24 bg-slate-950 border border-cyan-500/50 rounded px-2 py-0.5 text-right font-mono text-xs text-cyan-300 font-bold"
-                        />
-                      </label>
-                    ) : (
-                      <label className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] text-slate-300 whitespace-nowrap">
-                          Kerf Offset (mm)
-                        </span>
-                        <input
-                          type="number"
-                          min={-1}
-                          max={1}
-                          step={0.02}
-                          aria-label={`Kerf ${selectedLayer.code}`}
-                          value={selectedLayer.kerfOffsetMm ?? 0}
-                          onChange={(e) =>
-                            handleUpdateLayer(selectedLayer.cutIndex, {
-                              kerfOffsetMm: roundMm(Number(e.target.value) || 0, 3),
-                            })
-                          }
-                          className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-right font-mono text-xs text-white"
-                        />
-                      </label>
-                    )}
-                  </div>
-
-                  {/* Columna Derecha: Velocidad (mm/s), Potencia máx. (%), Potencia mín. (%) */}
-                  <div className="space-y-1.5">
-                    <label className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
-                        Velocidad (mm/s)
-                      </span>
-                      <input
-                        type="number"
-                        min={0.1}
-                        max={1000}
-                        step={1}
-                        aria-label={`Velocidad ${selectedLayer.code}`}
-                        placeholder="Ej: 600"
-                        value={selectedLayer.speedMmPerSec ?? ''}
-                        onChange={(e) => {
-                          const val =
-                            e.target.value === '' ? null : Number(e.target.value);
-                          handleUpdateLayer(selectedLayer.cutIndex, {
-                            speedMmPerSec: val,
-                          });
-                        }}
-                        className={`w-24 bg-slate-950 border rounded px-2 py-0.5 text-right font-mono text-xs font-bold ${
-                          selectedLayer.speedMmPerSec === null ||
-                          selectedLayer.speedMmPerSec <= 0
-                            ? 'border-amber-500 text-amber-200'
-                            : 'border-slate-700 text-white'
-                        }`}
-                      />
-                    </label>
-
-                    <label className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
-                        Potencia máx. (%)
-                      </span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={100}
-                        step={0.5}
-                        aria-label={`Potencia máxima ${selectedLayer.code}`}
-                        placeholder="Ej: 30"
-                        value={selectedLayer.maxPowerPercent ?? ''}
-                        onChange={(e) => {
-                          const val =
-                            e.target.value === '' ? null : Number(e.target.value);
-                          handleUpdateLayer(selectedLayer.cutIndex, {
-                            maxPowerPercent: val,
-                            minPowerPercent:
-                              selectedLayer.minPowerPercent === null && val !== null
-                                ? val
-                                : selectedLayer.minPowerPercent,
-                          });
-                        }}
-                        className={`w-24 bg-slate-950 border rounded px-2 py-0.5 text-right font-mono text-xs font-bold ${
-                          selectedLayer.maxPowerPercent === null ||
-                          selectedLayer.maxPowerPercent <= 0
-                            ? 'border-amber-500 text-amber-200'
-                            : 'border-slate-700 text-white'
-                        }`}
-                      />
-                    </label>
-
-                    <label className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
-                        Potencia mín. (%)
-                      </span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={100}
-                        step={0.5}
-                        aria-label={`Potencia mínima ${selectedLayer.code}`}
-                        placeholder="Ej: 30"
-                        value={selectedLayer.minPowerPercent ?? ''}
-                        onChange={(e) => {
-                          const val =
-                            e.target.value === '' ? null : Number(e.target.value);
-                          handleUpdateLayer(selectedLayer.cutIndex, {
-                            minPowerPercent: val,
-                          });
-                        }}
-                        className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-right font-mono text-xs text-white"
-                      />
-                    </label>
-                  </div>
-                </div>
-
-                {/* Sincronización DPI <-> Intervalo + Presets Rápidos + Botón Editor de Ajustes Avanzados */}
-                <div className="pt-1.5 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-1.5">
-                  {selectedLayer.mode !== 'line' ? (
-                    <div className="flex flex-wrap items-center gap-1">
-                      <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950/60 border border-cyan-800/60 px-1.5 py-0.5 rounded">
-                        {Math.round(
-                          25.4 / Math.max(0.02, selectedLayer.lineIntervalMm)
-                        )}{' '}
-                        DPI
-                      </span>
-                      {[
-                        { mm: 0.073, label: '0.073 (348 DPI)' },
-                        { mm: 0.08, label: '0.080 (318 DPI)' },
-                        { mm: 0.1, label: '0.100 (254 DPI)' },
-                      ].map((p) => (
-                        <button
-                          key={p.mm}
-                          type="button"
-                          onClick={() =>
-                            handleUpdateLayer(selectedLayer.cutIndex, {
-                              lineIntervalMm: p.mm,
-                            })
-                          }
-                          className={`px-1.5 py-0.5 rounded font-mono text-[9px] border ${
-                            Math.abs(selectedLayer.lineIntervalMm - p.mm) < 0.001
-                              ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200 font-bold'
-                              : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                          }`}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
-                      <span>Corte Vectorial 1:1</span>
-                      <span>·</span>
-                      <span>Overcut: {selectedLayer.overcutMm ?? 0} mm</span>
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setShowAdvancedLayerSettings(!showAdvancedLayerSettings)
-                    }
-                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition ${
-                      showAdvancedLayerSettings
-                        ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300'
-                        : 'bg-slate-950 border-slate-700 text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    <Sliders className="w-3 h-3" />
-                    <span>Ajustes Avanzados</span>
-                  </button>
-                </div>
-
-                {/* PANEL DESPLEGABLE: EDITOR AVANZADO DE CAPA (CUT SETTINGS EDITOR LIGHTBURN) */}
-                {showAdvancedLayerSettings && (
-                  <div className="p-2.5 rounded-lg bg-slate-950 border border-cyan-900/60 space-y-2 text-[11px]">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-cyan-300">
-                        Editor de Ajustes de Capa ({selectedLayer.code} ·{' '}
-                        {selectedLayer.name})
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleUpdateLayer(0, {
-                            mode: 'image',
-                            speedMmPerSec: 600,
-                            maxPowerPercent: 30,
-                            minPowerPercent: 30,
-                            lineIntervalMm: 0.073,
-                            passes: 1,
-                            airAssist: true,
-                          });
-                          handleUpdateLayer(1, {
-                            mode: 'line',
-                            speedMmPerSec: 100,
-                            maxPowerPercent: 100,
-                            minPowerPercent: 100,
-                            passes: 1,
-                            airAssist: true,
-                          });
-                          handleUpdateLayer(2, {
-                            mode: 'line',
-                            speedMmPerSec: 100,
-                            maxPowerPercent: 100,
-                            minPowerPercent: 100,
-                            passes: 1,
-                            airAssist: true,
-                          });
-                          onNotify(
-                            'Cargados valores de tu captura LightBurn: C00 Imagen 600mm/s · 30% · Int 0.073mm (348 DPI) | C01/C02 Línea 100/100.'
-                          );
-                        }}
-                        className="px-2 py-0.5 rounded bg-emerald-950 hover:bg-emerald-900 border border-emerald-600/60 text-emerald-300 text-[10px] font-bold"
-                      >
-                        Cargar Valores Captura LightBurn (600/30 · 0.073)
-                      </button>
-                    </div>
-
-                    {selectedLayer.mode !== 'line' ? (
-                      <div className="grid grid-cols-3 gap-2">
-                        <label className="col-span-1">
-                          <span className="text-[10px] text-slate-400 block">
-                            Modo de Imagen / Tramado
-                          </span>
-                          <select
-                            value={selectedLayer.imageDitherMode ?? 'jarvis'}
-                            onChange={(e) =>
-                              handleUpdateLayer(selectedLayer.cutIndex, {
-                                imageDitherMode:
-                                  e.target.value as LightBurnImageDitherMode,
-                              })
-                            }
-                            className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-white"
-                          >
-                            <option value="threshold">Umbral (Threshold)</option>
-                            <option value="jarvis">Jarvis (Difusión)</option>
-                            <option value="stucki">Stucki</option>
-                            <option value="halftone">Semitono (Halftone)</option>
-                            <option value="grayscale">Escala de Grises</option>
-                            <option value="passthrough">Pass-Through</option>
-                          </select>
-                        </label>
-
-                        <label>
-                          <span className="text-[10px] text-slate-400 block">
-                            Ángulo Barrido (°)
-                          </span>
-                          <input
-                            type="number"
-                            min={-180}
-                            max={180}
-                            step={15}
-                            value={selectedLayer.scanAngleDeg}
-                            onChange={(e) =>
-                              handleUpdateLayer(selectedLayer.cutIndex, {
-                                scanAngleDeg: Number(e.target.value) || 0,
-                              })
-                            }
-                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
-                          />
-                        </label>
-
-                        <label>
-                          <span className="text-[10px] text-slate-400 block">
-                            Overscan (%)
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={20}
-                            step={0.5}
-                            value={selectedLayer.overscanPercent ?? 2.5}
-                            onChange={(e) =>
-                              handleUpdateLayer(selectedLayer.cutIndex, {
-                                overscanPercent: Math.max(
-                                  0,
-                                  Number(e.target.value) || 0
-                                ),
-                              })
-                            }
-                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
-                          />
-                        </label>
-
-                        <label className="col-span-3 flex items-center gap-4 pt-1">
-                          <span className="flex items-center gap-1.5 cursor-pointer text-slate-200">
-                            <input
-                              type="checkbox"
-                              checked={selectedLayer.bidirectional ?? true}
-                              onChange={(e) =>
-                                handleUpdateLayer(selectedLayer.cutIndex, {
-                                  bidirectional: e.target.checked,
-                                })
-                              }
-                              className="accent-emerald-500"
-                            />
-                            <span>Barrido Bidireccional</span>
-                          </span>
-
-                          <span className="flex items-center gap-1.5 cursor-pointer text-slate-200">
-                            <input
-                              type="checkbox"
-                              checked={selectedLayer.crossHatch ?? false}
-                              onChange={(e) =>
-                                handleUpdateLayer(selectedLayer.cutIndex, {
-                                  crossHatch: e.target.checked,
-                                })
-                              }
-                              className="accent-cyan-500"
-                            />
-                            <span>Pasada Cruzada (Cross-hatch 90°)</span>
-                          </span>
-                        </label>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-3 gap-2">
-                        <label>
-                          <span className="text-[10px] text-slate-400 block">
-                            Kerf Offset (mm)
-                          </span>
-                          <input
-                            type="number"
-                            min={-1}
-                            max={1}
-                            step={0.02}
-                            value={selectedLayer.kerfOffsetMm ?? 0}
-                            onChange={(e) =>
-                              handleUpdateLayer(selectedLayer.cutIndex, {
-                                kerfOffsetMm: roundMm(
-                                  Number(e.target.value) || 0,
-                                  3
-                                ),
-                              })
-                            }
-                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
-                          />
-                        </label>
-                        <label>
-                          <span className="text-[10px] text-slate-400 block">
-                            Sobrecorte / Overcut (mm)
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={5}
-                            step={0.1}
-                            value={selectedLayer.overcutMm ?? 0}
-                            onChange={(e) =>
-                              handleUpdateLayer(selectedLayer.cutIndex, {
-                                overcutMm: Math.max(0, Number(e.target.value) || 0),
-                              })
-                            }
-                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
-                          />
-                        </label>
-                        <label>
-                          <span className="text-[10px] text-slate-400 block">
-                            Pausa Perforación (ms)
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={2000}
-                            step={25}
-                            value={selectedLayer.startPauseMs ?? 0}
-                            onChange={(e) =>
-                              handleUpdateLayer(selectedLayer.cutIndex, {
-                                startPauseMs: Math.max(
-                                  0,
-                                  Math.round(Number(e.target.value) || 0)
-                                ),
-                              })
-                            }
-                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
-                          />
-                        </label>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Avisos rápidos de capas aún no configuradas para poder editarlas sin cambiar de fila */}
-                <div className="flex flex-wrap items-center gap-1 pt-0.5">
-                  {sortedLayers.map((l) => {
-                    const unconfigured =
-                      l.outputEnabled &&
-                      (l.speedMmPerSec === null || l.maxPowerPercent === null);
-                    return (
-                      <button
-                        key={l.cutIndex}
-                        type="button"
-                        onClick={() => setSelectedLayerCutIndex(l.cutIndex)}
-                        className={`px-2 py-0.5 rounded text-[10px] font-mono border flex items-center gap-1 ${
-                          selectedLayer.cutIndex === l.cutIndex
-                            ? 'bg-sky-500/20 border-sky-400 text-white font-bold'
-                            : unconfigured
-                              ? 'bg-amber-950/40 border-amber-600/60 text-amber-300'
-                              : 'bg-slate-950 border-slate-800 text-slate-400'
-                        }`}
-                      >
-                        <span
-                          className="w-2 h-2 rounded-full"
-                          style={{ backgroundColor: l.hexColor }}
-                        />
-                        <span>
-                          {l.code}:{' '}
-                          {l.speedMmPerSec !== null && l.maxPowerPercent !== null
-                            ? `${l.speedMmPerSec}/${l.maxPowerPercent}`
-                            : 'Falta vel/pot'}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* SECCIÓN 3: DOCK INFERIOR DERECHO CON PESTAÑAS "Láser" | "Biblioteca de materiales" */}
+          {/* SECCIÓN 3: DOCK INFERIOR DERECHO CON PESTAÑAS "3. Enviar a Vank 9060" | "Biblioteca de materiales" */}
+          {(sidebarView === 'all' || sidebarView === 'laser') && (
           <div className="p-3 space-y-2.5 flex-1 flex flex-col">
             {/* Pestañas estilo LightBurn Pro 2.2 */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
@@ -3097,7 +3095,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       : 'border-transparent text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  Láser
+                  3. Enviar a Vank 9060
                 </button>
                 <button
                   type="button"
@@ -3479,6 +3477,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </div>
             )}
           </div>
+          )}
         </aside>
       </div>
 

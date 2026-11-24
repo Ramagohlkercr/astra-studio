@@ -52,6 +52,7 @@ import { VankWorkbenchModal } from './components/VankWorkbenchModal';
 import { DEFAULT_ROTARY_CONFIG, RotaryConfig } from './core/rotary/rotaryEngine';
 import {
   analyzeStepMaterialSavings,
+  applyWorkbenchLayersToMaterialProfile,
   autoArrangeWorkbenchJobs,
   buildOptimalSavingNestingConfig,
   createWorkbenchJobFromOrder,
@@ -64,9 +65,11 @@ import {
   ECOCUERO_ROLL_TOTAL_LENGTH_MM,
   ECOCUERO_ROLL_WIDTH_MM,
   isEcocueroMaterial,
+  LightBurnCutMode,
   VANK_9060_DEFAULT_IP,
   WorkbenchConfig,
   WorkbenchJobItem,
+  WorkbenchLayerConfig,
 } from './core/workbench/workbenchTypes';
 import { exportProductionDxf } from './core/exporters/dxfExporter';
 import {
@@ -263,6 +266,9 @@ export function App() {
   const [isRotaryOpen, setIsRotaryOpen] = useState<boolean>(false);
   const [rotaryConfig, setRotaryConfig] = useState<RotaryConfig>(() => initialOrder.rotaryConfig ?? DEFAULT_ROTARY_CONFIG);
   const [isWorkbenchOpen, setIsWorkbenchOpen] = useState<boolean>(false);
+  const [workbenchInitialView, setWorkbenchInitialView] = useState<
+    'all' | 'layers' | 'jobs' | 'laser'
+  >('all');
   const [workbenchConfig, setWorkbenchConfig] = useState<WorkbenchConfig>(() => {
     const mat = initialOrder.materialProfileSnapshot ?? INITIAL_MATERIALS_CATALOG[0];
     const isEco = isEcocueroMaterial(mat);
@@ -1208,9 +1214,73 @@ export function App() {
     triggerDownload(artifact.filenameSuggested, artifact.svgContent, 'image/svg+xml');
   };
 
-  const handleSendToWorkbench = (
-    mode: 'active_batch' | 'single_piece' | 'open_only' = 'active_batch'
+  const handleUpdateMainLayer = (
+    cutIndex: number,
+    patch: Partial<WorkbenchLayerConfig>
   ) => {
+    const nextLayers = workbenchConfig.layers.map((l) =>
+      l.cutIndex === cutIndex ? { ...l, ...patch } : l
+    );
+    setWorkbenchConfig((prev) => ({
+      ...prev,
+      layers: nextLayers,
+    }));
+    const updatedMat = applyWorkbenchLayersToMaterialProfile(
+      nextLayers,
+      activeMaterial
+    );
+    setMaterials((prev) =>
+      prev.map((m) => (m.id === updatedMat.id ? updatedMat : m))
+    );
+  };
+
+  const handleApplyLightBurnVankPreset = () => {
+    const nextLayers = workbenchConfig.layers.map((l) => {
+      if (l.cutIndex === 0) {
+        return {
+          ...l,
+          mode: 'image' as LightBurnCutMode,
+          speedMmPerSec: 600,
+          maxPowerPercent: 30,
+          minPowerPercent: 30,
+          lineIntervalMm: 0.073,
+          passes: 1,
+          airAssist: true,
+          operatorValidated: true,
+        };
+      }
+      return {
+        ...l,
+        mode: 'line' as LightBurnCutMode,
+        speedMmPerSec: 100,
+        maxPowerPercent: 100,
+        minPowerPercent: 100,
+        passes: 1,
+        airAssist: true,
+        operatorValidated: true,
+      };
+    });
+    setWorkbenchConfig((prev) => ({
+      ...prev,
+      layers: nextLayers,
+    }));
+    const updatedMat = applyWorkbenchLayersToMaterialProfile(
+      nextLayers,
+      activeMaterial
+    );
+    setMaterials((prev) =>
+      prev.map((m) => (m.id === updatedMat.id ? updatedMat : m))
+    );
+    notify(
+      '✓ Calibración LightBurn Vank 9060 cargada: C00 Grabado 600 mm/s · 30% · Int. 0.073 mm (348 DPI) | C01 y C02 Corte 100 mm/s · 100%.'
+    );
+  };
+
+  const handleSendToWorkbench = (
+    mode: 'active_batch' | 'single_piece' | 'open_only' = 'active_batch',
+    initialView: 'all' | 'layers' | 'jobs' | 'laser' = 'all'
+  ) => {
+    setWorkbenchInitialView(initialView);
     const isEco = isEcocueroMaterial(activeMaterial);
     const targetSheetW = isEco ? ECOCUERO_ROLL_WIDTH_MM : nestingConfig.sheetWidthMm;
     const targetSheetH = isEco ? ECOCUERO_BED_PASS_HEIGHT_MM : nestingConfig.sheetHeightMm;
@@ -1254,6 +1324,171 @@ export function App() {
     }
     setIsWorkbenchOpen(true);
   };
+
+  const renderDirectLayersCalibrationBox = () => (
+    <div className="p-3 rounded-xl bg-gradient-to-br from-orange-950/35 via-slate-900 to-slate-900 border border-orange-500/50 space-y-2.5 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-1.5">
+        <div className="flex items-center gap-1.5">
+          <Sliders className="w-4 h-4 text-orange-400 shrink-0" />
+          <span className="font-extrabold text-white text-xs">
+            Calibrar Velocidad y Potencia de las 3 Capas
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => handleSendToWorkbench('open_only', 'layers')}
+          className="px-2 py-0.5 rounded bg-orange-500 hover:bg-orange-400 text-slate-950 font-extrabold text-[10px] shadow"
+        >
+          🧪 Abrir Calibrador + Matriz Vel×Pot
+        </button>
+      </div>
+
+      <button
+        type="button"
+        onClick={handleApplyLightBurnVankPreset}
+        className="w-full py-1.5 px-2.5 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/60 text-emerald-200 font-bold text-[11px] flex items-center justify-between gap-1"
+      >
+        <span>⚡ Cargar Preset LightBurn Vank 9060 (600/30 · 0.073mm | 100/100)</span>
+        <span className="px-1.5 py-0.5 rounded bg-emerald-500 text-slate-950 font-extrabold text-[9px]">
+          1 Clic
+        </span>
+      </button>
+
+      <div className="space-y-2">
+        {workbenchConfig.layers.map((layer) => {
+          const isEng = layer.role === 'ENGRAVE';
+          const title = isEng
+            ? 'C00 (Negro) · Grabado del Logo'
+            : layer.role === 'HOLES'
+              ? 'C01 (Azul) · Corte de Orificios'
+              : 'C02 (Rojo) · Corte Exterior';
+          return (
+            <div
+              key={layer.cutIndex}
+              className="p-2 rounded-lg bg-slate-950/90 border border-slate-800 space-y-1.5"
+            >
+              <div className="flex items-center justify-between gap-1">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="w-4 h-4 rounded-sm font-mono text-[9px] font-bold flex items-center justify-center border border-white/40 text-white"
+                    style={{ backgroundColor: layer.hexColor }}
+                  >
+                    {layer.cutIndex.toString().padStart(2, '0')}
+                  </span>
+                  <span className="font-bold text-white text-[11px]">{title}</span>
+                </div>
+                <select
+                  value={layer.mode}
+                  onChange={(e) =>
+                    handleUpdateMainLayer(layer.cutIndex, {
+                      mode: e.target.value as LightBurnCutMode,
+                    })
+                  }
+                  className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-cyan-300 font-bold"
+                >
+                  <option value="image">Imagen</option>
+                  <option value="fill">Relleno</option>
+                  <option value="line">Línea</option>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                <label>
+                  <span className="text-[10px] text-emerald-300 font-semibold block">
+                    Vel. (mm/s)
+                  </span>
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={1000}
+                    step={1}
+                    placeholder={isEng ? '600' : '100'}
+                    value={layer.speedMmPerSec ?? ''}
+                    onChange={(e) =>
+                      handleUpdateMainLayer(layer.cutIndex, {
+                        speedMmPerSec:
+                          e.target.value === '' ? null : Number(e.target.value),
+                      })
+                    }
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 font-mono text-xs text-white font-bold"
+                  />
+                </label>
+                <label>
+                  <span className="text-[10px] text-amber-300 font-semibold block">
+                    Pot. Máx (%)
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.5}
+                    placeholder={isEng ? '30' : '100'}
+                    value={layer.maxPowerPercent ?? ''}
+                    onChange={(e) => {
+                      const val =
+                        e.target.value === '' ? null : Number(e.target.value);
+                      handleUpdateMainLayer(layer.cutIndex, {
+                        maxPowerPercent: val,
+                        minPowerPercent:
+                          layer.minPowerPercent === null && val !== null
+                            ? val
+                            : layer.minPowerPercent,
+                      });
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 font-mono text-xs text-white font-bold"
+                  />
+                </label>
+                {layer.mode !== 'line' ? (
+                  <label>
+                    <span className="text-[10px] text-cyan-300 font-semibold block">
+                      Int. ({Math.round(25.4 / Math.max(0.02, layer.lineIntervalMm))} DPI)
+                    </span>
+                    <input
+                      type="number"
+                      min={0.02}
+                      max={1.0}
+                      step={0.001}
+                      value={layer.lineIntervalMm}
+                      onChange={(e) =>
+                        handleUpdateMainLayer(layer.cutIndex, {
+                          lineIntervalMm: roundMm(
+                            Math.max(0.02, Number(e.target.value) || 0.073),
+                            3
+                          ),
+                        })
+                      }
+                      className="w-full bg-slate-900 border border-cyan-500/60 rounded px-1.5 py-1 font-mono text-xs text-cyan-300 font-bold"
+                    />
+                  </label>
+                ) : (
+                  <label>
+                    <span className="text-[10px] text-slate-300 font-semibold block">
+                      Pot. Mín (%)
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.5}
+                      placeholder="100"
+                      value={layer.minPowerPercent ?? ''}
+                      onChange={(e) =>
+                        handleUpdateMainLayer(layer.cutIndex, {
+                          minPowerPercent:
+                            e.target.value === '' ? null : Number(e.target.value),
+                        })
+                      }
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 font-mono text-xs text-white"
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   const handleCreateNewBlankOrder = () => {
     const blank = createBlankLabelDesign(20, 10, 'rounded_rect');
@@ -1390,7 +1625,16 @@ export function App() {
           </button>
 
           <button
-            onClick={() => handleSendToWorkbench('open_only')}
+            onClick={() => handleSendToWorkbench('open_only', 'layers')}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-orange-600 hover:bg-orange-500 border border-orange-400/70 rounded text-white font-bold shadow transition-colors"
+            title="Calibrar Velocidad (mm/s), Potencia (%) e Intervalo (mm / DPI) de las 3 capas C00, C01 y C02"
+          >
+            <Sliders className="w-3.5 h-3.5" />
+            <span>⚡ Calibrar Velocidad y Potencia</span>
+          </button>
+
+          <button
+            onClick={() => handleSendToWorkbench('open_only', 'all')}
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-700/80 rounded text-emerald-300 font-semibold transition-colors"
             title="Abrir Mesa de Trabajo Vank 9060 estilo LightBurn y enviar a máquina"
           >
@@ -2660,6 +2904,9 @@ export function App() {
                   )}
                 </div>
 
+                {/* CALIBRACIÓN DIRECTA DE VELOCIDAD Y POTENCIA DE LAS 3 CAPAS (C00 / C01 / C02) */}
+                {renderDirectLayersCalibrationBox()}
+
                 {/* ACCIÓN DIRECTA: MANDAR A PLANCHA / MESA DE TRABAJO VANK 9060 */}
                 <div className="pt-2 border-t border-slate-800 space-y-2">
                   <button
@@ -2685,6 +2932,9 @@ export function App() {
             {/* CONTENIDO ESPECÍFICO DEL PASO 6: REVISAR Y EXPORTAR */}
             {currentStep === 'export' && (
               <div className="space-y-4 text-xs">
+                {/* CALIBRACIÓN DIRECTA DE VELOCIDAD Y POTENCIA DE LAS 3 CAPAS (C00 / C01 / C02) */}
+                {renderDirectLayersCalibrationBox()}
+
                 {/* Resumen Técnico */}
                 <div className="space-y-2 bg-slate-900/60 p-3 rounded-lg border border-slate-800">
                   <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px] block">
@@ -3129,6 +3379,7 @@ export function App() {
           ordersCatalog={orders}
           workbenchConfig={workbenchConfig}
           workbenchJobs={workbenchJobs}
+          initialSidebarView={workbenchInitialView}
           onUpdateConfig={setWorkbenchConfig}
           onUpdateJobs={setWorkbenchJobs}
           onSaveMaterialParameters={(updatedMat) => {
