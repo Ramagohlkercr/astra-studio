@@ -15,7 +15,8 @@ import {
   OperationLayerType,
 } from '../types';
 
-/** Ancho real del rollo de Ecocuero cortado para entrar en la mesa de la Vank 9060 (73 cm = 730 mm) */
+/** Dirección IP real de la Vank 9060 (Ruida RDC8445S) en la red local del taller */
+export const VANK_9060_DEFAULT_IP = '192.168.0.195';
 export const ECOCUERO_ROLL_WIDTH_MM = 730;
 /** Profundidad máxima de una tirada sobre la mesa de la Vank 9060 (60 cm = 600 mm) */
 export const ECOCUERO_BED_PASS_HEIGHT_MM = 600;
@@ -375,7 +376,7 @@ export function createDefaultWorkbenchConfig(
     sheetOffsetYMm: 0,
     sheetSafetyMarginMm: 5,
     optimizeInsideOut: true,
-    ruidaIpAddress: '192.168.1.100',
+    ruidaIpAddress: VANK_9060_DEFAULT_IP,
     ruidaPort: 50200,
     ruidaJobName: 'ASTRA01',
     layers: createDefaultWorkbenchLayers(material),

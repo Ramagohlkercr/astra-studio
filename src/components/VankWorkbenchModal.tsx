@@ -2436,7 +2436,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       ruidaIpAddress: e.target.value,
                     })
                   }
-                  placeholder="192.168.1.100"
+                  placeholder="192.168.0.195"
                   className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-cyan-300"
                 />
               </label>

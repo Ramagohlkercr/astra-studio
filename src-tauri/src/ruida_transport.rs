@@ -27,7 +27,7 @@ fn parse_ipv4(ip_str: &str) -> Result<Ipv4Addr, String> {
     ip_str
         .trim()
         .parse::<Ipv4Addr>()
-        .map_err(|_| format!("Dirección IPv4 inválida: '{ip_str}'. Ejemplo válido: 192.168.1.100"))
+        .map_err(|_| format!("Dirección IPv4 inválida: '{ip_str}'. Ejemplo válido: 192.168.0.195"))
 }
 
 /// Envía paquetes UDP Ruida pre-compilados y con checksum a la controladora Ruida RDC8445S (puerto 50200).

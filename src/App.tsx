@@ -64,6 +64,7 @@ import {
   ECOCUERO_ROLL_TOTAL_LENGTH_MM,
   ECOCUERO_ROLL_WIDTH_MM,
   isEcocueroMaterial,
+  VANK_9060_DEFAULT_IP,
   WorkbenchConfig,
   WorkbenchJobItem,
 } from './core/workbench/workbenchTypes';
@@ -1216,6 +1217,10 @@ export function App() {
 
     const updatedCfg: WorkbenchConfig = {
       ...workbenchConfig,
+      ruidaIpAddress:
+        workbenchConfig.ruidaIpAddress === '192.168.1.100' || !workbenchConfig.ruidaIpAddress
+          ? VANK_9060_DEFAULT_IP
+          : workbenchConfig.ruidaIpAddress,
       sheetWidthMm: targetSheetW,
       sheetHeightMm: targetSheetH,
       isRollMaterial: isEco || targetSheetW === ECOCUERO_ROLL_WIDTH_MM,
