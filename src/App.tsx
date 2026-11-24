@@ -55,6 +55,7 @@ import {
   autoArrangeWorkbenchJobs,
   buildOptimalSavingNestingConfig,
   createWorkbenchJobFromOrder,
+  evaluateBalancedLayoutPresets,
   syncLayersWithMaterialProfile,
 } from './core/workbench/workbenchEngine';
 import {
@@ -354,6 +355,25 @@ export function App() {
     () => analyzeStepMaterialSavings(labelDesign, nestingResult, activeBatchIndex),
     [labelDesign, nestingResult, activeBatchIndex]
   );
+
+  const balancedPresets = useMemo(() => {
+    const isEco = isEcocueroMaterial(activeMaterial);
+    const baseCfg = isEco && nestingConfig.sheetWidthMm === 900
+      ? {
+          ...nestingConfig,
+          sheetWidthMm: ECOCUERO_ROLL_WIDTH_MM,
+          sheetHeightMm: ECOCUERO_BED_PASS_HEIGHT_MM,
+        }
+      : nestingConfig;
+    return evaluateBalancedLayoutPresets(labelDesign, baseCfg);
+  }, [labelDesign, nestingConfig, activeMaterial]);
+
+  const formatSecToMinSec = (sec: number) => {
+    const total = Math.max(1, Math.round(sec));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return m > 0 ? `${m}m ${s.toString().padStart(2, '0')}s` : `${s}s`;
+  };
 
   const handleApplyMaxStepSaving = (useSharedCuts = false) => {
     const isEco = isEcocueroMaterial(activeMaterial);
@@ -2536,47 +2556,82 @@ export function App() {
                   )}
                 </div>
 
-                {/* TARJETA DE AHORRO MÁXIMO DE MATERIAL (CERO DESPERDICIO) */}
+                {/* TARJETA DE EQUILIBRIO: ESPACIO EN PLANCHA + VELOCIDAD DE REALIZACIÓN */}
                 <div className="p-3 rounded-lg bg-gradient-to-br from-amber-950/35 to-slate-900 border border-amber-600/50 space-y-2.5">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-amber-300 text-xs flex items-center gap-1.5">
                       <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Ahorro Máximo de Material (Cero Desperdicio)</span>
+                      <span>Equilibrio: Espacio + Velocidad de Máquina</span>
                     </span>
                     <span className="text-[10px] font-mono bg-slate-950 px-2 py-0.5 rounded text-emerald-300 border border-slate-800">
-                      Avance: {stepSavings.currentAdvanceCm} cm ({stepSavings.currentAdvanceMm} mm)
+                      Actual: {stepSavings.currentCols}×{stepSavings.currentRows} · {stepSavings.currentAdvanceCm} cm
                     </span>
                   </div>
 
-                  {!stepSavings.isAlreadyOptimal && (
-                    <div className="text-[11px] text-slate-300 leading-relaxed">
-                      Podés aprovechar todo el ancho de{' '}
-                      <strong className="text-white">
-                        {isEcocueroMaterial(activeMaterial)
-                          ? '73 cm del rollo de Ecocuero'
-                          : `${roundMm(nestingConfig.sheetWidthMm / 10, 1)} cm`}
-                      </strong>{' '}
-                      con margen compacto (2 mm) y separación mínima (0.5 mm)
-                      {stepSavings.savedAdvanceCm > 0 && (
-                        <span className="text-emerald-300 font-bold">
-                          {' '}
-                          para ahorrar {stepSavings.savedAdvanceCm} cm de material en esta tanda
-                        </span>
-                      )}
-                      .
-                    </div>
-                  )}
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    Elegí cómo equilibrar el <strong className="text-white">ahorro de material (0 huecos vacíos)</strong> y la <strong className="text-cyan-300">velocidad de barrido láser</strong> (menos filas = menos frenadas del cabezal X):
+                  </p>
 
-                  <button
-                    type="button"
-                    onClick={() => handleApplyMaxStepSaving(false)}
-                    className="w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-1.5 shadow transition-colors"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>
-                      🔥 Optimizar Ahorro a Fondo (Ancho Completo · Margen 2mm · Gap 0.5mm)
-                    </span>
-                  </button>
+                  {/* 3 Tarjetas comparativas de Equilibrio Espacio vs Velocidad */}
+                  <div className="space-y-1.5">
+                    {balancedPresets.map((preset) => {
+                      const isCurrent =
+                        stepSavings.currentCols === preset.cols &&
+                        stepSavings.currentRows === preset.rows;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => {
+                            pushStateWithHistory(labelDesign, preset.configToApply);
+                            notify(
+                              `${preset.title} aplicado: ${preset.cols} col × ${preset.rows} filas (${preset.emptySlots} lugares vacíos · ~${formatSecToMinSec(preset.estimatedMachineTimeSec)}).`
+                            );
+                          }}
+                          className={`w-full p-2 rounded-lg border text-left transition-all ${
+                            isCurrent
+                              ? 'bg-cyan-950/70 border-cyan-400 text-white shadow'
+                              : 'bg-slate-950/80 hover:bg-slate-900 border-slate-800 text-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-bold text-[11px] text-white">
+                              {preset.id === 'equilibrium'
+                                ? '⚡ '
+                                : preset.id === 'max_speed'
+                                  ? '🚀 '
+                                  : '📦 '}
+                              {preset.title}
+                            </span>
+                            <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-cyan-300">
+                              ~{formatSecToMinSec(preset.estimatedMachineTimeSec)}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2 mt-1 text-[10px] font-mono">
+                            <span className="text-amber-300 font-bold">
+                              {preset.cols} col × {preset.rows} filas ({preset.blockWidthMm}×{preset.blockHeightMm} mm)
+                            </span>
+                            <span
+                              className={
+                                preset.emptySlots === 0
+                                  ? 'text-emerald-400 font-bold'
+                                  : 'text-slate-400'
+                              }
+                            >
+                              {preset.emptySlots === 0
+                                ? '✓ 0 vacíos (100% lleno)'
+                                : `${preset.emptySlots} vacíos (${preset.blockFillPercent}% lleno)`}
+                            </span>
+                          </div>
+                          {preset.freeSideWidthCm > 1 && (
+                            <div className="text-[10px] text-slate-400 mt-0.5">
+                              Deja <strong className="text-slate-200">{preset.freeSideWidthCm} cm libres al costado</strong> de la plancha.
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
 
                   {stepSavings.freeSlotsInLastRow > 0 && (
                     <div className="p-2 rounded bg-emerald-950/40 border border-emerald-700/60 space-y-1.5">
@@ -2584,7 +2639,7 @@ export function App() {
                         <strong>
                           💡 Quedan {stepSavings.freeSlotsInLastRow} lugares vacíos en la última fila
                         </strong>{' '}
-                        ({roundMm(stepSavings.freeWidthInLastRowMm / 10, 1)} cm libres en una franja que ya se corta del rollo).
+                        ({roundMm(stepSavings.freeWidthInLastRowMm / 10, 1)} cm libres en esa fila).
                       </div>
                       <button
                         type="button"
@@ -2593,7 +2648,7 @@ export function App() {
                       >
                         <Plus className="w-3.5 h-3.5" />
                         <span>
-                          Completar última fila (+{stepSavings.freeSlotsInLastRow} etiquetas gratis · 0 cm extra de rollo)
+                          Completar última fila (+{stepSavings.freeSlotsInLastRow} etiquetas gratis · 0 cm extra)
                         </span>
                       </button>
                     </div>
@@ -2893,48 +2948,85 @@ export function App() {
                   </div>
                 </div>
 
-                {/* PANEL DE AHORRO DE MATERIAL ANTES DE EXPORTAR */}
+                {/* PANEL DE EQUILIBRIO: AHORRO DE PLANCHA + VELOCIDAD DE MÁQUINA ANTES DE EXPORTAR */}
                 <div className="p-3.5 rounded-xl bg-gradient-to-br from-amber-950/35 to-slate-900 border border-amber-600/50 space-y-2.5 text-xs">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-bold text-amber-300 flex items-center gap-1.5">
                       <Sparkles className="w-4 h-4 text-amber-400" />
-                      <span>Aprovechamiento de Plancha / Rollo Antes de Exportar</span>
+                      <span>Equilibrio: Aprovechamiento de Plancha + Velocidad de Realización</span>
                     </span>
                     <span className="font-mono text-emerald-300 bg-slate-950 px-2.5 py-0.5 rounded border border-slate-800">
-                      Avance consumido: <strong>{stepSavings.currentAdvanceCm} cm</strong> ({stepSavings.currentAdvanceMm} mm) · {stepSavings.currentCols} col × {stepSavings.currentRows} fil
+                      Actual: <strong>{stepSavings.currentCols} col × {stepSavings.currentRows} fil</strong> · Avance: <strong>{stepSavings.currentAdvanceCm} cm</strong>
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {balancedPresets.map((preset) => {
+                      const isCurrent =
+                        stepSavings.currentCols === preset.cols &&
+                        stepSavings.currentRows === preset.rows;
+                      return (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => {
+                            pushStateWithHistory(labelDesign, preset.configToApply);
+                            notify(
+                              `${preset.title} aplicado: ${preset.cols} col × ${preset.rows} filas (${preset.emptySlots} lugares vacíos · ~${formatSecToMinSec(preset.estimatedMachineTimeSec)}).`
+                            );
+                          }}
+                          className={`p-2.5 rounded-lg border text-left transition-all ${
+                            isCurrent
+                              ? 'bg-cyan-950/70 border-cyan-400 text-white shadow'
+                              : 'bg-slate-950/80 hover:bg-slate-900 border-slate-800 text-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-bold text-[11px] text-white truncate">
+                              {preset.id === 'equilibrium'
+                                ? '⚡ Equilibrio Ideal'
+                                : preset.id === 'max_speed'
+                                  ? '🚀 Más Rápido'
+                                  : '📦 Compacto'}
+                            </span>
+                            <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-cyan-300 shrink-0">
+                              ~{formatSecToMinSec(preset.estimatedMachineTimeSec)}
+                            </span>
+                          </div>
+                          <div className="font-mono text-[11px] text-amber-300 font-bold mt-1">
+                            {preset.cols} col × {preset.rows} filas
+                          </div>
+                          <div className="text-[10px] font-mono text-slate-400">
+                            {preset.blockWidthMm}×{preset.blockHeightMm} mm
+                          </div>
+                          <div
+                            className={`text-[10px] font-mono mt-0.5 ${
+                              preset.emptySlots === 0
+                                ? 'text-emerald-400 font-bold'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {preset.emptySlots === 0
+                              ? '✓ 0 lugares vacíos'
+                              : `${preset.emptySlots} vacíos (${preset.blockFillPercent}% lleno)`}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {stepSavings.freeSlotsInLastRow > 0 && (
                     <button
                       type="button"
-                      onClick={() => handleApplyMaxStepSaving(false)}
-                      className="py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-1.5 shadow transition-colors"
+                      onClick={handleFillStepLastRow}
+                      className="w-full py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow transition-colors"
                     >
-                      <Sparkles className="w-3.5 h-3.5" />
+                      <Plus className="w-3.5 h-3.5" />
                       <span>
-                        🔥 Optimizar Ahorro a Fondo ({isEcocueroMaterial(activeMaterial) ? 'Ancho 73 cm' : 'Ancho Plancha'})
+                        💡 Completar última fila (+{stepSavings.freeSlotsInLastRow} etiquetas gratis · 0 cm extra de rollo)
                       </span>
                     </button>
-
-                    {stepSavings.freeSlotsInLastRow > 0 ? (
-                      <button
-                        type="button"
-                        onClick={handleFillStepLastRow}
-                        className="py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow transition-colors"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>
-                          💡 Completar fila (+{stepSavings.freeSlotsInLastRow} u. gratis · 0 cm extra)
-                        </span>
-                      </button>
-                    ) : (
-                      <div className="py-2 px-3 rounded-lg bg-emerald-950/40 border border-emerald-700/60 text-emerald-300 font-semibold text-xs flex items-center justify-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Última fila 100% completa (0 lugares vacíos)</span>
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
 
                 {!validationReport.isValid && <div className="studio-export-errors" role="alert">

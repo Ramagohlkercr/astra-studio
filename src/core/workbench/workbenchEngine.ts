@@ -1232,6 +1232,235 @@ export function buildOptimalSavingNestingConfig(
   };
 }
 
+export interface BalancedLayoutPreset {
+  id: 'equilibrium' | 'max_speed' | 'compact_block';
+  title: string;
+  badge: string;
+  description: string;
+  cols: number;
+  rows: number;
+  rotationDeg: 0 | 90;
+  emptySlots: number;
+  blockWidthMm: Millimeters;
+  blockHeightMm: Millimeters;
+  freeSideWidthCm: number;
+  blockFillPercent: number;
+  estimatedMachineTimeSec: number;
+  configToApply: NestingConfig;
+}
+
+/**
+ * Calcula el tiempo estimado de realización en la Vank 9060 (grabado por barrido X + frenadas de carro + corte + vacíos G0)
+ * para una grilla de (cols x rows) de la etiqueta indicada.
+ */
+export function estimateGridMachineTimeSec(
+  design: LabelDesign,
+  cols: number,
+  rows: number,
+  pieceCount: number,
+  gapXMm: Millimeters,
+  gapYMm: Millimeters,
+  rotated90: boolean
+): number {
+  const kerf = Math.max(0, design.kerfCompensationMm || 0);
+  const pW = roundMm((rotated90 ? design.heightMm : design.widthMm) + kerf);
+  const pH = roundMm((rotated90 ? design.widthMm : design.heightMm) + kerf);
+
+  const lineIntervalMm = 0.1; // 254 DPI de referencia
+  const engraveSpeedMmS = 220; // Velocidad de barrido X de referencia en Vank 9060
+  const turnaroundSecPerLine = 0.085; // Tiempo real de desaceleración, overscan, paso Y y aceleración de carro X en cada inversión
+  const cutSpeedMmS = 25;
+  const rapidSpeedMmS = 250;
+
+  // Altura efectiva de grabado dentro de cada fila (~72% de la altura de la etiqueta si hay logo)
+  const hasEngrave = design.elements.length > 0;
+  const engraveHeightPerRowMm = hasEngrave ? Math.max(2, pH * 0.72) : 0;
+  const scanLinesPerRow = Math.ceil(engraveHeightPerRowMm / lineIntervalMm);
+  const totalScanLines = rows * scanLinesPerRow;
+
+  // En cada línea de barrido LightBurn recorre únicamente hasta la última pieza presente en esa fila
+  const totalActiveRowSpanMm =
+    pieceCount * pW + Math.max(0, pieceCount - rows) * gapXMm;
+  const totalHorizontalScanTravelMm = totalActiveRowSpanMm * scanLinesPerRow;
+
+  const engraveTimeSec = hasEngrave
+    ? totalHorizontalScanTravelMm / engraveSpeedMmS +
+      totalScanLines * turnaroundSecPerLine
+    : 0;
+
+  // Tiempo de corte perimetral + agujeros por pieza
+  const perimeterPerPieceMm = 2 * (pW + pH);
+  const holesCount =
+    design.holes.preset === 'none'
+      ? 0
+      : design.holes.preset === 'single_left' || design.holes.preset === 'single_top'
+        ? 1
+        : design.holes.preset === 'four_corners'
+          ? 4
+          : 2;
+  const holesPerimeterMm = holesCount * Math.PI * (design.holes.diameterMm || 1.8);
+  const cutTimeSec =
+    (pieceCount * (perimeterPerPieceMm + holesPerimeterMm)) / cutSpeedMmS;
+
+  // Tiempo de movimientos en vacío G0 en serpentina entre piezas
+  const rapidDistMm = pieceCount * (pW * 0.35 + gapXMm) + rows * (pH + gapYMm);
+  const rapidTimeSec = rapidDistMm / rapidSpeedMmS;
+
+  return roundMm(engraveTimeSec + cutTimeSec + rapidTimeSec, 1);
+}
+
+/**
+ * Evalúa las 3 mejores opciones que equilibran el Aprovechamiento de Espacio en Plancha (0 huecos)
+ * con la Velocidad de Realización en Máquina (mínimas filas de barrido X en la Vank 9060).
+ */
+export function evaluateBalancedLayoutPresets(
+  design: LabelDesign,
+  currentConfig: NestingConfig
+): BalancedLayoutPreset[] {
+  const compactMargin = 2.0;
+  const compactGap = currentConfig.sharedCutLines ? 0 : 0.5;
+  const usableW = Math.max(10, currentConfig.sheetWidthMm - compactMargin * 2);
+  const kerf = Math.max(0, design.kerfCompensationMm || 0);
+
+  // Priorizar orientación horizontal (lado largo en X, lado corto en Y) para máxima velocidad de barrido X
+  const prefer90 = !design.fold && design.heightMm > design.widthMm * 1.15;
+  const rotDeg: 0 | 90 = prefer90 ? 90 : 0;
+  const rotated90 = rotDeg === 90;
+
+  const pW = roundMm((rotated90 ? design.heightMm : design.widthMm) + kerf);
+  const pH = roundMm((rotated90 ? design.widthMm : design.heightMm) + kerf);
+
+  const maxCols = Math.max(1, Math.floor((usableW + compactGap) / (pW + compactGap)));
+  const qty = Math.max(1, Math.round(currentConfig.requestedQuantity));
+
+  // 1. Opción Velocidad Máxima (Mínima cantidad de filas R que entran en la plancha, con columnas balanceadas)
+  const minRows = Math.max(1, Math.ceil(qty / maxCols));
+  const speedCols = Math.min(maxCols, Math.ceil(qty / minRows));
+  const speedRows = Math.ceil(qty / speedCols);
+
+  // 2. Opción Equilibrio Ideal (0 lugares vacíos o mínimo absoluto de huecos, con pocas filas para alta velocidad)
+  let eqCols = speedCols;
+  let eqRows = speedRows;
+  let eqEmpty = eqCols * eqRows - qty;
+
+  const maxSearchRows = Math.min(200, Math.max(minRows + 10, Math.ceil(Math.sqrt(qty) * 1.8)));
+  for (let r = minRows; r <= maxSearchRows; r++) {
+    const c = Math.ceil(qty / r);
+    if (c > maxCols) continue;
+    const empty = c * r - qty;
+    if (empty < eqEmpty) {
+      eqCols = c;
+      eqRows = r;
+      eqEmpty = empty;
+      if (eqEmpty === 0) break; // Primer divisor exacto con la menor cantidad de filas posible
+    }
+  }
+
+  // 3. Opción Bloque Compacto (Rectángulo cerrado más angosto que deja al menos 35-45% del ancho de la plancha libre al costado)
+  let compactCols = eqCols;
+  let compactRows = eqRows;
+  let compactEmpty = eqCols * eqRows - qty;
+  const targetCompactMaxCols = Math.max(1, Math.floor(maxCols * 0.62));
+  const compactStartRows = Math.max(minRows + 1, Math.ceil(qty / targetCompactMaxCols));
+
+  for (let r = compactStartRows; r <= Math.min(250, compactStartRows + 12); r++) {
+    const c = Math.ceil(qty / r);
+    if (c > maxCols) continue;
+    const empty = c * r - qty;
+    if (r === compactStartRows || empty < compactEmpty) {
+      compactCols = c;
+      compactRows = r;
+      compactEmpty = empty;
+      if (compactEmpty === 0) break;
+    }
+  }
+
+  const buildPreset = (
+    id: BalancedLayoutPreset['id'],
+    title: string,
+    badge: string,
+    description: string,
+    cols: number,
+    rows: number
+  ): BalancedLayoutPreset => {
+    const emptySlots = Math.max(0, cols * rows - qty);
+    const blockWidthMm = roundMm(cols * pW + Math.max(0, cols - 1) * compactGap, 1);
+    const blockHeightMm = roundMm(rows * pH + Math.max(0, rows - 1) * compactGap, 1);
+    const freeSideWidthCm = roundMm(
+      Math.max(0, currentConfig.sheetWidthMm - compactMargin - blockWidthMm) / 10,
+      1
+    );
+    const blockFillPercent = roundMm((qty / Math.max(1, cols * rows)) * 100, 1);
+    const estimatedMachineTimeSec = estimateGridMachineTimeSec(
+      design,
+      cols,
+      rows,
+      qty,
+      compactGap,
+      compactGap,
+      rotated90
+    );
+
+    const configToApply: NestingConfig = {
+      ...currentConfig,
+      layoutMode: 'custom_cols',
+      customColumns: cols,
+      rotationMode: rotDeg === 90 ? '90' : '0',
+      gapXMm: compactGap,
+      gapYMm: compactGap,
+      marginTopMm: compactMargin,
+      marginRightMm: compactMargin,
+      marginBottomMm: compactMargin,
+      marginLeftMm: compactMargin,
+      centerInSheet: false,
+    };
+
+    return {
+      id,
+      title,
+      badge,
+      description,
+      cols,
+      rows,
+      rotationDeg: rotDeg,
+      emptySlots,
+      blockWidthMm,
+      blockHeightMm,
+      freeSideWidthCm,
+      blockFillPercent,
+      estimatedMachineTimeSec,
+      configToApply,
+    };
+  };
+
+  return [
+    buildPreset(
+      'equilibrium',
+      'Equilibrio Ideal (Espacio + Velocidad)',
+      'Recomendado',
+      'Rectángulo cerrado sin esquinas vacías y pocas filas horizontales para barrido rápido.',
+      eqCols,
+      eqRows
+    ),
+    buildPreset(
+      'max_speed',
+      'Velocidad Máxima (Mínimas Filas)',
+      'Más Rápido',
+      'Usa la menor cantidad de filas en Y para reducir al mínimo las frenadas del cabezal X.',
+      speedCols,
+      speedRows
+    ),
+    buildPreset(
+      'compact_block',
+      'Bloque Compacto (Ahorro Lateral)',
+      'Más Sobrante Libre',
+      'Bloque cerrado más angosto que deja mayor ancho libre a la derecha de la plancha.',
+      compactCols,
+      compactRows
+    ),
+  ];
+}
+
 /**
  * Calcula la caja envolvente absoluta ocupada por todas las piezas visibles en la mesa.
  */

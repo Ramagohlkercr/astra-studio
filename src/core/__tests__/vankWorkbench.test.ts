@@ -26,6 +26,7 @@ import {
   computeJobOriginPointMm,
   createWorkbenchJobFromOrder,
   createWorkbenchJobFromUploadedLogo,
+  evaluateBalancedLayoutPresets,
   fillLastRowFreeSlotsInWorkbench,
   simulateWorkbenchToolpath,
   updateWorkbenchJobDesignAndQuantity,
@@ -579,5 +580,37 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     const blockAreaMm2 =
       batch.occupiedBounds.width * batch.occupiedBounds.height;
     expect(blockAreaMm2).toBeLessThan(21500);
+  });
+
+  it('13. Evalúa las 3 opciones de Equilibrio (Espacio en Plancha + Velocidad de Máquina): Equilibrio 25x4 (0 vacíos), Velocidad 34x3 (3 filas) y Compacto 20x5 (0 vacíos)', () => {
+    const design = sampleOrder.labelDesign; // 20 x 10 mm
+    const presets = evaluateBalancedLayoutPresets(design, {
+      ...sampleOrder.nestingConfig,
+      requestedQuantity: 100,
+      sheetWidthMm: 730,
+      sheetHeightMm: 600,
+    });
+
+    expect(presets).toHaveLength(3);
+    const eq = presets.find((p) => p.id === 'equilibrium')!;
+    const spd = presets.find((p) => p.id === 'max_speed')!;
+    const cmp = presets.find((p) => p.id === 'compact_block')!;
+
+    // Equilibrio Ideal: 25 col x 4 filas (0 lugares vacíos, 100% lleno)
+    expect(eq.cols).toBe(25);
+    expect(eq.rows).toBe(4);
+    expect(eq.emptySlots).toBe(0);
+    expect(eq.blockFillPercent).toBe(100);
+
+    // Velocidad Máxima: 34 col x 3 filas (solo 3 filas verticales = menor tiempo de máquina)
+    expect(spd.cols).toBe(34);
+    expect(spd.rows).toBe(3);
+    expect(spd.estimatedMachineTimeSec).toBeLessThan(eq.estimatedMachineTimeSec);
+
+    // Bloque Compacto: 20 col x 5 filas (0 lugares vacíos, mayor sobrante libre al costado)
+    expect(cmp.cols).toBe(20);
+    expect(cmp.rows).toBe(5);
+    expect(cmp.emptySlots).toBe(0);
+    expect(cmp.freeSideWidthCm).toBeGreaterThan(eq.freeSideWidthCm);
   });
 });

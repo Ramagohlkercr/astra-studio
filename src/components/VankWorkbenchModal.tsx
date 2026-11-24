@@ -27,7 +27,11 @@ import {
   Wind,
   X,
 } from 'lucide-react';
-import { rasterImageTransform, roundMm } from '../core/geometry/geometryEngine';
+import {
+  compileLabelGeometry,
+  rasterImageTransform,
+  roundMm,
+} from '../core/geometry/geometryEngine';
 import { processImageDataUrlInBrowser } from '../core/image/browserImageLoader';
 import {
   DEFAULT_IMAGE_PROCESSING,
@@ -1110,6 +1114,83 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     strokeWidth="0.45"
                   />
                 </pattern>
+                {/* Símbolos maestros en (0,0) por trabajo para renderizado instantáneo (<use>) */}
+                {workbenchJobs
+                  .filter((j) => j.visible)
+                  .map((job, jobIndex) => {
+                    const isSelected = selectedJob?.id === job.id;
+                    const jobColors = ['#22d3ee', '#34d399', '#fbbf24', '#a78bfa', '#f472b6'];
+                    const jobAccentColor = jobColors[jobIndex % jobColors.length];
+                    const master = compileLabelGeometry(job.labelDesign, {
+                      offsetXMm: 0,
+                      offsetYMm: 0,
+                      rotated90: job.blockRotationDeg === 90,
+                      instanceIdPrefix: `master_${job.id}`,
+                    });
+                    return (
+                      <g key={`def-${job.id}`} id={`wb-master-${job.id}`}>
+                        <rect
+                          x={0}
+                          y={0}
+                          width={master.effectiveCutWidthMm}
+                          height={master.effectiveCutHeightMm}
+                          fill={material.visual.surfaceColor}
+                          fillOpacity={0.68}
+                          stroke={isSelected ? jobAccentColor : undefined}
+                          strokeWidth={isSelected ? '0.35' : undefined}
+                        />
+                        {(!engraveLayerCfg || engraveLayerCfg.visible) &&
+                          master.engravingItems.map((eng) => {
+                            if (eng.kind === 'vector_path' && eng.svgPathD) {
+                              return (
+                                <path
+                                  key={eng.id}
+                                  d={eng.svgPathD}
+                                  fill={eng.filled ? '#111827' : 'none'}
+                                  fillRule={eng.fillRule || 'evenodd'}
+                                  stroke="#111827"
+                                  strokeWidth={eng.filled ? 0.05 : eng.strokeWidthMm || 0.25}
+                                />
+                              );
+                            }
+                            if (eng.kind === 'raster_image' && eng.dataUrl) {
+                              return (
+                                <image
+                                  key={eng.id}
+                                  x={eng.xMm}
+                                  y={eng.yMm}
+                                  width={eng.widthMm}
+                                  height={eng.heightMm}
+                                  preserveAspectRatio="none"
+                                  href={eng.dataUrl}
+                                  transform={rasterImageTransform(eng)}
+                                />
+                              );
+                            }
+                            return null;
+                          })}
+                        {(!holesLayerCfg || holesLayerCfg.visible) &&
+                          master.holeContours.map((hole) => (
+                            <path
+                              key={hole.id}
+                              d={hole.svgPathD}
+                              fill="#090c10"
+                              stroke="#2563eb"
+                              strokeWidth="0.35"
+                            />
+                          ))}
+                        {(!cutLayerCfg || cutLayerCfg.visible) &&
+                          master.outerCutContour && (
+                            <path
+                              d={master.outerCutContour.svgPathD}
+                              fill="none"
+                              stroke="#ef4444"
+                              strokeWidth="0.45"
+                            />
+                          )}
+                      </g>
+                    );
+                  })}
               </defs>
 
               {/* 1. MESA FÍSICA VANK 9060 (900 x 600 mm) */}
@@ -1339,73 +1420,12 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       </text>
 
                       {job.instances.map((inst) => (
-                        <g key={`${job.id}-inst-${inst.instanceIndex}`}>
-                          <rect
-                            x={inst.localXMm}
-                            y={inst.localYMm}
-                            width={inst.widthMm}
-                            height={inst.heightMm}
-                            fill={material.visual.surfaceColor}
-                            fillOpacity={0.68}
-                            stroke={isSelected ? jobAccentColor : undefined}
-                            strokeWidth={isSelected ? '0.35' : undefined}
-                          />
-
-                          {/* CAPA C00: GRABADO */}
-                          {(!engraveLayerCfg || engraveLayerCfg.visible) &&
-                            inst.engraveItems.map((eng) => {
-                              if (eng.kind === 'vector_path' && eng.svgPathD) {
-                                return (
-                                  <path
-                                    key={eng.id}
-                                    d={eng.svgPathD}
-                                    fill={eng.filled ? '#111827' : 'none'}
-                                    fillRule={eng.fillRule || 'evenodd'}
-                                    stroke="#111827"
-                                    strokeWidth={eng.filled ? 0.05 : eng.strokeWidthMm || 0.25}
-                                  />
-                                );
-                              }
-                              if (eng.kind === 'raster_image' && eng.dataUrl) {
-                                return (
-                                  <image
-                                    key={eng.id}
-                                    x={eng.xMm}
-                                    y={eng.yMm}
-                                    width={eng.widthMm}
-                                    height={eng.heightMm}
-                                    preserveAspectRatio="none"
-                                    href={eng.dataUrl}
-                                    transform={rasterImageTransform(eng)}
-                                  />
-                                );
-                              }
-                              return null;
-                            })}
-
-                          {/* CAPA C01: ORIFICIOS INTERNOS */}
-                          {(!holesLayerCfg || holesLayerCfg.visible) &&
-                            inst.holeContours.map((hole) => (
-                              <path
-                                key={hole.id}
-                                d={hole.svgPathD}
-                                fill="#090c10"
-                                stroke="#2563eb"
-                                strokeWidth="0.35"
-                              />
-                            ))}
-
-                          {/* CAPA C02: CORTE EXTERIOR */}
-                          {(!cutLayerCfg || cutLayerCfg.visible) &&
-                            inst.cutContour && (
-                              <path
-                                d={inst.cutContour.svgPathD}
-                                fill="none"
-                                stroke="#ef4444"
-                                strokeWidth="0.45"
-                              />
-                            )}
-                        </g>
+                        <use
+                          key={`${job.id}-inst-${inst.instanceIndex}`}
+                          href={`#wb-master-${job.id}`}
+                          x={inst.localXMm}
+                          y={inst.localYMm}
+                        />
                       ))}
                     </g>
                   );
