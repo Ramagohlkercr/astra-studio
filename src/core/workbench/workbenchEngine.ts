@@ -2,7 +2,8 @@
  * Astra Studio — Motor Geométrico y de Planificación de Mesa de Trabajo (Estilo LightBurn)
  * Gestiona la compilación de múltiples trabajos y logos distintos sobre la plancha o rollo
  * de Ecocuero de 73 cm x 5 m (730 x 5000 mm, tiradas de hasta 600 mm en la Vank 9060),
- * optimización de ancho de rollo, validación pre-vuelo y simulación de trayectoria láser.
+ * empaquetado continuo Cero Desperdicio (intercalado de filas sin huecos entre trabajos),
+ * relleno inteligente de la última fila, validación pre-vuelo y simulación de trayectoria láser.
  */
 
 import {
@@ -11,6 +12,8 @@ import {
   fitAllElementsToAvailableSpace,
   roundMm,
 } from '../geometry/geometryEngine';
+import { supportsSharedCuts } from '../geometry/sharedCuts';
+import { computeNestingLayout } from '../nesting/nestingEngine';
 import { createBlankLabelDesign } from '../projects/projectManager';
 import {
   BoundingBox,
@@ -20,6 +23,7 @@ import {
   LabelShapeType,
   MaterialProfile,
   Millimeters,
+  NestingConfig,
   NestingResult,
 } from '../types';
 import {
@@ -38,7 +42,10 @@ import {
 } from './workbenchTypes';
 
 /**
- * Compila una grilla de etiquetas (columnas x filas) en coordenadas locales [0..widthMm, 0..heightMm]
+ * Compila una grilla o flujo continuo de etiquetas en coordenadas locales [0..widthMm, 0..heightMm].
+ * Si se indica `firstRowIndentMm > 0` y `usableSheetWidthMm`, la primera fila comienza desplazada
+ * en `firstRowIndentMm` (continuando en el hueco libre de la última fila del trabajo anterior)
+ * y a partir de la segunda fila vuelve al borde izquierdo `localX = 0` ocupando todo el ancho útil.
  */
 export function compileJobInstancesGrid(
   design: LabelDesign,
@@ -47,12 +54,22 @@ export function compileJobInstancesGrid(
   gapXMm: Millimeters,
   gapYMm: Millimeters,
   rotated90: boolean,
-  maxPieces?: number
+  maxPieces?: number,
+  continuousFlowOptions?: {
+    firstRowIndentMm: Millimeters;
+    firstRowShelfHeightMm: Millimeters;
+    usableSheetWidthMm: Millimeters;
+  }
 ): {
   instances: WorkbenchPlacedInstance[];
   widthMm: Millimeters;
   heightMm: Millimeters;
   pieceCount: number;
+  columnsUsed: number;
+  rowsUsed: number;
+  lastRowEndXMm: Millimeters;
+  lastRowLocalYMm: Millimeters;
+  pieceHeightMm: Millimeters;
 } {
   const safeCols = Math.max(1, Math.round(columns));
   const safeRows = Math.max(1, Math.round(rows));
@@ -68,19 +85,41 @@ export function compileJobInstancesGrid(
 
   const pieceW = sample.effectiveCutWidthMm;
   const pieceH = sample.effectiveCutHeightMm;
-  const limit = maxPieces !== undefined ? Math.max(1, Math.round(maxPieces)) : safeCols * safeRows;
+  const limit =
+    maxPieces !== undefined ? Math.max(1, Math.round(maxPieces)) : safeCols * safeRows;
 
   const instances: WorkbenchPlacedInstance[] = [];
   let maxX = 0;
   let maxY = 0;
-  let idx = 0;
+  let lastRowEndXMm = 0;
+  let lastRowLocalYMm = 0;
+  let maxColsSeen = 0;
+  let rowsUsed = 1;
 
-  for (let r = 0; r < safeRows; r++) {
-    for (let c = 0; c < safeCols; c++) {
-      if (idx >= limit) break;
-      idx++;
-      const localX = roundMm(c * (pieceW + safeGapX));
-      const localY = roundMm(r * (pieceH + safeGapY));
+  if (continuousFlowOptions && continuousFlowOptions.firstRowIndentMm > 0) {
+    const { firstRowIndentMm, firstRowShelfHeightMm, usableSheetWidthMm } =
+      continuousFlowOptions;
+
+    let cursorX = roundMm(firstRowIndentMm);
+    let cursorY = 0;
+    let currentRow = 0;
+    let colsInCurrentRow = 0;
+
+    for (let idx = 1; idx <= limit; idx++) {
+      // Si la pieza no entra en el resto de la fila actual, saltar a la siguiente fila en X = 0
+      if (cursorX > 0 && cursorX + pieceW > usableSheetWidthMm + 0.01) {
+        const stepH =
+          currentRow === 0
+            ? Math.max(firstRowShelfHeightMm, pieceH)
+            : pieceH;
+        cursorX = 0;
+        cursorY = roundMm(cursorY + stepH + safeGapY);
+        currentRow++;
+        colsInCurrentRow = 0;
+      }
+
+      const localX = roundMm(cursorX);
+      const localY = roundMm(cursorY);
       const compiled = compileLabelGeometry(design, {
         offsetXMm: localX,
         offsetYMm: localY,
@@ -100,8 +139,54 @@ export function compileJobInstancesGrid(
         cutContour: compiled.outerCutContour,
       });
 
-      maxX = Math.max(maxX, roundMm(localX + pieceW));
+      colsInCurrentRow++;
+      maxColsSeen = Math.max(maxColsSeen, colsInCurrentRow);
+      rowsUsed = currentRow + 1;
+      lastRowEndXMm = roundMm(localX + pieceW);
+      lastRowLocalYMm = localY;
+      maxX = Math.max(maxX, lastRowEndXMm);
       maxY = Math.max(maxY, roundMm(localY + pieceH));
+
+      cursorX = roundMm(localX + pieceW + safeGapX);
+    }
+  } else {
+    let idx = 0;
+    for (let r = 0; r < safeRows; r++) {
+      let colsInRow = 0;
+      for (let c = 0; c < safeCols; c++) {
+        if (idx >= limit) break;
+        idx++;
+        colsInRow++;
+        const localX = roundMm(c * (pieceW + safeGapX));
+        const localY = roundMm(r * (pieceH + safeGapY));
+        const compiled = compileLabelGeometry(design, {
+          offsetXMm: localX,
+          offsetYMm: localY,
+          rotated90,
+          instanceIdPrefix: `wb_p${idx}`,
+        });
+
+        instances.push({
+          instanceIndex: idx,
+          localXMm: localX,
+          localYMm: localY,
+          widthMm: pieceW,
+          heightMm: pieceH,
+          rotated90,
+          engraveItems: compiled.engravingItems,
+          holeContours: compiled.holeContours,
+          cutContour: compiled.outerCutContour,
+        });
+
+        lastRowEndXMm = roundMm(localX + pieceW);
+        lastRowLocalYMm = localY;
+        maxX = Math.max(maxX, lastRowEndXMm);
+        maxY = Math.max(maxY, roundMm(localY + pieceH));
+      }
+      if (colsInRow > 0) {
+        maxColsSeen = Math.max(maxColsSeen, colsInRow);
+        rowsUsed = r + 1;
+      }
     }
   }
 
@@ -110,7 +195,53 @@ export function compileJobInstancesGrid(
     widthMm: roundMm(maxX),
     heightMm: roundMm(maxY),
     pieceCount: instances.length,
+    columnsUsed: Math.max(1, maxColsSeen),
+    rowsUsed: Math.max(1, rowsUsed),
+    lastRowEndXMm,
+    lastRowLocalYMm,
+    pieceHeightMm: pieceH,
   };
+}
+
+/**
+ * Evalúa si rotar la etiqueta 90° reduce el avance vertical de rollo (Y) para la cantidad pedida.
+ */
+export function chooseOptimalRotationForMinRollAdvance(
+  design: LabelDesign,
+  requestedPieces: number,
+  gapXMm: Millimeters,
+  gapYMm: Millimeters,
+  config: WorkbenchConfig
+): 0 | 90 {
+  if (design.fold) return 0;
+  const usableWidth = Math.max(
+    10,
+    config.sheetWidthMm - config.sheetSafetyMarginMm * 2
+  );
+  const safeQty = Math.max(1, Math.round(requestedPieces));
+  const safeGapX = Math.max(0, gapXMm);
+  const safeGapY = Math.max(0, gapYMm);
+
+  const s0 = compileLabelGeometry(design, {
+    offsetXMm: 0,
+    offsetYMm: 0,
+    rotated90: false,
+  });
+  const w0 = Math.max(1, s0.effectiveCutWidthMm);
+  const h0 = Math.max(1, s0.effectiveCutHeightMm);
+
+  const cols0 = Math.max(1, Math.floor((usableWidth + safeGapX) / (w0 + safeGapX)));
+  const rows0 = Math.ceil(safeQty / cols0);
+  const advance0 = rows0 * h0 + Math.max(0, rows0 - 1) * safeGapY;
+
+  const cols90 = Math.max(1, Math.floor((usableWidth + safeGapX) / (h0 + safeGapX)));
+  const rows90 = Math.ceil(safeQty / cols90);
+  const advance90 = rows90 * w0 + Math.max(0, rows90 - 1) * safeGapY;
+
+  if (advance90 < advance0 - 0.1) {
+    return 90;
+  }
+  return 0;
 }
 
 /**
@@ -178,7 +309,7 @@ export function createWorkbenchJobFromOrder(params: {
   } = params;
 
   const batch = nesting.batches[batchIndex] || nesting.batches[0];
-  const rotated90 = nesting.appliedRotationDeg === 90;
+  let rotated90 = nesting.appliedRotationDeg === 90;
   const gapXMm = nesting.config.gapXMm;
   const gapYMm = nesting.config.gapYMm;
 
@@ -189,6 +320,16 @@ export function createWorkbenchJobFromOrder(params: {
   if (mode === 'active_batch' && batch) {
     maxPieces = Math.max(1, customQuantity ?? batch.count);
     if (config.isRollMaterial) {
+      if (config.autoRotateForMinRoll) {
+        rotated90 =
+          chooseOptimalRotationForMinRollAdvance(
+            design,
+            maxPieces,
+            gapXMm,
+            gapYMm,
+            config
+          ) === 90;
+      }
       const opt = computeOptimalColumnsForSheetWidth(
         design,
         maxPieces,
@@ -204,6 +345,16 @@ export function createWorkbenchJobFromOrder(params: {
     }
   } else if (mode === 'roll_strip') {
     maxPieces = Math.max(1, customQuantity ?? nesting.config.requestedQuantity ?? 50);
+    if (config.autoRotateForMinRoll) {
+      rotated90 =
+        chooseOptimalRotationForMinRollAdvance(
+          design,
+          maxPieces,
+          gapXMm,
+          gapYMm,
+          config
+        ) === 90;
+    }
     const opt = computeOptimalColumnsForSheetWidth(
       design,
       maxPieces,
@@ -237,7 +388,7 @@ export function createWorkbenchJobFromOrder(params: {
   const visibleJobs = existingJobs.filter((j) => j.visible);
   if (visibleJobs.length > 0) {
     const lastJob = visibleJobs[visibleJobs.length - 1];
-    const candidateRightX = roundMm(lastJob.xMm + lastJob.widthMm + Math.max(4, gapXMm));
+    const candidateRightX = roundMm(lastJob.xMm + lastJob.widthMm + Math.max(2, gapXMm));
     const maxSheetX = config.sheetOffsetXMm + config.sheetWidthMm - margin;
 
     if (candidateRightX + compiledGrid.widthMm <= maxSheetX) {
@@ -248,7 +399,7 @@ export function createWorkbenchJobFromOrder(params: {
         ...visibleJobs.map((j) => roundMm(j.yMm + j.heightMm))
       );
       targetX = roundMm(config.sheetOffsetXMm + margin);
-      targetY = roundMm(lowestBottomY + Math.max(4, gapYMm));
+      targetY = roundMm(lowestBottomY + Math.max(2, gapYMm));
     }
   }
 
@@ -267,10 +418,13 @@ export function createWorkbenchJobFromOrder(params: {
     heightMm: compiledGrid.heightMm,
     blockRotationDeg: rotated90 ? 90 : 0,
     pieceCount: compiledGrid.pieceCount,
-    columns: cols,
-    rows,
+    columns: compiledGrid.columnsUsed,
+    rows: compiledGrid.rowsUsed,
     gapXMm,
     gapYMm,
+    firstRowIndentMm: 0,
+    lastRowEndXMm: compiledGrid.lastRowEndXMm,
+    lastRowLocalYMm: compiledGrid.lastRowLocalYMm,
     instances: compiledGrid.instances,
     locked: false,
     visible: true,
@@ -317,7 +471,6 @@ export function createWorkbenchJobFromUploadedLogo(params: {
     preset: holePreset,
   };
 
-  // Ajustar y centrar el logo proporcionalmente dentro de la zona segura de la etiqueta
   const fittedElements = fitAllElementsToAvailableSpace(
     [element],
     baseDesign,
@@ -356,7 +509,7 @@ export function createWorkbenchJobFromUploadedLogo(params: {
   const visibleJobs = existingJobs.filter((j) => j.visible);
   if (visibleJobs.length > 0) {
     const lastJob = visibleJobs[visibleJobs.length - 1];
-    const candidateRightX = roundMm(lastJob.xMm + lastJob.widthMm + Math.max(4, gapXMm));
+    const candidateRightX = roundMm(lastJob.xMm + lastJob.widthMm + Math.max(2, gapXMm));
     const maxSheetX = config.sheetOffsetXMm + config.sheetWidthMm - margin;
 
     if (candidateRightX + compiledGrid.widthMm <= maxSheetX) {
@@ -367,7 +520,7 @@ export function createWorkbenchJobFromUploadedLogo(params: {
         ...visibleJobs.map((j) => roundMm(j.yMm + j.heightMm))
       );
       targetX = roundMm(config.sheetOffsetXMm + margin);
-      targetY = roundMm(lowestBottomY + Math.max(4, gapYMm));
+      targetY = roundMm(lowestBottomY + Math.max(2, gapYMm));
     }
   }
 
@@ -384,10 +537,13 @@ export function createWorkbenchJobFromUploadedLogo(params: {
     heightMm: compiledGrid.heightMm,
     blockRotationDeg: 0,
     pieceCount: compiledGrid.pieceCount,
-    columns: opt.columns,
-    rows: opt.rows,
+    columns: compiledGrid.columnsUsed,
+    rows: compiledGrid.rowsUsed,
     gapXMm,
     gapYMm,
+    firstRowIndentMm: 0,
+    lastRowEndXMm: compiledGrid.lastRowEndXMm,
+    lastRowLocalYMm: compiledGrid.lastRowLocalYMm,
     instances: compiledGrid.instances,
     locked: false,
     visible: true,
@@ -414,10 +570,12 @@ export function updateWorkbenchJobDesignAndQuantity(
     gapYMm?: Millimeters;
     blockRotationDeg?: 0 | 90;
     autoFitColumnsToRoll?: boolean;
+    firstRowIndentMm?: Millimeters;
+    firstRowShelfHeightMm?: Millimeters;
   },
   config?: WorkbenchConfig
 ): WorkbenchJobItem {
-  let nextDesign = structuredClone(job.labelDesign);
+  const nextDesign = structuredClone(job.labelDesign);
   const dimensionsChanged =
     (updates.widthMm !== undefined && Math.abs(updates.widthMm - nextDesign.widthMm) > 0.01) ||
     (updates.heightMm !== undefined && Math.abs(updates.heightMm - nextDesign.heightMm) > 0.01) ||
@@ -445,7 +603,6 @@ export function updateWorkbenchJobDesignAndQuantity(
     };
   }
 
-  // Si cambiaron las medidas, forma u orificios, re-encuadrar y centrar el logo sin deformarlo
   if (dimensionsChanged && nextDesign.elements.length > 0) {
     const fitted = fitAllElementsToAvailableSpace(
       nextDesign.elements,
@@ -488,8 +645,6 @@ export function updateWorkbenchJobDesignAndQuantity(
     rows = opt.rows;
   } else if (updates.columns !== undefined && updates.rows === undefined) {
     rows = Math.max(1, Math.ceil(targetPieces / cols));
-  } else if (updates.columns !== undefined && updates.rows !== undefined) {
-    // Si el usuario editó explícitamente filas o columnas
   }
 
   const maxCapacity = cols * rows;
@@ -504,6 +659,13 @@ export function updateWorkbenchJobDesignAndQuantity(
     rows = Math.ceil(effectivePieces / cols);
   }
 
+  const usableSheetWidthMm = config
+    ? Math.max(10, config.sheetWidthMm - config.sheetSafetyMarginMm * 2)
+    : undefined;
+
+  const firstRowIndentMm = updates.firstRowIndentMm ?? 0;
+  const firstRowShelfHeightMm = updates.firstRowShelfHeightMm ?? 0;
+
   const compiled = compileJobInstancesGrid(
     nextDesign,
     cols,
@@ -511,7 +673,14 @@ export function updateWorkbenchJobDesignAndQuantity(
     gapXMm,
     gapYMm,
     rot === 90,
-    effectivePieces
+    effectivePieces,
+    firstRowIndentMm > 0 && usableSheetWidthMm
+      ? {
+          firstRowIndentMm,
+          firstRowShelfHeightMm,
+          usableSheetWidthMm,
+        }
+      : undefined
   );
 
   const rawBaseName =
@@ -522,14 +691,18 @@ export function updateWorkbenchJobDesignAndQuantity(
     name: `${rawBaseName} (${compiled.pieceCount} u.)`,
     clientName: updates.clientName !== undefined ? updates.clientName : job.clientName,
     labelDesign: nextDesign,
-    columns: cols,
-    rows,
+    columns: compiled.columnsUsed,
+    rows: compiled.rowsUsed,
     gapXMm,
     gapYMm,
     blockRotationDeg: rot,
     pieceCount: compiled.pieceCount,
     widthMm: compiled.widthMm,
     heightMm: compiled.heightMm,
+    firstRowIndentMm,
+    firstRowShelfHeightMm,
+    lastRowEndXMm: compiled.lastRowEndXMm,
+    lastRowLocalYMm: compiled.lastRowLocalYMm,
     instances: compiled.instances,
   };
 }
@@ -552,21 +725,103 @@ export function updateWorkbenchJobGrid(
 }
 
 /**
- * Acomoda automáticamente todos los trabajos visibles dentro de la plancha (algoritmo Shelf/Strip Packing).
- * Cuando `optimizeColumnsForRoll` es true (por defecto en rollo de Ecocuero de 73 cm), primero ajusta
- * las columnas de cada trabajo para aprovechar los 73 cm de ancho y consumir el mínimo largo posible del rollo de 5m.
+ * Acomoda todos los trabajos visibles dentro de la plancha.
+ * - Si `optimizeColumnsForRoll` es true y `config.packingMode === 'continuous_zero_waste'`,
+ *   intercala los trabajos en flujo continuo pieza por pieza: cada trabajo nuevo comienza
+ *   directamente en el hueco vacío que dejó la última fila incompleta del trabajo anterior,
+ *   y en su segunda fila vuelve al borde izquierdo de los 73 cm, logrando CERO HUECOS vacíos entre pedidos.
+ * - Si `optimizeColumnsForRoll` es false (o `packingMode === 'rectangular_blocks'`), acomoda
+ *   los bloques rectangulares sin solapamiento por estantes (Shelf Packing).
  */
 export function autoArrangeWorkbenchJobs(
   jobs: WorkbenchJobItem[],
   config: WorkbenchConfig,
-  interJobGapMm = 4,
+  interJobGapMm = 2,
   optimizeColumnsForRoll = false
 ): WorkbenchJobItem[] {
   const margin = Math.max(0, config.sheetSafetyMarginMm);
   const startX = roundMm(config.sheetOffsetXMm + margin);
   const startY = roundMm(config.sheetOffsetYMm + margin);
   const maxRightX = roundMm(config.sheetOffsetXMm + config.sheetWidthMm - margin);
+  const usableWidth = Math.max(10, roundMm(maxRightX - startX));
 
+  const useContinuousStream =
+    optimizeColumnsForRoll && config.packingMode !== 'rectangular_blocks';
+
+  if (useContinuousStream) {
+    let currentShelfY = startY;
+    let currentIndentMm = 0; // Desplazamiento X local dentro de [0..usableWidth]
+    let currentShelfMaxHeight = 0;
+
+    return jobs.map((rawJob) => {
+      if (!rawJob.visible || rawJob.locked) {
+        return rawJob;
+      }
+
+      // Evaluar dimensiones de una pieza del trabajo
+      const sample = compileLabelGeometry(rawJob.labelDesign, {
+        offsetXMm: 0,
+        offsetYMm: 0,
+        rotated90: rawJob.blockRotationDeg === 90,
+      });
+      const pieceW = sample.effectiveCutWidthMm;
+      const pieceH = sample.effectiveCutHeightMm;
+      const gapX = Math.max(0, rawJob.gapXMm);
+      const gapY = Math.max(0, rawJob.gapYMm);
+
+      // Verificar si al menos 1 etiqueta de este trabajo entra en el hueco restante de la fila actual
+      if (currentIndentMm > 0 && currentIndentMm + pieceW > usableWidth + 0.01) {
+        // No entra ni 1 pieza en el resto de la fila: avanzar a una fila nueva limpia en X = 0
+        currentShelfY = roundMm(
+          currentShelfY + Math.max(currentShelfMaxHeight, pieceH) + Math.max(gapY, interJobGapMm)
+        );
+        currentIndentMm = 0;
+        currentShelfMaxHeight = 0;
+      }
+
+      const rebuilt = updateWorkbenchJobDesignAndQuantity(
+        rawJob,
+        {
+          pieceCount: rawJob.pieceCount,
+          autoFitColumnsToRoll: true,
+          firstRowIndentMm: currentIndentMm,
+          firstRowShelfHeightMm: currentShelfMaxHeight,
+        },
+        config
+      );
+
+      const placed: WorkbenchJobItem = {
+        ...rebuilt,
+        xMm: startX,
+        yMm: currentShelfY,
+      };
+
+      const lastRowLocalY = rebuilt.lastRowLocalYMm ?? 0;
+      const lastRowEndX = rebuilt.lastRowEndXMm ?? rebuilt.widthMm;
+
+      if (lastRowLocalY > 0) {
+        // El trabajo envolvió hacia una o más filas nuevas debajo de currentShelfY
+        currentShelfY = roundMm(currentShelfY + lastRowLocalY);
+        currentShelfMaxHeight = pieceH;
+      } else {
+        // El trabajo entero quedó en la misma fila compartida
+        currentShelfMaxHeight = Math.max(currentShelfMaxHeight, pieceH);
+      }
+
+      currentIndentMm = roundMm(lastRowEndX + Math.max(gapX, interJobGapMm));
+      if (currentIndentMm + pieceW > usableWidth + 0.01) {
+        currentShelfY = roundMm(
+          currentShelfY + currentShelfMaxHeight + Math.max(gapY, interJobGapMm)
+        );
+        currentIndentMm = 0;
+        currentShelfMaxHeight = 0;
+      }
+
+      return placed;
+    });
+  }
+
+  // Modo bloques rectangulares (Shelf Packing clásico)
   let cursorX = startX;
   let cursorY = startY;
   let shelfHeight = 0;
@@ -582,10 +837,17 @@ export function autoArrangeWorkbenchJobs(
           {
             pieceCount: rawJob.pieceCount,
             autoFitColumnsToRoll: true,
+            firstRowIndentMm: 0,
           },
           config
         )
-      : rawJob;
+      : rawJob.firstRowIndentMm
+        ? updateWorkbenchJobDesignAndQuantity(
+            rawJob,
+            { firstRowIndentMm: 0 },
+            config
+          )
+        : rawJob;
 
     if (cursorX > startX && cursorX + job.widthMm > maxRightX) {
       cursorX = startX;
@@ -606,7 +868,103 @@ export function autoArrangeWorkbenchJobs(
 }
 
 /**
- * Calcula las métricas reales de consumo del rollo de Ecocuero (73 cm de ancho x 5 m de largo).
+ * Aplica en 1 clic la configuración de Ahorro Extremo de Material (Cero Desperdicio) a toda la mesa/rollo:
+ * - Margen perimetral compacto (2 mm)
+ * - Separación ultra-compacta entre piezas (0.5 mm)
+ * - Evaluación automática de rotación 0° vs 90° por trabajo para menor avance de rollo
+ * - Intercalado continuo de filas pieza por pieza sin huecos vacíos entre logos.
+ */
+export function applyExtremeMaterialSavingToWorkbench(
+  jobs: WorkbenchJobItem[],
+  config: WorkbenchConfig
+): { config: WorkbenchConfig; jobs: WorkbenchJobItem[] } {
+  const nextConfig: WorkbenchConfig = {
+    ...config,
+    sheetSafetyMarginMm: 2,
+    packingMode: 'continuous_zero_waste',
+    savingPreset: 'extreme_zero_waste',
+    autoRotateForMinRoll: true,
+  };
+
+  const compactJobs = jobs.map((job) => {
+    if (!job.visible || job.locked) return job;
+    const compactGap = 0.5;
+    const bestRot = chooseOptimalRotationForMinRollAdvance(
+      job.labelDesign,
+      job.pieceCount,
+      compactGap,
+      compactGap,
+      nextConfig
+    );
+    return updateWorkbenchJobDesignAndQuantity(
+      job,
+      {
+        gapXMm: compactGap,
+        gapYMm: compactGap,
+        blockRotationDeg: bestRot,
+        autoFitColumnsToRoll: true,
+      },
+      nextConfig
+    );
+  });
+
+  const arranged = autoArrangeWorkbenchJobs(compactJobs, nextConfig, 1.5, true);
+  return { config: nextConfig, jobs: arranged };
+}
+
+/**
+ * Completa los lugares vacíos que quedan en la última fila de la tirada agregando
+ * etiquetas extra al último trabajo activo, sin gastar ni 1 mm adicional de rollo.
+ */
+export function fillLastRowFreeSlotsInWorkbench(
+  jobs: WorkbenchJobItem[],
+  config: WorkbenchConfig
+): { jobs: WorkbenchJobItem[]; addedPieces: number } {
+  const metrics = computeEcocueroRollMetrics(jobs, config);
+  if (metrics.freeSlotsInLastRow <= 0) {
+    return { jobs, addedPieces: 0 };
+  }
+
+  const visibleIndices = jobs
+    .map((j, idx) => (j.visible && !j.locked ? idx : -1))
+    .filter((idx) => idx >= 0);
+
+  if (visibleIndices.length === 0) {
+    return { jobs, addedPieces: 0 };
+  }
+
+  const lastIdx = visibleIndices[visibleIndices.length - 1];
+  const targetJob = jobs[lastIdx];
+  const addedPieces = metrics.freeSlotsInLastRow;
+
+  const updatedJobs = jobs.map((j, idx) =>
+    idx === lastIdx
+      ? updateWorkbenchJobDesignAndQuantity(
+          targetJob,
+          {
+            pieceCount: targetJob.pieceCount + addedPieces,
+            autoFitColumnsToRoll: true,
+          },
+          config
+        )
+      : j
+  );
+
+  const arranged = autoArrangeWorkbenchJobs(
+    updatedJobs,
+    config,
+    config.savingPreset === 'extreme_zero_waste' ? 1.5 : 4,
+    true
+  );
+
+  return {
+    jobs: arranged,
+    addedPieces,
+  };
+}
+
+/**
+ * Calcula las métricas reales de consumo y ahorro del rollo de Ecocuero (73 cm de ancho x 5 m de largo).
  */
 export function computeEcocueroRollMetrics(
   jobs: WorkbenchJobItem[],
@@ -617,8 +975,9 @@ export function computeEcocueroRollMetrics(
   const totalRollLengthMm = config.rollTotalLengthMm || ECOCUERO_ROLL_TOTAL_LENGTH_MM;
   const totalRollLengthCm = roundMm(totalRollLengthMm / 10, 1);
 
-  const bounds = computeWorkbenchOccupiedBounds(jobs);
-  if (!bounds) {
+  const visibleJobs = jobs.filter((j) => j.visible && j.instances.length > 0);
+  const bounds = computeWorkbenchOccupiedBounds(visibleJobs);
+  if (!bounds || visibleJobs.length === 0) {
     return {
       rollWidthMm,
       rollWidthCm,
@@ -630,12 +989,17 @@ export function computeEcocueroRollMetrics(
       remainingRollLengthMeters: roundMm(totalRollLengthMm / 1000, 2),
       rollConsumptionPercent: 0,
       widthUtilizationPercent: 0,
+      stripAreaEfficiencyPercent: 0,
+      freeSlotsInLastRow: 0,
+      freeWidthInLastRowMm: 0,
+      freeWidthInLastRowCm: 0,
+      savedRollLengthMm: 0,
+      savedRollLengthCm: 0,
       estimatedRunsPerRoll: 0,
       exceedsSingleBedPass: false,
     };
   }
 
-  // Avance lineal desde el inicio de la plancha hasta el borde inferior del último trabajo + margen
   const rawAdvanceMm = Math.max(
     0,
     bounds.maxY - config.sheetOffsetYMm + config.sheetSafetyMarginMm
@@ -658,6 +1022,54 @@ export function computeEcocueroRollMetrics(
     Math.min(100, (bounds.width / usableRollWidthMm) * 100),
     1
   );
+
+  // Calcular área real de piezas vs área de la franja de rollo consumida
+  let totalPiecesAreaMm2 = 0;
+  for (const job of visibleJobs) {
+    for (const inst of job.instances) {
+      totalPiecesAreaMm2 += inst.widthMm * inst.heightMm;
+    }
+  }
+  const consumedStripAreaMm2 = Math.max(1, usableRollWidthMm * bounds.height);
+  const stripAreaEfficiencyPercent = roundMm(
+    Math.min(100, (totalPiecesAreaMm2 / consumedStripAreaMm2) * 100),
+    1
+  );
+
+  // Calcular cuántos lugares vacíos quedan en la última fila del último trabajo sin gastar más rollo
+  const lastJob = visibleJobs[visibleJobs.length - 1];
+  const lastInst = lastJob.instances[lastJob.instances.length - 1];
+  const lastRowEndAbsX = roundMm(
+    lastJob.xMm + (lastJob.lastRowEndXMm ?? lastInst.localXMm + lastInst.widthMm)
+  );
+  const maxUsableAbsX = roundMm(
+    config.sheetOffsetXMm + config.sheetWidthMm - config.sheetSafetyMarginMm
+  );
+  const freeWidthInLastRowMm = Math.max(0, roundMm(maxUsableAbsX - lastRowEndAbsX));
+  const freeWidthInLastRowCm = roundMm(freeWidthInLastRowMm / 10, 1);
+  const stepW = Math.max(1, lastInst.widthMm + Math.max(0, lastJob.gapXMm));
+  const freeSlotsInLastRow = Math.max(
+    0,
+    Math.floor((freeWidthInLastRowMm + 0.01) / stepW)
+  );
+
+  // Calcular ahorro en mm frente a bloques separados tradicionales (margen 5mm, gap 2mm, sin flujo continuo)
+  let traditionalStackedHeightMm = 10; // 5mm top + 5mm bottom margin
+  const traditionalUsableW = Math.max(10, rollWidthMm - 10);
+  for (const job of visibleJobs) {
+    const pW = job.labelDesign.widthMm;
+    const pH = job.labelDesign.heightMm;
+    const tradCols = Math.max(1, Math.floor((traditionalUsableW + 2) / (pW + 2)));
+    const tradRows = Math.ceil(job.pieceCount / tradCols);
+    traditionalStackedHeightMm += tradRows * pH + Math.max(0, tradRows - 1) * 2 + 4;
+  }
+  traditionalStackedHeightMm = Math.max(0, traditionalStackedHeightMm - 4);
+  const savedRollLengthMm = Math.max(
+    0,
+    roundMm(traditionalStackedHeightMm - usedLengthMm, 1)
+  );
+  const savedRollLengthCm = roundMm(savedRollLengthMm / 10, 1);
+
   const estimatedRunsPerRoll =
     usedLengthMm > 0 ? Math.floor(totalRollLengthMm / usedLengthMm) : 0;
   const exceedsSingleBedPass = usedLengthMm > config.machineBedHeightMm + 0.01;
@@ -673,13 +1085,156 @@ export function computeEcocueroRollMetrics(
     remainingRollLengthMeters,
     rollConsumptionPercent,
     widthUtilizationPercent,
+    stripAreaEfficiencyPercent,
+    freeSlotsInLastRow,
+    freeWidthInLastRowMm,
+    freeWidthInLastRowCm,
+    savedRollLengthMm,
+    savedRollLengthCm,
     estimatedRunsPerRoll,
     exceedsSingleBedPass,
   };
 }
 
 /**
- * Calcula la caja envolvente absoluta ocupada por todos los trabajos visibles en la mesa.
+ * Analiza el potencial de ahorro de material en el Paso 5 (Producción) y Paso 6 (Exportar)
+ * antes de exportar, permitiendo optimizar márgenes, separación, rotación y completar la última fila.
+ */
+export interface StepMaterialSavingAnalysis {
+  currentAdvanceMm: Millimeters;
+  currentAdvanceCm: number;
+  optimizedAdvanceMm: Millimeters;
+  optimizedAdvanceCm: number;
+  savedAdvanceMm: Millimeters;
+  savedAdvanceCm: number;
+  freeSlotsInLastRow: number;
+  freeWidthInLastRowMm: Millimeters;
+  currentCols: number;
+  currentRows: number;
+  optimizedCols: number;
+  optimizedRows: number;
+  canUseSharedCuts: boolean;
+  isAlreadyOptimal: boolean;
+}
+
+export function analyzeStepMaterialSavings(
+  design: LabelDesign,
+  nesting: NestingResult,
+  batchIndex = 0
+): StepMaterialSavingAnalysis {
+  const batch = nesting.batches[batchIndex] || nesting.batches[0];
+  const currentCols = batch?.columnsUsed ?? 1;
+  const currentRows = batch?.rowsUsed ?? 1;
+  const currentAdvanceMm = batch
+    ? roundMm(batch.occupiedBounds.maxY + nesting.config.marginBottomMm, 1)
+    : 0;
+  const currentAdvanceCm = roundMm(currentAdvanceMm / 10, 1);
+
+  const maxColsInSheet = Math.max(1, nesting.maxColumnsPerSheet);
+  const batchCount = batch?.count ?? nesting.config.requestedQuantity;
+  const lastRowCount = batchCount % maxColsInSheet;
+  const freeSlotsInLastRow =
+    lastRowCount === 0 ? 0 : Math.max(0, maxColsInSheet - lastRowCount);
+  const freeWidthInLastRowMm = roundMm(
+    freeSlotsInLastRow * (nesting.pieceWidthMm + nesting.config.gapXMm),
+    1
+  );
+
+  const canUseSharedCuts =
+    supportsSharedCuts(design) && design.kerfCompensationMm === 0;
+
+  // Simular configuración de máximo ahorro en toda la plancha
+  const optConfig = buildOptimalSavingNestingConfig(design, nesting.config, false);
+  const optNesting = computeNestingLayout(design, optConfig);
+  const optBatch = optNesting.batches[0];
+  const optimizedAdvanceMm = optBatch
+    ? roundMm(optBatch.occupiedBounds.maxY + optConfig.marginBottomMm, 1)
+    : currentAdvanceMm;
+  const optimizedAdvanceCm = roundMm(optimizedAdvanceMm / 10, 1);
+
+  const savedAdvanceMm = Math.max(
+    0,
+    roundMm(currentAdvanceMm - optimizedAdvanceMm, 1)
+  );
+  const savedAdvanceCm = roundMm(savedAdvanceMm / 10, 1);
+
+  const isAlreadyOptimal =
+    nesting.config.layoutMode === 'sheet' &&
+    nesting.config.marginLeftMm <= 2.1 &&
+    nesting.config.gapXMm <= 0.51 &&
+    savedAdvanceMm < 1.0;
+
+  return {
+    currentAdvanceMm,
+    currentAdvanceCm,
+    optimizedAdvanceMm,
+    optimizedAdvanceCm,
+    savedAdvanceMm,
+    savedAdvanceCm,
+    freeSlotsInLastRow,
+    freeWidthInLastRowMm,
+    currentCols,
+    currentRows,
+    optimizedCols: optBatch?.columnsUsed ?? currentCols,
+    optimizedRows: optBatch?.rowsUsed ?? currentRows,
+    canUseSharedCuts,
+    isAlreadyOptimal,
+  };
+}
+
+/**
+ * Construye una NestingConfig optimizada para máximo aprovechamiento del ancho de plancha/rollo.
+ */
+export function buildOptimalSavingNestingConfig(
+  design: LabelDesign,
+  currentConfig: NestingConfig,
+  useSharedCutsIfPossible = false
+): NestingConfig {
+  const canShare =
+    useSharedCutsIfPossible &&
+    supportsSharedCuts(design) &&
+    design.kerfCompensationMm === 0;
+  const compactGap = canShare ? 0 : 0.5;
+  const compactMargin = 2.0;
+
+  // Evaluar si 0° o 90° consume menor avance vertical Y para la cantidad solicitada
+  const usableW = Math.max(10, currentConfig.sheetWidthMm - compactMargin * 2);
+  const kerf = Math.max(0, design.kerfCompensationMm || 0);
+  const w0 = roundMm(design.widthMm + kerf);
+  const h0 = roundMm(design.heightMm + kerf);
+  const qty = Math.max(1, currentConfig.requestedQuantity);
+
+  const cols0 = Math.max(1, Math.floor((usableW + compactGap) / (w0 + compactGap)));
+  const rows0 = Math.ceil(qty / cols0);
+  const adv0 = rows0 * h0 + Math.max(0, rows0 - 1) * compactGap;
+
+  const cols90 = Math.max(1, Math.floor((usableW + compactGap) / (h0 + compactGap)));
+  const rows90 = Math.ceil(qty / cols90);
+  const adv90 = rows90 * w0 + Math.max(0, rows90 - 1) * compactGap;
+
+  const bestRotationMode: NestingConfig['rotationMode'] = design.fold
+    ? '0'
+    : adv90 < adv0 - 0.1
+      ? '90'
+      : '0';
+
+  return {
+    ...currentConfig,
+    layoutMode: 'sheet',
+    sharedCutLines: canShare,
+    gapXMm: compactGap,
+    gapYMm: compactGap,
+    marginTopMm: compactMargin,
+    marginRightMm: compactMargin,
+    marginBottomMm: compactMargin,
+    marginLeftMm: compactMargin,
+    rotationMode: bestRotationMode,
+    centerInSheet: false,
+  };
+}
+
+/**
+ * Calcula la caja envolvente absoluta ocupada por todas las piezas visibles en la mesa.
  */
 export function computeWorkbenchOccupiedBounds(jobs: WorkbenchJobItem[]): BoundingBox | null {
   const visible = jobs.filter((j) => j.visible && j.instances.length > 0);
@@ -691,10 +1246,14 @@ export function computeWorkbenchOccupiedBounds(jobs: WorkbenchJobItem[]): Boundi
   let maxY = -Infinity;
 
   for (const job of visible) {
-    minX = Math.min(minX, job.xMm);
-    minY = Math.min(minY, job.yMm);
-    maxX = Math.max(maxX, roundMm(job.xMm + job.widthMm));
-    maxY = Math.max(maxY, roundMm(job.yMm + job.heightMm));
+    for (const inst of job.instances) {
+      const ix = roundMm(job.xMm + inst.localXMm);
+      const iy = roundMm(job.yMm + inst.localYMm);
+      minX = Math.min(minX, ix);
+      minY = Math.min(minY, iy);
+      maxX = Math.max(maxX, roundMm(ix + inst.widthMm));
+      maxY = Math.max(maxY, roundMm(iy + inst.heightMm));
+    }
   }
 
   return {
@@ -855,6 +1414,7 @@ export function applyWorkbenchLayersToMaterialProfile(
 
 /**
  * Valida integralmente la mesa de trabajo antes de exportar o enviar a la Vank 9060.
+ * Verifica colisiones reales pieza por pieza entre trabajos distintos para permitir el intercalado continuo de filas.
  */
 export function validateWorkbenchState(
   jobs: WorkbenchJobItem[],
@@ -910,7 +1470,7 @@ export function validateWorkbenchState(
       issues.push({
         severity: 'error',
         code: 'JOB_OUTSIDE_MACHINE_BED',
-        message: `El trabajo "${job.name}" supera el límite de tirada de la mesa Vank 9060 (${config.machineBedWidthMm}×${config.machineBedHeightMm} mm). Reducí la cantidad de esta tirada o presioná "Optimizar Ancho 73 cm".`,
+        message: `El trabajo "${job.name}" supera el límite de tirada de la mesa Vank 9060 (${config.machineBedWidthMm}×${config.machineBedHeightMm} mm). Reducí la cantidad de esta tirada o presioná "Ahorro Extremo 73 cm".`,
       });
     } else if (
       job.xMm < sheetMinX - 0.01 ||
@@ -922,31 +1482,63 @@ export function validateWorkbenchState(
       issues.push({
         severity: 'error',
         code: 'JOB_OUTSIDE_MATERIAL_SHEET',
-        message: `El trabajo "${job.name}" sobresale del ancho de la plancha/rollo (${config.sheetWidthMm}×${config.sheetHeightMm} mm). Presioná "Optimizar en Rollo 73 cm".`,
+        message: `El trabajo "${job.name}" sobresale del ancho de la plancha/rollo (${config.sheetWidthMm}×${config.sheetHeightMm} mm). Presioná "Ahorro Extremo 73 cm".`,
       });
     }
   }
 
-  // Verificar colisiones entre bloques de trabajo distintos
+  // Verificar colisiones reales a nivel pieza entre trabajos distintos
   for (let i = 0; i < visibleJobs.length; i++) {
     for (let k = i + 1; k < visibleJobs.length; k++) {
       const a = visibleJobs[i];
       const b = visibleJobs[k];
       const eps = 0.05;
-      const overlapX = a.xMm < b.xMm + b.widthMm - eps && a.xMm + a.widthMm > b.xMm + eps;
-      const overlapY = a.yMm < b.yMm + b.heightMm - eps && a.yMm + a.heightMm > b.yMm + eps;
-      if (overlapX && overlapY) {
+      // Primero descarte rápido por envolvente del trabajo
+      const boxOverlapX =
+        a.xMm < b.xMm + b.widthMm - eps && a.xMm + a.widthMm > b.xMm + eps;
+      const boxOverlapY =
+        a.yMm < b.yMm + b.heightMm - eps && a.yMm + a.heightMm > b.yMm + eps;
+
+      if (!boxOverlapX || !boxOverlapY) continue;
+
+      // Si las envolventes se tocan (ej. comparten fila en flujo continuo), verificar si alguna pieza real se pisa
+      let pieceCollisionFound = false;
+      for (const instA of a.instances) {
+        const ax1 = a.xMm + instA.localXMm;
+        const ay1 = a.yMm + instA.localYMm;
+        const ax2 = ax1 + instA.widthMm;
+        const ay2 = ay1 + instA.heightMm;
+
+        for (const instB of b.instances) {
+          const bx1 = b.xMm + instB.localXMm;
+          const by1 = b.yMm + instB.localYMm;
+          const bx2 = bx1 + instB.widthMm;
+          const by2 = by1 + instB.heightMm;
+
+          if (
+            ax1 < bx2 - eps &&
+            ax2 > bx1 + eps &&
+            ay1 < by2 - eps &&
+            ay2 > by1 + eps
+          ) {
+            pieceCollisionFound = true;
+            break;
+          }
+        }
+        if (pieceCollisionFound) break;
+      }
+
+      if (pieceCollisionFound) {
         overlappingJobsCount++;
         issues.push({
           severity: 'error',
           code: 'WORKBENCH_JOBS_OVERLAP',
-          message: `Superposición detectada en la plancha entre "${a.name}" y "${b.name}". Presioná "Optimizar en Rollo 73 cm".`,
+          message: `Superposición detectada en la plancha entre "${a.name}" y "${b.name}". Presioná "Ahorro Extremo 73 cm".`,
         });
       }
     }
   }
 
-  // Contar qué capas productivas tienen geometría real en la mesa
   let hasEngraveGeometry = false;
   let hasHolesGeometry = false;
   let hasCutGeometry = false;
@@ -1000,7 +1592,6 @@ export function validateWorkbenchState(
     });
   }
 
-  // Verificar orden seguro de ejecución: Grabado (C00) y Agujeros (C01) antes de Corte Exterior (C02)
   const engraveLayer = config.layers.find((l) => l.role === 'ENGRAVE');
   const holesLayer = config.layers.find((l) => l.role === 'HOLES');
   const cutLayer = config.layers.find((l) => l.role === 'CUT');
@@ -1055,9 +1646,6 @@ export function validateWorkbenchState(
   };
 }
 
-/**
- * Calcula longitud de una polilínea en mm.
- */
 function polylineLengthMm(pts: { x: Millimeters; y: Millimeters }[]): Millimeters {
   let len = 0;
   for (let i = 1; i < pts.length; i++) {

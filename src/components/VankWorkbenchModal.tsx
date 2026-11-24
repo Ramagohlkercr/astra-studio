@@ -56,11 +56,13 @@ import {
   compileWorkbenchToRuidaRd,
 } from '../core/workbench/ruidaCompiler';
 import {
+  applyExtremeMaterialSavingToWorkbench,
   applyWorkbenchLayersToMaterialProfile,
   autoArrangeWorkbenchJobs,
   computeEcocueroRollMetrics,
   createWorkbenchJobFromOrder,
   createWorkbenchJobFromUploadedLogo,
+  fillLastRowFreeSlotsInWorkbench,
   simulateWorkbenchToolpath,
   syncLayersWithMaterialProfile,
   updateWorkbenchJobDesignAndQuantity,
@@ -439,15 +441,38 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const arranged = autoArrangeWorkbenchJobs(
       workbenchJobs,
       workbenchConfig,
-      4,
+      workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 4,
       optimizeForRollWidth
     );
     onUpdateJobs(arranged);
     onNotify(
       optimizeForRollWidth
-        ? `Tirada optimizada a todo el ancho (${workbenchConfig.sheetWidthMm} mm) para minimizar el consumo lineal de rollo.`
+        ? `Tirada optimizada en flujo continuo (${workbenchConfig.sheetWidthMm} mm) sin huecos entre logos.`
         : 'Trabajos acomodados automáticamente dentro de la plancha.'
     );
+  };
+
+  const handleApplyExtremeSaving = () => {
+    const { config: nextConfig, jobs: nextJobs } =
+      applyExtremeMaterialSavingToWorkbench(workbenchJobs, workbenchConfig);
+    onUpdateConfig(nextConfig);
+    onUpdateJobs(nextJobs);
+    onNotify(
+      '🔥 Ahorro Extremo activado: Flujo continuo pieza a pieza sin huecos entre logos, margen 2 mm, separación 0.5 mm y rotación óptima.'
+    );
+  };
+
+  const handleFillLastRowFreeSlots = () => {
+    const { jobs: nextJobs, addedPieces } = fillLastRowFreeSlotsInWorkbench(
+      workbenchJobs,
+      workbenchConfig
+    );
+    if (addedPieces > 0) {
+      onUpdateJobs(nextJobs);
+      onNotify(
+        `+${addedPieces} etiquetas agregadas en el hueco libre de la última fila (0.0 cm de rollo adicional consumido).`
+      );
+    }
   };
 
   const handleDuplicateSelectedJob = () => {
@@ -899,14 +924,26 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
           <button
             type="button"
-            onClick={() => handleAutoArrangeAll(true)}
+            onClick={handleApplyExtremeSaving}
             disabled={workbenchJobs.length === 0}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 text-xs font-semibold disabled:opacity-40 transition-colors whitespace-nowrap"
-            title="Acomodar todos los trabajos a todo el ancho (73 cm) para consumir el menor largo posible del rollo"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 text-xs font-extrabold disabled:opacity-40 shadow transition-colors whitespace-nowrap"
+            title="Activar Ahorro Extremo: Flujo continuo sin huecos entre logos, margen 2 mm, separación 0.5 mm y rotación óptima"
           >
-            <Grid className="w-3.5 h-3.5 shrink-0" />
-            <span>Optimizar Ancho {roundMm(workbenchConfig.sheetWidthMm / 10, 1)} cm</span>
+            <Sparkles className="w-3.5 h-3.5 shrink-0" />
+            <span>🔥 Ahorro Extremo {roundMm(workbenchConfig.sheetWidthMm / 10, 1)} cm</span>
           </button>
+
+          {rollMetrics.freeSlotsInLastRow > 0 && (
+            <button
+              type="button"
+              onClick={handleFillLastRowFreeSlots}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-950 hover:bg-emerald-900 border border-emerald-500/70 text-emerald-300 text-xs font-bold transition-colors whitespace-nowrap"
+              title="Rellenar los lugares vacíos de la última fila sin gastar ni 1 mm adicional de rollo"
+            >
+              <Plus className="w-3.5 h-3.5 shrink-0" />
+              <span>Completar Fila (+{rollMetrics.freeSlotsInLastRow} u. gratis)</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -1237,8 +1274,15 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               {/* 3. TRABAJOS POSICIONADOS EN LA PLANCHA / ROLLO */}
               {workbenchJobs
                 .filter((j) => j.visible)
-                .map((job) => {
+                .map((job, jobIndex) => {
                   const isSelected = selectedJob?.id === job.id;
+                  const jobColors = ['#22d3ee', '#34d399', '#fbbf24', '#a78bfa', '#f472b6'];
+                  const jobAccentColor = jobColors[jobIndex % jobColors.length];
+                  const isContinuousFlow = (job.firstRowIndentMm ?? 0) > 0;
+                  const firstInst = job.instances[0];
+                  const badgeX = firstInst ? firstInst.localXMm : 0;
+                  const badgeY = firstInst ? firstInst.localYMm - 1.5 : -2.2;
+
                   const isOutSheet =
                     job.xMm < workbenchConfig.sheetOffsetXMm - 0.01 ||
                     job.yMm < workbenchConfig.sheetOffsetYMm - 0.01 ||
@@ -1258,38 +1302,40 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       onPointerDown={(e) => handleJobPointerDown(e, job)}
                       className={job.locked ? 'cursor-not-allowed' : 'cursor-move'}
                     >
-                      <rect
-                        x={-1}
-                        y={-1}
-                        width={job.widthMm + 2}
-                        height={job.heightMm + 2}
-                        fill={
-                          isOutSheet
-                            ? 'rgba(239, 68, 68, 0.14)'
-                            : isSelected
-                              ? 'rgba(6, 182, 212, 0.10)'
-                              : 'rgba(15, 23, 42, 0.05)'
-                        }
-                        stroke={
-                          isOutSheet
-                            ? '#ef4444'
-                            : isSelected
-                              ? '#22d3ee'
-                              : '#64748b'
-                        }
-                        strokeWidth={isSelected ? '0.8' : '0.4'}
-                        strokeDasharray={isSelected ? undefined : '2 1.5'}
-                      />
+                      {!isContinuousFlow && (
+                        <rect
+                          x={-0.8}
+                          y={-0.8}
+                          width={job.widthMm + 1.6}
+                          height={job.heightMm + 1.6}
+                          fill={
+                            isOutSheet
+                              ? 'rgba(239, 68, 68, 0.14)'
+                              : isSelected
+                                ? 'rgba(6, 182, 212, 0.08)'
+                                : 'rgba(15, 23, 42, 0.04)'
+                          }
+                          stroke={
+                            isOutSheet
+                              ? '#ef4444'
+                              : isSelected
+                                ? jobAccentColor
+                                : '#64748b'
+                          }
+                          strokeWidth={isSelected ? '0.7' : '0.35'}
+                          strokeDasharray={isSelected ? undefined : '2 1.5'}
+                        />
+                      )}
 
                       <text
-                        x={0}
-                        y={-2.2}
-                        fill={isOutSheet ? '#fca5a5' : isSelected ? '#67e8f9' : '#cbd5e1'}
-                        fontSize="4.2"
+                        x={badgeX}
+                        y={badgeY}
+                        fill={isOutSheet ? '#fca5a5' : jobAccentColor}
+                        fontSize="3.8"
                         fontWeight="bold"
                         fontFamily="monospace"
                       >
-                        {job.name} · {job.labelDesign.widthMm}×{job.labelDesign.heightMm}mm [{job.columns}×{job.rows}]
+                        #{jobIndex + 1} {job.name} · {job.labelDesign.widthMm}×{job.labelDesign.heightMm}mm
                       </text>
 
                       {job.instances.map((inst) => (
@@ -1300,7 +1346,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                             width={inst.widthMm}
                             height={inst.heightMm}
                             fill={material.visual.surfaceColor}
-                            fillOpacity={0.65}
+                            fillOpacity={0.68}
+                            stroke={isSelected ? jobAccentColor : undefined}
+                            strokeWidth={isSelected ? '0.35' : undefined}
                           />
 
                           {/* CAPA C00: GRABADO */}
@@ -1518,9 +1566,16 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 <span className="text-[11px] font-bold text-amber-300">
                   Rollo Ecocuero: {rollMetrics.rollWidthCm} cm ancho × 5 m (500 cm)
                 </span>
-                <span className="text-[10px] font-mono bg-slate-950/80 px-2 py-0.5 rounded text-emerald-300 border border-slate-800">
-                  Ancho usado: {rollMetrics.widthUtilizationPercent}%
-                </span>
+                <div className="flex items-center gap-1">
+                  {rollMetrics.savedRollLengthCm > 0 && (
+                    <span className="text-[10px] font-mono bg-emerald-950 px-1.5 py-0.5 rounded text-emerald-300 border border-emerald-700 font-bold">
+                      Ahorro: -{rollMetrics.savedRollLengthCm} cm
+                    </span>
+                  )}
+                  <span className="text-[10px] font-mono bg-slate-950/80 px-1.5 py-0.5 rounded text-cyan-300 border border-slate-800">
+                    Ancho: {rollMetrics.widthUtilizationPercent}%
+                  </span>
+                </div>
               </div>
 
               <div className="grid grid-cols-3 gap-2 text-center bg-slate-950/70 p-2 rounded border border-slate-800/80">
@@ -1561,7 +1616,37 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 </div>
               </div>
 
-              {/* Botones para subir varios trabajos / logos en la misma tirada */}
+              {/* Aviso de Hueco Libre en la Última Fila (Etiquetas gratis sin gastar más rollo) */}
+              {rollMetrics.freeSlotsInLastRow > 0 ? (
+                <div className="p-2 rounded-lg bg-emerald-950/40 border border-emerald-600/60 flex items-center justify-between gap-2">
+                  <div className="text-[11px] text-emerald-200 leading-tight">
+                    <span className="font-bold text-emerald-300 block">
+                      💡 Quedan {rollMetrics.freeSlotsInLastRow} lugares libres en la última fila
+                    </span>
+                    <span className="text-[10px] text-slate-300">
+                      ({rollMetrics.freeWidthInLastRowCm} cm libres que ya entran en el corte del rollo)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleFillLastRowFreeSlots}
+                    className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] shrink-0 shadow"
+                  >
+                    + Completar (+{rollMetrics.freeSlotsInLastRow} u. gratis)
+                  </button>
+                </div>
+              ) : (
+                workbenchJobs.length > 0 && (
+                  <div className="px-2 py-1 rounded bg-emerald-950/30 border border-emerald-800/50 text-[10px] text-emerald-300 flex items-center justify-between">
+                    <span>✓ Última fila 100% completa de punta a punta (0 lugares vacíos)</span>
+                    <span className="font-mono font-bold">
+                      Eficiencia: {rollMetrics.stripAreaEfficiencyPercent}%
+                    </span>
+                  </div>
+                )
+              )}
+
+              {/* Botones para subir varios trabajos y activar Ahorro Extremo Cero Desperdicio */}
               <div className="grid grid-cols-2 gap-1.5 pt-1">
                 <button
                   type="button"
@@ -1574,12 +1659,12 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleAutoArrangeAll(true)}
+                  onClick={handleApplyExtremeSaving}
                   disabled={workbenchJobs.length === 0}
-                  className="py-1.5 px-2.5 rounded-lg bg-amber-600/25 hover:bg-amber-600/35 border border-amber-500/50 text-amber-200 font-bold text-[11px] flex items-center justify-center gap-1.5"
+                  className="py-1.5 px-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-[11px] flex items-center justify-center gap-1.5 shadow"
                 >
-                  <Grid className="w-3.5 h-3.5" />
-                  <span>Optimizar en 73 cm</span>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>🔥 Ahorro Extremo 73 cm</span>
                 </button>
               </div>
 
@@ -1592,7 +1677,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px] text-cyan-300"
                 >
                   <option value="">
-                    + Sumar pedido guardado de la biblioteca a esta tirada...
+                    + Sumar pedido guardado de la biblioteca (se intercala sin huecos)...
                   </option>
                   {ordersCatalog.map((ord) => (
                     <option key={ord.id} value={ord.id}>

@@ -17,12 +17,16 @@ import {
   unscrambleRuidaByte,
 } from '../workbench/ruidaCompiler';
 import {
+  analyzeStepMaterialSavings,
+  applyExtremeMaterialSavingToWorkbench,
   applyWorkbenchLayersToMaterialProfile,
   autoArrangeWorkbenchJobs,
+  buildOptimalSavingNestingConfig,
   computeEcocueroRollMetrics,
   computeJobOriginPointMm,
   createWorkbenchJobFromOrder,
   createWorkbenchJobFromUploadedLogo,
+  fillLastRowFreeSlotsInWorkbench,
   simulateWorkbenchToolpath,
   updateWorkbenchJobDesignAndQuantity,
   updateWorkbenchJobGrid,
@@ -462,5 +466,90 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
       1
     );
     expect(metrics.exceedsSingleBedPass).toBe(false);
+  });
+
+  it('11. Ahorro Extremo Cero Desperdicio: intercala trabajos en flujo continuo sin huecos entre logos y completa la última fila sin gastar ni 1 mm más de rollo', () => {
+    const ecocueroMat = INITIAL_MATERIALS_CATALOG[0];
+    const baseCfg = createDefaultWorkbenchConfig(undefined, undefined, ecocueroMat);
+    const sampleElement = sampleOrder.labelDesign.elements[0];
+
+    // 3 pedidos de 50 etiquetas de 20x10 mm cada uno (150 etiquetas en total)
+    const j1 = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Logo_Cliente_1',
+      element: sampleElement,
+      widthMm: 20,
+      heightMm: 10,
+      quantity: 50,
+      existingJobs: [],
+      config: baseCfg,
+    });
+    const j2 = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Logo_Cliente_2',
+      element: sampleElement,
+      widthMm: 20,
+      heightMm: 10,
+      quantity: 50,
+      existingJobs: [j1],
+      config: baseCfg,
+    });
+    const j3 = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Logo_Cliente_3',
+      element: sampleElement,
+      widthMm: 20,
+      heightMm: 10,
+      quantity: 50,
+      existingJobs: [j1, j2],
+      config: baseCfg,
+    });
+
+    // Aplicar Ahorro Extremo (Margen 2mm, Gap 0.5mm, Flujo continuo pieza a pieza)
+    const { config: extremeCfg, jobs: extremeJobs } =
+      applyExtremeMaterialSavingToWorkbench([j1, j2, j3], baseCfg);
+
+    // Verificar que el Trabajo #2 continúa en la misma fila donde terminó el Trabajo #1 (firstRowIndentMm > 0)
+    expect(extremeJobs[1].firstRowIndentMm).toBeGreaterThan(0);
+    expect(extremeJobs[1].yMm).toBeGreaterThanOrEqual(extremeJobs[0].yMm);
+    expect(extremeJobs[1].yMm).toBeLessThan(
+      extremeJobs[0].yMm + extremeJobs[0].heightMm
+    );
+    expect(extremeJobs[2].firstRowIndentMm).toBeGreaterThan(0);
+    expect(extremeJobs[2].yMm).toBeGreaterThan(extremeJobs[0].yMm);
+
+    const val = validateWorkbenchState(extremeJobs, extremeCfg);
+    expect(val.isValidForExport).toBe(true);
+    expect(val.overlappingJobsCount).toBe(0); // 0 colisiones reales entre las 150 piezas
+
+    const metricsBeforeFill = computeEcocueroRollMetrics(extremeJobs, extremeCfg);
+    expect(metricsBeforeFill.freeSlotsInLastRow).toBeGreaterThan(0);
+    const rollUsedBeforeFillMm = metricsBeforeFill.usedLengthMm;
+
+    // Completar el hueco libre de la última fila con etiquetas gratis de rollo
+    const { jobs: filledJobs, addedPieces } = fillLastRowFreeSlotsInWorkbench(
+      extremeJobs,
+      extremeCfg
+    );
+    expect(addedPieces).toBe(metricsBeforeFill.freeSlotsInLastRow);
+
+    const metricsAfterFill = computeEcocueroRollMetrics(filledJobs, extremeCfg);
+    // El avance de rollo consumido es EXACTAMENTE EL MISMO (0.0 mm extra de rollo)
+    expect(metricsAfterFill.usedLengthMm).toBeCloseTo(rollUsedBeforeFillMm, 1);
+    expect(metricsAfterFill.freeSlotsInLastRow).toBe(0);
+
+    // Verificar también el optimizador de ahorro de Paso 5 / Paso 6 antes de exportar
+    const stepOptCfg = buildOptimalSavingNestingConfig(
+      sampleOrder.labelDesign,
+      sampleOrder.nestingConfig,
+      false
+    );
+    const stepOptNesting = computeNestingLayout(
+      sampleOrder.labelDesign,
+      stepOptCfg
+    );
+    const stepAnalysis = analyzeStepMaterialSavings(
+      sampleOrder.labelDesign,
+      stepOptNesting,
+      0
+    );
+    expect(stepAnalysis.isAlreadyOptimal).toBe(true);
   });
 });

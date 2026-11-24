@@ -1,8 +1,8 @@
 /**
  * Astra Studio — Módulo Mesa de Trabajo y Control Vank 9060 (Estilo LightBurn)
  * Tipos de dominio para armado libre en plancha o rollo de Ecocuero (73 cm x 5 m),
- * gestión de múltiples trabajos/logos en una misma tirada, capas de corte/grabado (C00..C29),
- * simulación de trayectoria y carga a controladora Ruida RDC8445S / exportación nativa .lbrn2 y .rd.
+ * empaquetado continuo Cero Desperdicio (intercalado pieza a pieza sin huecos entre logos),
+ * capas de corte/grabado (C00..C29), simulación de trayectoria y carga a Ruida RDC8445S.
  */
 
 import {
@@ -38,6 +38,13 @@ export type JobOriginAnchor =
   | 'bottom_left'
   | 'bottom_center'
   | 'bottom_right';
+
+export type WorkbenchPackingMode = 'continuous_zero_waste' | 'rectangular_blocks';
+
+export type MaterialSavingPreset =
+  | 'extreme_zero_waste'
+  | 'compact_safe'
+  | 'standard';
 
 export interface WorkbenchLayerConfig {
   /** Índice de capa estilo LightBurn: 0 (C00), 1 (C01), 2 (C02)... */
@@ -106,15 +113,23 @@ export interface WorkbenchJobItem {
   widthMm: Millimeters;
   /** Alto total de la envolvente del trabajo (mm) */
   heightMm: Millimeters;
-  /** Rotación adicional del bloque completo en la mesa (0 o 90 grados) */
+  /** Rotación adicional de cada etiqueta dentro del trabajo (0 o 90 grados) */
   blockRotationDeg: 0 | 90;
-  /** Cantidad de etiquetas incluidas en este bloque */
+  /** Cantidad de etiquetas incluidas en este trabajo */
   pieceCount: number;
-  /** Filas y columnas dentro de este bloque */
+  /** Filas y columnas máximas de referencia */
   columns: number;
   rows: number;
   gapXMm: Millimeters;
   gapYMm: Millimeters;
+  /** Desplazamiento X inicial en la primera fila para intercalado continuo sin huecos con el trabajo anterior */
+  firstRowIndentMm?: Millimeters;
+  /** Altura de la fila compartida si la primera fila convive con etiquetas más altas */
+  firstRowShelfHeightMm?: Millimeters;
+  /** Posición X local donde termina la última etiqueta de la última fila */
+  lastRowEndXMm?: Millimeters;
+  /** Posición Y local donde comienza la última fila */
+  lastRowLocalYMm?: Millimeters;
   /** Instancias compiladas en coordenadas locales [0..widthMm, 0..heightMm] */
   instances: WorkbenchPlacedInstance[];
   locked: boolean;
@@ -141,6 +156,12 @@ export interface WorkbenchConfig {
   isRollMaterial: boolean;
   /** Largo total del rollo en milímetros (ej. 5000 mm = 5 m para Ecocuero) */
   rollTotalLengthMm: Millimeters;
+  /** Modo de empaquetado de múltiples trabajos: flujo continuo pieza a pieza (cero huecos) o bloques rectangulares */
+  packingMode: WorkbenchPackingMode;
+  /** Nivel de ahorro de márgenes y separaciones */
+  savingPreset: MaterialSavingPreset;
+  /** Rotar automáticamente 0°/90° cada trabajo para minimizar el avance lineal del rollo */
+  autoRotateForMinRoll: boolean;
   /** Posición de la plancha sobre la mesa de 900x600 mm */
   sheetOffsetXMm: Millimeters;
   sheetOffsetYMm: Millimeters;
@@ -175,6 +196,16 @@ export interface EcocueroRollMetrics {
   rollConsumptionPercent: number;
   /** Porcentaje del ancho de 73 cm aprovechado */
   widthUtilizationPercent: number;
+  /** Eficiencia real de área de etiquetas sobre la franja cortada del rollo (%) */
+  stripAreaEfficiencyPercent: number;
+  /** Cantidad de etiquetas adicionales que entran gratis en el hueco libre de la última fila (sin gastar ni 1 mm más de rollo) */
+  freeSlotsInLastRow: number;
+  /** Ancho libre disponible en la última fila en mm y cm */
+  freeWidthInLastRowMm: Millimeters;
+  freeWidthInLastRowCm: number;
+  /** Milímetros y centímetros de rollo ahorrados frente a armado tradicional en bloques separados */
+  savedRollLengthMm: Millimeters;
+  savedRollLengthCm: number;
   /** Cantidad estimada de tiradas iguales que rinde el rollo de 5m */
   estimatedRunsPerRoll: number;
   /** Indica si el avance requerido supera los 600 mm de una tirada de mesa Vank 9060 */
@@ -337,6 +368,9 @@ export function createDefaultWorkbenchConfig(
     sheetHeightMm: resolvedHeight,
     isRollMaterial: isEco || resolvedWidth === ECOCUERO_ROLL_WIDTH_MM,
     rollTotalLengthMm: ECOCUERO_ROLL_TOTAL_LENGTH_MM,
+    packingMode: 'continuous_zero_waste',
+    savingPreset: 'extreme_zero_waste',
+    autoRotateForMinRoll: true,
     sheetOffsetXMm: 0,
     sheetOffsetYMm: 0,
     sheetSafetyMarginMm: 5,

@@ -51,7 +51,9 @@ import { RotaryPanel } from './components/RotaryPanel';
 import { VankWorkbenchModal } from './components/VankWorkbenchModal';
 import { DEFAULT_ROTARY_CONFIG, RotaryConfig } from './core/rotary/rotaryEngine';
 import {
+  analyzeStepMaterialSavings,
   autoArrangeWorkbenchJobs,
+  buildOptimalSavingNestingConfig,
   createWorkbenchJobFromOrder,
   syncLayersWithMaterialProfile,
 } from './core/workbench/workbenchEngine';
@@ -336,6 +338,43 @@ export function App() {
   const hasRasterExport = labelDesign.elements.some(el => el.visible && el.type === 'logo_raster' &&
     (el.processing.mode !== 'vector' || el.vectorizedPathsNormalized.length === 0));
   const activeBatch = nestingResult.batches[activeBatchIndex] || nestingResult.batches[0];
+
+  const stepSavings = useMemo(
+    () => analyzeStepMaterialSavings(labelDesign, nestingResult, activeBatchIndex),
+    [labelDesign, nestingResult, activeBatchIndex]
+  );
+
+  const handleApplyMaxStepSaving = (useSharedCuts = false) => {
+    const isEco = isEcocueroMaterial(activeMaterial);
+    const baseCfg = isEco
+      ? {
+          ...nestingConfig,
+          sheetWidthMm: ECOCUERO_ROLL_WIDTH_MM,
+          sheetHeightMm: ECOCUERO_BED_PASS_HEIGHT_MM,
+        }
+      : nestingConfig;
+    const optimalCfg = buildOptimalSavingNestingConfig(
+      labelDesign,
+      baseCfg,
+      useSharedCuts
+    );
+    pushStateWithHistory(labelDesign, optimalCfg);
+    notify(
+      `🔥 Ahorro Máximo aplicado: Todo el ancho (${optimalCfg.sheetWidthMm} mm), margen 2 mm, separación ${optimalCfg.gapXMm} mm y rotación óptima.`
+    );
+  };
+
+  const handleFillStepLastRow = () => {
+    if (stepSavings.freeSlotsInLastRow <= 0) return;
+    const nextQty = nestingConfig.requestedQuantity + stepSavings.freeSlotsInLastRow;
+    pushStateWithHistory(labelDesign, {
+      ...nestingConfig,
+      requestedQuantity: nextQty,
+    });
+    notify(
+      `+${stepSavings.freeSlotsInLastRow} etiquetas agregadas en el hueco libre de la última fila (0.0 cm de material adicional).`
+    );
+  };
 
   const notify = (msg: string) => {
     setStatusMessage(msg);
@@ -2485,6 +2524,70 @@ export function App() {
                   )}
                 </div>
 
+                {/* TARJETA DE AHORRO MÁXIMO DE MATERIAL (CERO DESPERDICIO) */}
+                <div className="p-3 rounded-lg bg-gradient-to-br from-amber-950/35 to-slate-900 border border-amber-600/50 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-amber-300 text-xs flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Ahorro Máximo de Material (Cero Desperdicio)</span>
+                    </span>
+                    <span className="text-[10px] font-mono bg-slate-950 px-2 py-0.5 rounded text-emerald-300 border border-slate-800">
+                      Avance: {stepSavings.currentAdvanceCm} cm ({stepSavings.currentAdvanceMm} mm)
+                    </span>
+                  </div>
+
+                  {!stepSavings.isAlreadyOptimal && (
+                    <div className="text-[11px] text-slate-300 leading-relaxed">
+                      Podés aprovechar todo el ancho de{' '}
+                      <strong className="text-white">
+                        {isEcocueroMaterial(activeMaterial)
+                          ? '73 cm del rollo de Ecocuero'
+                          : `${roundMm(nestingConfig.sheetWidthMm / 10, 1)} cm`}
+                      </strong>{' '}
+                      con margen compacto (2 mm) y separación mínima (0.5 mm)
+                      {stepSavings.savedAdvanceCm > 0 && (
+                        <span className="text-emerald-300 font-bold">
+                          {' '}
+                          para ahorrar {stepSavings.savedAdvanceCm} cm de material en esta tanda
+                        </span>
+                      )}
+                      .
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => handleApplyMaxStepSaving(false)}
+                    className="w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-1.5 shadow transition-colors"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>
+                      🔥 Optimizar Ahorro a Fondo (Ancho Completo · Margen 2mm · Gap 0.5mm)
+                    </span>
+                  </button>
+
+                  {stepSavings.freeSlotsInLastRow > 0 && (
+                    <div className="p-2 rounded bg-emerald-950/40 border border-emerald-700/60 space-y-1.5">
+                      <div className="text-[11px] text-emerald-200 leading-tight">
+                        <strong>
+                          💡 Quedan {stepSavings.freeSlotsInLastRow} lugares vacíos en la última fila
+                        </strong>{' '}
+                        ({roundMm(stepSavings.freeWidthInLastRowMm / 10, 1)} cm libres en una franja que ya se corta del rollo).
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleFillStepLastRow}
+                        className="w-full py-1.5 px-2.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] flex items-center justify-center gap-1 shadow"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>
+                          Completar última fila (+{stepSavings.freeSlotsInLastRow} etiquetas gratis · 0 cm extra de rollo)
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 {/* ACCIÓN DIRECTA: MANDAR A PLANCHA / MESA DE TRABAJO VANK 9060 */}
                 <div className="pt-2 border-t border-slate-800 space-y-2">
                   <button
@@ -2775,6 +2878,50 @@ export function App() {
                     <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">
                       {nestingConfig.sheetWidthMm} × {nestingConfig.sheetHeightMm} mm
                     </span>
+                  </div>
+                </div>
+
+                {/* PANEL DE AHORRO DE MATERIAL ANTES DE EXPORTAR */}
+                <div className="p-3.5 rounded-xl bg-gradient-to-br from-amber-950/35 to-slate-900 border border-amber-600/50 space-y-2.5 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-amber-300 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-amber-400" />
+                      <span>Aprovechamiento de Plancha / Rollo Antes de Exportar</span>
+                    </span>
+                    <span className="font-mono text-emerald-300 bg-slate-950 px-2.5 py-0.5 rounded border border-slate-800">
+                      Avance consumido: <strong>{stepSavings.currentAdvanceCm} cm</strong> ({stepSavings.currentAdvanceMm} mm) · {stepSavings.currentCols} col × {stepSavings.currentRows} fil
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleApplyMaxStepSaving(false)}
+                      className="py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-1.5 shadow transition-colors"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>
+                        🔥 Optimizar Ahorro a Fondo ({isEcocueroMaterial(activeMaterial) ? 'Ancho 73 cm' : 'Ancho Plancha'})
+                      </span>
+                    </button>
+
+                    {stepSavings.freeSlotsInLastRow > 0 ? (
+                      <button
+                        type="button"
+                        onClick={handleFillStepLastRow}
+                        className="py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>
+                          💡 Completar fila (+{stepSavings.freeSlotsInLastRow} u. gratis · 0 cm extra)
+                        </span>
+                      </button>
+                    ) : (
+                      <div className="py-2 px-3 rounded-lg bg-emerald-950/40 border border-emerald-700/60 text-emerald-300 font-semibold text-xs flex items-center justify-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Última fila 100% completa (0 lugares vacíos)</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
