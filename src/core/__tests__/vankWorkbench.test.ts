@@ -19,13 +19,21 @@ import {
 import {
   applyWorkbenchLayersToMaterialProfile,
   autoArrangeWorkbenchJobs,
+  computeEcocueroRollMetrics,
   computeJobOriginPointMm,
   createWorkbenchJobFromOrder,
+  createWorkbenchJobFromUploadedLogo,
   simulateWorkbenchToolpath,
+  updateWorkbenchJobDesignAndQuantity,
   updateWorkbenchJobGrid,
   validateWorkbenchState,
 } from '../workbench/workbenchEngine';
-import { createDefaultWorkbenchConfig } from '../workbench/workbenchTypes';
+import {
+  createDefaultWorkbenchConfig,
+  ECOCUERO_BED_PASS_HEIGHT_MM,
+  ECOCUERO_ROLL_TOTAL_LENGTH_MM,
+  ECOCUERO_ROLL_WIDTH_MM,
+} from '../workbench/workbenchTypes';
 
 describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida RDC8445S)', () => {
   const sampleOrder = createInitialOrdersCatalog()[0];
@@ -353,5 +361,106 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
       const headerChecksum = (pkt[0] << 8) | pkt[1];
       expect(headerChecksum).toBe(expectedChecksum);
     }
+  });
+
+  it('9. Toma automáticamente 73 cm de ancho (730 mm) y 5 m de rollo (5000 mm) cuando el material es Ecocuero', () => {
+    const ecocueroMat = INITIAL_MATERIALS_CATALOG.find(
+      (m) => m.id === 'ECOCUERO_SUELA'
+    )!;
+    const ecoConfig = createDefaultWorkbenchConfig(
+      undefined,
+      undefined,
+      ecocueroMat
+    );
+
+    expect(ecoConfig.sheetWidthMm).toBe(ECOCUERO_ROLL_WIDTH_MM); // 730 mm (73 cm)
+    expect(ecoConfig.sheetHeightMm).toBe(ECOCUERO_BED_PASS_HEIGHT_MM); // 600 mm (60 cm por tirada)
+    expect(ecoConfig.isRollMaterial).toBe(true);
+    expect(ecoConfig.rollTotalLengthMm).toBe(ECOCUERO_ROLL_TOTAL_LENGTH_MM); // 5000 mm (5 m)
+  });
+
+  it('10. Permite subir y combinar varios trabajos con distintos logos, medidas y cantidades en la misma tirada de 73 cm', () => {
+    const ecocueroMat = INITIAL_MATERIALS_CATALOG[0];
+    const config = createDefaultWorkbenchConfig(undefined, undefined, ecocueroMat);
+    const sampleElement = sampleOrder.labelDesign.elements[0];
+
+    // Logo 1: 100 etiquetas de 40x20 mm (4x2 cm)
+    const job1 = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Marca_Alfa',
+      element: sampleElement,
+      widthMm: 40,
+      heightMm: 20,
+      quantity: 100,
+      existingJobs: [],
+      config,
+    });
+
+    // En 730 mm con 5 mm de margen a cada lado (720 mm útiles) y gap 2 mm:
+    // floor((720 + 2) / (40 + 2)) = 17 columnas por fila -> 100 etiquetas ocupan 6 filas
+    expect(job1.columns).toBe(17);
+    expect(job1.rows).toBe(6);
+    expect(job1.pieceCount).toBe(100);
+
+    // Logo 2: 150 etiquetas de 30x15 mm
+    const job2 = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Marca_Beta',
+      element: sampleElement,
+      widthMm: 30,
+      heightMm: 15,
+      quantity: 150,
+      existingJobs: [job1],
+      config,
+    });
+    // floor((720 + 2) / (30 + 2)) = 22 columnas por fila -> 150 etiquetas ocupan 7 filas
+    expect(job2.columns).toBe(22);
+    expect(job2.rows).toBe(7);
+    expect(job2.pieceCount).toBe(150);
+
+    // Logo 3: Cambiar medida y cantidad dinámicamente a 80 etiquetas de 50x25 mm con 2 agujeros
+    const job3Raw = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Marca_Gamma',
+      element: sampleElement,
+      widthMm: 20,
+      heightMm: 10,
+      quantity: 20,
+      existingJobs: [job1, job2],
+      config,
+    });
+    const job3 = updateWorkbenchJobDesignAndQuantity(
+      job3Raw,
+      {
+        widthMm: 50,
+        heightMm: 25,
+        holePreset: 'two_horizontal',
+        pieceCount: 80,
+        autoFitColumnsToRoll: true,
+      },
+      config
+    );
+    expect(job3.pieceCount).toBe(80);
+    expect(job3.labelDesign.widthMm).toBe(50);
+    expect(job3.labelDesign.heightMm).toBe(25);
+    expect(job3.labelDesign.holes.preset).toBe('two_horizontal');
+
+    const arranged = autoArrangeWorkbenchJobs([job1, job2, job3], config, 4, true);
+    const validation = validateWorkbenchState(arranged, config);
+
+    expect(validation.isValidForExport).toBe(true);
+    expect(validation.totalJobs).toBe(3);
+    expect(validation.totalPieces).toBe(330); // 100 + 150 + 80 en la misma tirada
+    expect(validation.overlappingJobsCount).toBe(0);
+    expect(validation.outOfSheetJobsCount).toBe(0);
+
+    // Verificar métricas de consumo del rollo de 73 cm x 5 m (500 cm)
+    const metrics = computeEcocueroRollMetrics(arranged, config);
+    expect(metrics.rollWidthCm).toBe(73);
+    expect(metrics.totalRollLengthCm).toBe(500);
+    expect(metrics.usedLengthCm).toBeGreaterThan(35);
+    expect(metrics.usedLengthCm).toBeLessThan(55); // Entra sobrado en los 60 cm de una tirada en mesa Vank 9060
+    expect(metrics.remainingRollLengthCm).toBeCloseTo(
+      500 - metrics.usedLengthCm,
+      1
+    );
+    expect(metrics.exceedsSingleBedPass).toBe(false);
   });
 });

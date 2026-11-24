@@ -1,18 +1,31 @@
 /**
  * Astra Studio — Motor Geométrico y de Planificación de Mesa de Trabajo (Estilo LightBurn)
- * Gestiona la compilación de trabajos sobre la plancha/mesa de 900x600 mm de la Vank 9060,
- * acomodamiento multi-pedido, validación pre-vuelo y simulación de trayectoria láser.
+ * Gestiona la compilación de múltiples trabajos y logos distintos sobre la plancha o rollo
+ * de Ecocuero de 73 cm x 5 m (730 x 5000 mm, tiradas de hasta 600 mm en la Vank 9060),
+ * optimización de ancho de rollo, validación pre-vuelo y simulación de trayectoria láser.
  */
 
-import { compileLabelGeometry, roundMm } from '../geometry/geometryEngine';
+import {
+  centerAllElementsGeometrically,
+  compileLabelGeometry,
+  fitAllElementsToAvailableSpace,
+  roundMm,
+} from '../geometry/geometryEngine';
+import { createBlankLabelDesign } from '../projects/projectManager';
 import {
   BoundingBox,
+  HolePreset,
   LabelDesign,
+  LabelElement,
+  LabelShapeType,
   MaterialProfile,
   Millimeters,
   NestingResult,
 } from '../types';
 import {
+  ECOCUERO_ROLL_TOTAL_LENGTH_MM,
+  ECOCUERO_ROLL_WIDTH_MM,
+  EcocueroRollMetrics,
   JobOriginAnchor,
   ToolpathSegment,
   WorkbenchConfig,
@@ -101,15 +114,48 @@ export function compileJobInstancesGrid(
 }
 
 /**
+ * Calcula la cantidad óptima de columnas para aprovechar el ancho útil de la plancha o rollo (ej. 730 mm para Ecocuero).
+ */
+export function computeOptimalColumnsForSheetWidth(
+  design: LabelDesign,
+  requestedPieces: number,
+  gapXMm: Millimeters,
+  rotated90: boolean,
+  config: WorkbenchConfig
+): { columns: number; rows: number } {
+  const usableWidth = Math.max(
+    10,
+    config.sheetWidthMm - config.sheetSafetyMarginMm * 2
+  );
+  const sample = compileLabelGeometry(design, {
+    offsetXMm: 0,
+    offsetYMm: 0,
+    rotated90,
+    instanceIdPrefix: 'opt_sample',
+  });
+  const pieceW = Math.max(1, sample.effectiveCutWidthMm);
+  const safeGapX = Math.max(0, gapXMm);
+  const maxColsInSheet = Math.max(
+    1,
+    Math.floor((usableWidth + safeGapX) / (pieceW + safeGapX))
+  );
+  const safeQty = Math.max(1, Math.round(requestedPieces));
+  const columns = Math.min(safeQty, maxColsInSheet);
+  const rows = Math.max(1, Math.ceil(safeQty / columns));
+  return { columns, rows };
+}
+
+/**
  * Crea un elemento de trabajo para la mesa a partir de una tanda de producción o de una etiqueta individual.
  */
 export function createWorkbenchJobFromOrder(params: {
   design: LabelDesign;
   nesting: NestingResult;
   batchIndex?: number;
-  mode: 'active_batch' | 'single_piece' | 'custom_grid';
+  mode: 'active_batch' | 'single_piece' | 'custom_grid' | 'roll_strip';
   customColumns?: number;
   customRows?: number;
+  customQuantity?: number;
   projectName: string;
   clientName: string;
   orderId: string;
@@ -123,6 +169,7 @@ export function createWorkbenchJobFromOrder(params: {
     mode,
     customColumns,
     customRows,
+    customQuantity,
     projectName,
     clientName,
     orderId,
@@ -140,13 +187,36 @@ export function createWorkbenchJobFromOrder(params: {
   let maxPieces = 1;
 
   if (mode === 'active_batch' && batch) {
-    cols = Math.max(1, batch.columnsUsed);
-    rows = Math.max(1, batch.rowsUsed);
-    maxPieces = Math.max(1, batch.count);
+    maxPieces = Math.max(1, customQuantity ?? batch.count);
+    if (config.isRollMaterial) {
+      const opt = computeOptimalColumnsForSheetWidth(
+        design,
+        maxPieces,
+        gapXMm,
+        rotated90,
+        config
+      );
+      cols = opt.columns;
+      rows = opt.rows;
+    } else {
+      cols = Math.max(1, batch.columnsUsed);
+      rows = Math.max(1, batch.rowsUsed);
+    }
+  } else if (mode === 'roll_strip') {
+    maxPieces = Math.max(1, customQuantity ?? nesting.config.requestedQuantity ?? 50);
+    const opt = computeOptimalColumnsForSheetWidth(
+      design,
+      maxPieces,
+      gapXMm,
+      rotated90,
+      config
+    );
+    cols = opt.columns;
+    rows = opt.rows;
   } else if (mode === 'custom_grid') {
     cols = Math.max(1, customColumns ?? 5);
     rows = Math.max(1, customRows ?? 2);
-    maxPieces = cols * rows;
+    maxPieces = customQuantity ?? cols * rows;
   }
 
   const compiledGrid = compileJobInstancesGrid(
@@ -182,12 +252,11 @@ export function createWorkbenchJobFromOrder(params: {
     }
   }
 
+  const cleanBaseName = projectName.replace(/\s*\(\d+\s*u\.\)$/, '');
+
   return {
-    id: `wb-job-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    name:
-      mode === 'single_piece'
-        ? `${projectName} (1 u.)`
-        : `${projectName} (${compiledGrid.pieceCount} u.)`,
+    id: `wb-job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: `${cleanBaseName} (${compiledGrid.pieceCount} u.)`,
     clientName: clientName || 'General',
     sourceOrderId: orderId,
     createdAt: new Date().toISOString(),
@@ -209,44 +278,250 @@ export function createWorkbenchJobFromOrder(params: {
 }
 
 /**
- * Recalcula las instancias de un trabajo en mesa tras cambiar filas, columnas, separación o rotación.
+ * Crea un trabajo completo para la tirada en mesa directamente a partir de un archivo de logo subido (SVG, PNG o JPG),
+ * ajustando y centrando el logo automáticamente a las medidas de etiqueta indicadas y calculando las columnas para el rollo de 73 cm.
  */
-export function updateWorkbenchJobGrid(
+export function createWorkbenchJobFromUploadedLogo(params: {
+  logoName: string;
+  clientName?: string;
+  element: LabelElement;
+  widthMm?: Millimeters;
+  heightMm?: Millimeters;
+  shape?: LabelShapeType;
+  holePreset?: HolePreset;
+  quantity?: number;
+  gapXMm?: Millimeters;
+  gapYMm?: Millimeters;
+  existingJobs: WorkbenchJobItem[];
+  config: WorkbenchConfig;
+}): WorkbenchJobItem {
+  const {
+    logoName,
+    clientName = '',
+    element,
+    widthMm = 40,
+    heightMm = 20,
+    shape = 'rounded_rect',
+    holePreset = 'none',
+    quantity = 50,
+    gapXMm = 2,
+    gapYMm = 2,
+    existingJobs,
+    config,
+  } = params;
+
+  const baseDesign = createBlankLabelDesign(widthMm, heightMm, shape);
+  baseDesign.name = logoName;
+  baseDesign.holes = {
+    ...baseDesign.holes,
+    preset: holePreset,
+  };
+
+  // Ajustar y centrar el logo proporcionalmente dentro de la zona segura de la etiqueta
+  const fittedElements = fitAllElementsToAvailableSpace(
+    [element],
+    baseDesign,
+    0.85,
+    'safe_zone_center'
+  );
+  const centeredElements = centerAllElementsGeometrically(
+    fittedElements,
+    baseDesign,
+    'safe_zone_center'
+  );
+  baseDesign.elements = centeredElements;
+
+  const opt = computeOptimalColumnsForSheetWidth(
+    baseDesign,
+    quantity,
+    gapXMm,
+    false,
+    config
+  );
+
+  const compiledGrid = compileJobInstancesGrid(
+    baseDesign,
+    opt.columns,
+    opt.rows,
+    gapXMm,
+    gapYMm,
+    false,
+    quantity
+  );
+
+  const margin = config.sheetSafetyMarginMm;
+  let targetX = roundMm(config.sheetOffsetXMm + margin);
+  let targetY = roundMm(config.sheetOffsetYMm + margin);
+
+  const visibleJobs = existingJobs.filter((j) => j.visible);
+  if (visibleJobs.length > 0) {
+    const lastJob = visibleJobs[visibleJobs.length - 1];
+    const candidateRightX = roundMm(lastJob.xMm + lastJob.widthMm + Math.max(4, gapXMm));
+    const maxSheetX = config.sheetOffsetXMm + config.sheetWidthMm - margin;
+
+    if (candidateRightX + compiledGrid.widthMm <= maxSheetX) {
+      targetX = candidateRightX;
+      targetY = lastJob.yMm;
+    } else {
+      const lowestBottomY = Math.max(
+        ...visibleJobs.map((j) => roundMm(j.yMm + j.heightMm))
+      );
+      targetX = roundMm(config.sheetOffsetXMm + margin);
+      targetY = roundMm(lowestBottomY + Math.max(4, gapYMm));
+    }
+  }
+
+  return {
+    id: `wb-job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: `${logoName} (${compiledGrid.pieceCount} u.)`,
+    clientName: clientName || logoName,
+    sourceOrderId: `multi-upload-${Date.now()}`,
+    createdAt: new Date().toISOString(),
+    labelDesign: baseDesign,
+    xMm: targetX,
+    yMm: targetY,
+    widthMm: compiledGrid.widthMm,
+    heightMm: compiledGrid.heightMm,
+    blockRotationDeg: 0,
+    pieceCount: compiledGrid.pieceCount,
+    columns: opt.columns,
+    rows: opt.rows,
+    gapXMm,
+    gapYMm,
+    instances: compiledGrid.instances,
+    locked: false,
+    visible: true,
+  };
+}
+
+/**
+ * Permite editar directamente en la mesa de trabajo la cantidad, medidas (ancho x alto mm),
+ * forma, orificios o logo de cualquier trabajo de la tirada, recalculando su grilla.
+ */
+export function updateWorkbenchJobDesignAndQuantity(
   job: WorkbenchJobItem,
   updates: {
+    baseName?: string;
+    clientName?: string;
+    widthMm?: Millimeters;
+    heightMm?: Millimeters;
+    shape?: LabelShapeType;
+    holePreset?: HolePreset;
+    pieceCount?: number;
     columns?: number;
     rows?: number;
     gapXMm?: Millimeters;
     gapYMm?: Millimeters;
     blockRotationDeg?: 0 | 90;
-    pieceCount?: number;
-  }
+    autoFitColumnsToRoll?: boolean;
+  },
+  config?: WorkbenchConfig
 ): WorkbenchJobItem {
-  const cols = Math.max(1, Math.round(updates.columns ?? job.columns));
-  const rows = Math.max(1, Math.round(updates.rows ?? job.rows));
+  let nextDesign = structuredClone(job.labelDesign);
+  const dimensionsChanged =
+    (updates.widthMm !== undefined && Math.abs(updates.widthMm - nextDesign.widthMm) > 0.01) ||
+    (updates.heightMm !== undefined && Math.abs(updates.heightMm - nextDesign.heightMm) > 0.01) ||
+    (updates.shape !== undefined && updates.shape !== nextDesign.shape) ||
+    (updates.holePreset !== undefined && updates.holePreset !== nextDesign.holes.preset);
+
+  if (updates.widthMm !== undefined) {
+    nextDesign.widthMm = Math.max(5, Math.min(600, roundMm(updates.widthMm)));
+  }
+  if (updates.heightMm !== undefined) {
+    nextDesign.heightMm = Math.max(5, Math.min(600, roundMm(updates.heightMm)));
+  }
+  if (updates.shape !== undefined) {
+    nextDesign.shape = updates.shape;
+    if (updates.shape === 'circle') {
+      const d = Math.min(nextDesign.widthMm, nextDesign.heightMm);
+      nextDesign.widthMm = d;
+      nextDesign.heightMm = d;
+    }
+  }
+  if (updates.holePreset !== undefined) {
+    nextDesign.holes = {
+      ...nextDesign.holes,
+      preset: updates.holePreset,
+    };
+  }
+
+  // Si cambiaron las medidas, forma u orificios, re-encuadrar y centrar el logo sin deformarlo
+  if (dimensionsChanged && nextDesign.elements.length > 0) {
+    const fitted = fitAllElementsToAvailableSpace(
+      nextDesign.elements,
+      nextDesign,
+      0.85,
+      'safe_zone_center'
+    );
+    nextDesign.elements = centerAllElementsGeometrically(
+      fitted,
+      nextDesign,
+      'safe_zone_center'
+    );
+  }
+
   const gapXMm = Math.max(0, roundMm(updates.gapXMm ?? job.gapXMm));
   const gapYMm = Math.max(0, roundMm(updates.gapYMm ?? job.gapYMm));
   const rot = updates.blockRotationDeg ?? job.blockRotationDeg;
-  const maxPieces =
+  const targetPieces = Math.max(
+    1,
+    Math.min(10000, Math.round(updates.pieceCount ?? job.pieceCount))
+  );
+
+  let cols = Math.max(1, Math.round(updates.columns ?? job.columns));
+  let rows = Math.max(1, Math.round(updates.rows ?? job.rows));
+
+  if (
+    config &&
+    (updates.autoFitColumnsToRoll ||
+      updates.pieceCount !== undefined ||
+      dimensionsChanged)
+  ) {
+    const opt = computeOptimalColumnsForSheetWidth(
+      nextDesign,
+      targetPieces,
+      gapXMm,
+      rot === 90,
+      config
+    );
+    cols = opt.columns;
+    rows = opt.rows;
+  } else if (updates.columns !== undefined && updates.rows === undefined) {
+    rows = Math.max(1, Math.ceil(targetPieces / cols));
+  } else if (updates.columns !== undefined && updates.rows !== undefined) {
+    // Si el usuario editó explícitamente filas o columnas
+  }
+
+  const maxCapacity = cols * rows;
+  const effectivePieces =
     updates.pieceCount !== undefined
-      ? Math.max(1, Math.min(cols * rows, Math.round(updates.pieceCount)))
-      : cols * rows;
+      ? targetPieces
+      : updates.columns !== undefined || updates.rows !== undefined
+        ? maxCapacity
+        : Math.min(targetPieces, maxCapacity);
+
+  if (effectivePieces > cols * rows) {
+    rows = Math.ceil(effectivePieces / cols);
+  }
 
   const compiled = compileJobInstancesGrid(
-    job.labelDesign,
+    nextDesign,
     cols,
     rows,
     gapXMm,
     gapYMm,
     rot === 90,
-    maxPieces
+    effectivePieces
   );
 
-  const baseName = job.name.replace(/\s*\(\d+\s*u\.\)$/, '');
+  const rawBaseName =
+    updates.baseName?.trim() || job.name.replace(/\s*\(\d+\s*u\.\)$/, '');
 
   return {
     ...job,
-    name: `${baseName} (${compiled.pieceCount} u.)`,
+    name: `${rawBaseName} (${compiled.pieceCount} u.)`,
+    clientName: updates.clientName !== undefined ? updates.clientName : job.clientName,
+    labelDesign: nextDesign,
     columns: cols,
     rows,
     gapXMm,
@@ -260,13 +535,32 @@ export function updateWorkbenchJobGrid(
 }
 
 /**
- * Acomoda automáticamente todos los trabajos visibles dentro de la plancha (algoritmo Shelf/Strip Packing)
- * para evitar colisiones y aprovechar recortes de material.
+ * Recalcula las instancias de un trabajo en mesa tras cambiar filas, columnas, separación o rotación.
+ */
+export function updateWorkbenchJobGrid(
+  job: WorkbenchJobItem,
+  updates: {
+    columns?: number;
+    rows?: number;
+    gapXMm?: Millimeters;
+    gapYMm?: Millimeters;
+    blockRotationDeg?: 0 | 90;
+    pieceCount?: number;
+  }
+): WorkbenchJobItem {
+  return updateWorkbenchJobDesignAndQuantity(job, updates);
+}
+
+/**
+ * Acomoda automáticamente todos los trabajos visibles dentro de la plancha (algoritmo Shelf/Strip Packing).
+ * Cuando `optimizeColumnsForRoll` es true (por defecto en rollo de Ecocuero de 73 cm), primero ajusta
+ * las columnas de cada trabajo para aprovechar los 73 cm de ancho y consumir el mínimo largo posible del rollo de 5m.
  */
 export function autoArrangeWorkbenchJobs(
   jobs: WorkbenchJobItem[],
   config: WorkbenchConfig,
-  interJobGapMm = 4
+  interJobGapMm = 4,
+  optimizeColumnsForRoll = false
 ): WorkbenchJobItem[] {
   const margin = Math.max(0, config.sheetSafetyMarginMm);
   const startX = roundMm(config.sheetOffsetXMm + margin);
@@ -277,10 +571,21 @@ export function autoArrangeWorkbenchJobs(
   let cursorY = startY;
   let shelfHeight = 0;
 
-  return jobs.map((job) => {
-    if (!job.visible || job.locked) {
-      return job;
+  return jobs.map((rawJob) => {
+    if (!rawJob.visible || rawJob.locked) {
+      return rawJob;
     }
+
+    const job = optimizeColumnsForRoll
+      ? updateWorkbenchJobDesignAndQuantity(
+          rawJob,
+          {
+            pieceCount: rawJob.pieceCount,
+            autoFitColumnsToRoll: true,
+          },
+          config
+        )
+      : rawJob;
 
     if (cursorX > startX && cursorX + job.widthMm > maxRightX) {
       cursorX = startX;
@@ -298,6 +603,79 @@ export function autoArrangeWorkbenchJobs(
     shelfHeight = Math.max(shelfHeight, job.heightMm);
     return placed;
   });
+}
+
+/**
+ * Calcula las métricas reales de consumo del rollo de Ecocuero (73 cm de ancho x 5 m de largo).
+ */
+export function computeEcocueroRollMetrics(
+  jobs: WorkbenchJobItem[],
+  config: WorkbenchConfig
+): EcocueroRollMetrics {
+  const rollWidthMm = config.sheetWidthMm || ECOCUERO_ROLL_WIDTH_MM;
+  const rollWidthCm = roundMm(rollWidthMm / 10, 1);
+  const totalRollLengthMm = config.rollTotalLengthMm || ECOCUERO_ROLL_TOTAL_LENGTH_MM;
+  const totalRollLengthCm = roundMm(totalRollLengthMm / 10, 1);
+
+  const bounds = computeWorkbenchOccupiedBounds(jobs);
+  if (!bounds) {
+    return {
+      rollWidthMm,
+      rollWidthCm,
+      totalRollLengthMm,
+      totalRollLengthCm,
+      usedLengthMm: 0,
+      usedLengthCm: 0,
+      remainingRollLengthCm: totalRollLengthCm,
+      remainingRollLengthMeters: roundMm(totalRollLengthMm / 1000, 2),
+      rollConsumptionPercent: 0,
+      widthUtilizationPercent: 0,
+      estimatedRunsPerRoll: 0,
+      exceedsSingleBedPass: false,
+    };
+  }
+
+  // Avance lineal desde el inicio de la plancha hasta el borde inferior del último trabajo + margen
+  const rawAdvanceMm = Math.max(
+    0,
+    bounds.maxY - config.sheetOffsetYMm + config.sheetSafetyMarginMm
+  );
+  const usedLengthMm = roundMm(rawAdvanceMm, 1);
+  const usedLengthCm = roundMm(usedLengthMm / 10, 1);
+  const remainingMm = Math.max(0, totalRollLengthMm - usedLengthMm);
+  const remainingRollLengthCm = roundMm(remainingMm / 10, 1);
+  const remainingRollLengthMeters = roundMm(remainingMm / 1000, 2);
+
+  const rollConsumptionPercent = roundMm(
+    Math.min(100, (usedLengthMm / Math.max(1, totalRollLengthMm)) * 100),
+    1
+  );
+  const usableRollWidthMm = Math.max(
+    1,
+    rollWidthMm - config.sheetSafetyMarginMm * 2
+  );
+  const widthUtilizationPercent = roundMm(
+    Math.min(100, (bounds.width / usableRollWidthMm) * 100),
+    1
+  );
+  const estimatedRunsPerRoll =
+    usedLengthMm > 0 ? Math.floor(totalRollLengthMm / usedLengthMm) : 0;
+  const exceedsSingleBedPass = usedLengthMm > config.machineBedHeightMm + 0.01;
+
+  return {
+    rollWidthMm,
+    rollWidthCm,
+    totalRollLengthMm,
+    totalRollLengthCm,
+    usedLengthMm,
+    usedLengthCm,
+    remainingRollLengthCm,
+    remainingRollLengthMeters,
+    rollConsumptionPercent,
+    widthUtilizationPercent,
+    estimatedRunsPerRoll,
+    exceedsSingleBedPass,
+  };
 }
 
 /**
@@ -492,7 +870,7 @@ export function validateWorkbenchState(
     issues.push({
       severity: 'error',
       code: 'EMPTY_WORKBENCH',
-      message: 'No hay trabajos activos en la mesa. Enviá una etiqueta o tanda a la plancha.',
+      message: 'No hay trabajos activos en la mesa. Subí uno o varios logos o enviá una etiqueta a la plancha.',
     });
   }
 
@@ -532,7 +910,7 @@ export function validateWorkbenchState(
       issues.push({
         severity: 'error',
         code: 'JOB_OUTSIDE_MACHINE_BED',
-        message: `El trabajo "${job.name}" sobresale de los límites físicos de la mesa Vank 9060 (900×600 mm).`,
+        message: `El trabajo "${job.name}" supera el límite de tirada de la mesa Vank 9060 (${config.machineBedWidthMm}×${config.machineBedHeightMm} mm). Reducí la cantidad de esta tirada o presioná "Optimizar Ancho 73 cm".`,
       });
     } else if (
       job.xMm < sheetMinX - 0.01 ||
@@ -544,7 +922,7 @@ export function validateWorkbenchState(
       issues.push({
         severity: 'error',
         code: 'JOB_OUTSIDE_MATERIAL_SHEET',
-        message: `El trabajo "${job.name}" sobresale de los bordes de la plancha de material (${config.sheetWidthMm}×${config.sheetHeightMm} mm).`,
+        message: `El trabajo "${job.name}" sobresale del ancho de la plancha/rollo (${config.sheetWidthMm}×${config.sheetHeightMm} mm). Presioná "Optimizar en Rollo 73 cm".`,
       });
     }
   }
@@ -562,7 +940,7 @@ export function validateWorkbenchState(
         issues.push({
           severity: 'error',
           code: 'WORKBENCH_JOBS_OVERLAP',
-          message: `Superposición detectada en la plancha entre "${a.name}" y "${b.name}". Usá "Acomodar en Plancha" o separalos.`,
+          message: `Superposición detectada en la plancha entre "${a.name}" y "${b.name}". Presioná "Optimizar en Rollo 73 cm".`,
         });
       }
     }
@@ -715,7 +1093,7 @@ export function simulateWorkbenchToolpath(
   let outerCutDurationSec = 0;
   let rapidDurationSec = 0;
 
-  const RAPID_SPEED_MM_S = 250; // Velocidad de desplazamiento en vacío de referencia en Vank 9060
+  const RAPID_SPEED_MM_S = 250;
 
   const sortedLayers = [...config.layers]
     .filter((l) => l.outputEnabled)
@@ -769,7 +1147,6 @@ export function simulateWorkbenchToolpath(
         for (const inst of job.instances) {
           if (inst.engraveItems.length === 0) continue;
 
-          // Calcular envolvente de grabado de esta pieza en coordenadas de mesa
           let minX = Infinity;
           let minY = Infinity;
           let maxX = -Infinity;
@@ -788,13 +1165,11 @@ export function simulateWorkbenchToolpath(
           const scanHeight = Math.max(0.5, roundMm(maxY - minY));
           const realScanLines = Math.max(1, Math.ceil(scanHeight / interval));
           const totalScanDist = roundMm(scanWidth * realScanLines * passes);
-          // Sobrecosto de inversión de carro Ruida en cada línea (~0.025 s por línea)
           const turnaroundTime = realScanLines * 0.018 * passes;
           const totalScanDur = Math.max(0.05, totalScanDist / speed + turnaroundTime);
 
           pushRapidMove(roundMm(minX), roundMm(minY));
 
-          // Generar polilínea visual representativa en zig-zag (6 pasadas visuales por pieza para fluidez)
           const visualRows = Math.min(8, Math.max(3, Math.ceil(scanHeight / 1.5)));
           const pts: { x: Millimeters; y: Millimeters }[] = [{ x: roundMm(minX), y: roundMm(minY) }];
           for (let r = 0; r < visualRows; r++) {
@@ -845,7 +1220,6 @@ export function simulateWorkbenchToolpath(
               x: roundMm(job.xMm + p.x),
               y: roundMm(job.yMm + p.y),
             }));
-            // Cerrar contorno
             absPts.push({ ...absPts[0] });
 
             pushRapidMove(absPts[0].x, absPts[0].y);
@@ -919,7 +1293,6 @@ export function simulateWorkbenchToolpath(
     }
   }
 
-  // Retorno final del cabezal al origen del trabajo
   if (segments.length > 0) {
     pushRapidMove(origin.x, origin.y);
   }

@@ -1,6 +1,7 @@
 /**
  * Astra Studio — Módulo Mesa de Trabajo y Control Vank 9060 (Estilo LightBurn)
- * Tipos de dominio para armado libre en plancha, gestión de capas de corte/grabado (C00..C29),
+ * Tipos de dominio para armado libre en plancha o rollo de Ecocuero (73 cm x 5 m),
+ * gestión de múltiples trabajos/logos en una misma tirada, capas de corte/grabado (C00..C29),
  * simulación de trayectoria y carga a controladora Ruida RDC8445S / exportación nativa .lbrn2 y .rd.
  */
 
@@ -13,6 +14,13 @@ import {
   Millimeters,
   OperationLayerType,
 } from '../types';
+
+/** Ancho real del rollo de Ecocuero cortado para entrar en la mesa de la Vank 9060 (73 cm = 730 mm) */
+export const ECOCUERO_ROLL_WIDTH_MM = 730;
+/** Profundidad máxima de una tirada sobre la mesa de la Vank 9060 (60 cm = 600 mm) */
+export const ECOCUERO_BED_PASS_HEIGHT_MM = 600;
+/** Largo total del rollo de Ecocuero enrollado a lo largo (5 m = 5000 mm = 500 cm) */
+export const ECOCUERO_ROLL_TOTAL_LENGTH_MM = 5000;
 
 export type LightBurnCutMode = 'fill' | 'line' | 'offset_fill';
 
@@ -126,9 +134,13 @@ export interface WorkbenchConfig {
   /** Coordenadas del origen de usuario o cabezal en la mesa (mm) */
   userOriginXMm: Millimeters;
   userOriginYMm: Millimeters;
-  /** Dimensiones de la plancha/recorte de material colocada sobre la mesa (mm) */
+  /** Dimensiones de la plancha/rollo colocada sobre la mesa (mm). Para Ecocuero: 730 x 600 mm */
   sheetWidthMm: Millimeters;
   sheetHeightMm: Millimeters;
+  /** Indica si el material proviene de un rollo continuo (ej. Ecocuero 73 cm x 5 m) */
+  isRollMaterial: boolean;
+  /** Largo total del rollo en milímetros (ej. 5000 mm = 5 m para Ecocuero) */
+  rollTotalLengthMm: Millimeters;
   /** Posición de la plancha sobre la mesa de 900x600 mm */
   sheetOffsetXMm: Millimeters;
   sheetOffsetYMm: Millimeters;
@@ -144,6 +156,29 @@ export interface WorkbenchConfig {
   ruidaJobName: string;
   /** Configuración de capas estilo LightBurn */
   layers: WorkbenchLayerConfig[];
+}
+
+export interface EcocueroRollMetrics {
+  /** Ancho del rollo en mm (730 mm) y cm (73 cm) */
+  rollWidthMm: Millimeters;
+  rollWidthCm: number;
+  /** Largo total del rollo en mm (5000 mm) y cm (500 cm = 5 m) */
+  totalRollLengthMm: Millimeters;
+  totalRollLengthCm: number;
+  /** Avance lineal de rollo consumido en esta tirada (mm y cm) */
+  usedLengthMm: Millimeters;
+  usedLengthCm: number;
+  /** Rollo restante luego de esta tirada (cm y m) */
+  remainingRollLengthCm: number;
+  remainingRollLengthMeters: number;
+  /** Porcentaje del rollo de 5m consumido en esta tirada */
+  rollConsumptionPercent: number;
+  /** Porcentaje del ancho de 73 cm aprovechado */
+  widthUtilizationPercent: number;
+  /** Cantidad estimada de tiradas iguales que rinde el rollo de 5m */
+  estimatedRunsPerRoll: number;
+  /** Indica si el avance requerido supera los 600 mm de una tirada de mesa Vank 9060 */
+  exceedsSingleBedPass: boolean;
 }
 
 export interface WorkbenchValidationIssue {
@@ -194,6 +229,15 @@ export interface WorkbenchSimulationResult {
   holesDurationSec: number;
   outerCutDurationSec: number;
   rapidDurationSec: number;
+}
+
+export function isEcocueroMaterial(material?: MaterialProfile): boolean {
+  if (!material) return false;
+  return (
+    material.id === 'ECOCUERO_SUELA' ||
+    material.category === 'synthetic_leather' ||
+    material.name.toLowerCase().includes('ecocuero')
+  );
 }
 
 export function createDefaultWorkbenchLayers(material?: MaterialProfile): WorkbenchLayerConfig[] {
@@ -263,10 +307,24 @@ export function createDefaultWorkbenchLayers(material?: MaterialProfile): Workbe
 }
 
 export function createDefaultWorkbenchConfig(
-  sheetWidthMm = 600,
-  sheetHeightMm = 400,
+  sheetWidthMm?: number,
+  sheetHeightMm?: number,
   material?: MaterialProfile
 ): WorkbenchConfig {
+  const isEco = isEcocueroMaterial(material);
+  const resolvedWidth =
+    sheetWidthMm !== undefined
+      ? sheetWidthMm
+      : isEco
+        ? ECOCUERO_ROLL_WIDTH_MM
+        : 600;
+  const resolvedHeight =
+    sheetHeightMm !== undefined
+      ? sheetHeightMm
+      : isEco
+        ? ECOCUERO_BED_PASS_HEIGHT_MM
+        : 400;
+
   return {
     machineBedWidthMm: 900,
     machineBedHeightMm: 600,
@@ -275,8 +333,10 @@ export function createDefaultWorkbenchConfig(
     jobOriginAnchor: 'top_left',
     userOriginXMm: 0,
     userOriginYMm: 0,
-    sheetWidthMm,
-    sheetHeightMm,
+    sheetWidthMm: resolvedWidth,
+    sheetHeightMm: resolvedHeight,
+    isRollMaterial: isEco || resolvedWidth === ECOCUERO_ROLL_WIDTH_MM,
+    rollTotalLengthMm: ECOCUERO_ROLL_TOTAL_LENGTH_MM,
     sheetOffsetXMm: 0,
     sheetOffsetYMm: 0,
     sheetSafetyMarginMm: 5,

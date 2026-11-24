@@ -105,6 +105,13 @@ export const STANDARD_DIMENSION_PRESETS: DimensionPreset[] = [
 
 export const MATERIAL_SHEET_PRESETS: SheetSizePreset[] = [
   {
+    id: '730x600_ecocuero',
+    label: '730 × 600 mm (Rollo Ecocuero 73 cm)',
+    widthMm: 730,
+    heightMm: 600,
+    description: 'Rollo Ecocuero 73 cm de ancho × 5 m de largo (en mesa Vank 9060)',
+  },
+  {
     id: '900x600',
     label: '900 × 600 mm',
     widthMm: 900,

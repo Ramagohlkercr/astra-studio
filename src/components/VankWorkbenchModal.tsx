@@ -10,38 +10,41 @@ import {
   Cpu,
   Download,
   ExternalLink,
-  Eye,
-  EyeOff,
   FileCode2,
-  FolderPlus,
   Grid,
   Layers,
-  Lock,
-  Maximize2,
-  Move,
   Pause,
   Play,
   Plus,
-  RotateCcw,
   RotateCw,
+  Ruler,
   Save,
   Send,
-  ShieldCheck,
   Sparkles,
   Target,
   Trash2,
-  Unlock,
-  Wifi,
+  Upload,
   Wind,
   X,
 } from 'lucide-react';
 import { rasterImageTransform, roundMm } from '../core/geometry/geometryEngine';
-import { MATERIAL_SHEET_PRESETS } from '../core/projects/projectManager';
+import { processImageDataUrlInBrowser } from '../core/image/browserImageLoader';
 import {
+  DEFAULT_IMAGE_PROCESSING,
+  parseSvgLogoString,
+} from '../core/image/imageProcessor';
+import {
+  MATERIAL_SHEET_PRESETS,
+  STANDARD_DIMENSION_PRESETS,
+} from '../core/projects/projectManager';
+import {
+  HolePreset,
   LabelDesign,
+  LabelShapeType,
   MaterialProfile,
   NestingResult,
   OrderProject,
+  SvgLogoElement,
 } from '../core/types';
 import { LogoOutputFile } from '../core/exporters/logoFolder';
 import {
@@ -55,13 +58,19 @@ import {
 import {
   applyWorkbenchLayersToMaterialProfile,
   autoArrangeWorkbenchJobs,
+  computeEcocueroRollMetrics,
   createWorkbenchJobFromOrder,
+  createWorkbenchJobFromUploadedLogo,
   simulateWorkbenchToolpath,
   syncLayersWithMaterialProfile,
-  updateWorkbenchJobGrid,
+  updateWorkbenchJobDesignAndQuantity,
   validateWorkbenchState,
 } from '../core/workbench/workbenchEngine';
 import {
+  ECOCUERO_BED_PASS_HEIGHT_MM,
+  ECOCUERO_ROLL_TOTAL_LENGTH_MM,
+  ECOCUERO_ROLL_WIDTH_MM,
+  isEcocueroMaterial,
   JobOriginAnchor,
   LightBurnCutMode,
   MachineOriginCorner,
@@ -111,6 +120,15 @@ function formatDuration(sec: number): string {
   return `${mins}m ${remSec.toString().padStart(2, '0')}s`;
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error(`No se pudo leer el archivo ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
 export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   design,
   nesting,
@@ -135,16 +153,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   const [cameraView, setCameraView] = useState<'sheet' | 'machine' | 'occupied'>('sheet');
   const [showSimulation, setShowSimulation] = useState<boolean>(false);
   const [isPlayingSim, setIsPlayingSim] = useState<boolean>(false);
-  const [simProgress, setSimProgress] = useState<number>(100); // 0..100%
+  const [simProgress, setSimProgress] = useState<number>(100);
   const [safetyConfirmed, setSafetyConfirmed] = useState<boolean>(false);
   const [isSendingToRuida, setIsSendingToRuida] = useState<boolean>(false);
+  const [isUploadingLogos, setIsUploadingLogos] = useState<boolean>(false);
   const [ruidaStatusMsg, setRuidaStatusMsg] = useState<{
     type: 'info' | 'success' | 'error';
     text: string;
   } | null>(null);
   const [orderToAppendId, setOrderToAppendId] = useState<string>('');
 
-  // Estado de arrastre interactivo sobre el SVG de la mesa
+  const multiLogoInputRef = useRef<HTMLInputElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const draggingJobRef = useRef<{
     jobId: string;
@@ -153,6 +172,8 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     initialJobX: number;
     initialJobY: number;
   } | null>(null);
+
+  const isEco = isEcocueroMaterial(material);
 
   const selectedJob = useMemo(
     () => workbenchJobs.find((j) => j.id === selectedJobId) ?? workbenchJobs[0] ?? null,
@@ -166,6 +187,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
   const simulation = useMemo(
     () => simulateWorkbenchToolpath(workbenchJobs, workbenchConfig),
+    [workbenchJobs, workbenchConfig]
+  );
+
+  const rollMetrics = useMemo(
+    () => computeEcocueroRollMetrics(workbenchJobs, workbenchConfig),
     [workbenchJobs, workbenchConfig]
   );
 
@@ -209,23 +235,158 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     return activeSeg.points[ptIdx];
   }, [simulation, simProgress, validation.jobOriginPointMm]);
 
+  // Activar medida real del Rollo Ecocuero 73 cm x 5 m y optimizar tirada
+  const handleApplyEcocueroRoll73cm = () => {
+    const nextCfg: WorkbenchConfig = {
+      ...workbenchConfig,
+      sheetWidthMm: ECOCUERO_ROLL_WIDTH_MM,
+      sheetHeightMm: ECOCUERO_BED_PASS_HEIGHT_MM,
+      isRollMaterial: true,
+      rollTotalLengthMm: ECOCUERO_ROLL_TOTAL_LENGTH_MM,
+    };
+    onUpdateConfig(nextCfg);
+    const arranged = autoArrangeWorkbenchJobs(workbenchJobs, nextCfg, 4, true);
+    onUpdateJobs(arranged);
+    onNotify(
+      'Rollo de Ecocuero 73 cm × 5 m (730 × 600 mm en mesa) aplicado y trabajos optimizados a todo el ancho.'
+    );
+  };
+
+  // Subir múltiples archivos de logo (PNG, JPG, SVG) a la vez para combinarlos en la misma tirada
+  const handleMultiLogoFilesSelected = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const fileArray = Array.from(files);
+    e.target.value = '';
+
+    setIsUploadingLogos(true);
+    try {
+      let currentList = [...workbenchJobs];
+      let lastCreatedId: string | null = null;
+      let addedCount = 0;
+
+      for (const file of fileArray) {
+        const cleanName = file.name.replace(/\.[^.]+$/, '');
+        const isSvg =
+          file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
+
+        if (isSvg) {
+          const svgText = await file.text();
+          const parsed = parseSvgLogoString(svgText);
+          const svgEl: SvgLogoElement = {
+            id: `wb-logo-svg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: cleanName,
+            type: 'logo_svg',
+            xMm: roundMm(design.widthMm / 2, 2),
+            yMm: roundMm(design.heightMm / 2, 2),
+            widthMm: roundMm(design.widthMm * 0.7, 2),
+            heightMm: roundMm((design.widthMm * 0.7) / Math.max(0.1, parsed.aspectRatio), 2),
+            aspectRatio: parsed.aspectRatio,
+            lockAspectRatio: true,
+            rotationDeg: 0,
+            locked: false,
+            visible: true,
+            rawSvgContent: svgText,
+            normalizedPaths: parsed.normalizedPaths,
+            originalViewBox: parsed.originalViewBox,
+            contentBoundsNormalized: parsed.contentBoundsNormalized,
+          };
+
+          const newJob = createWorkbenchJobFromUploadedLogo({
+            logoName: cleanName,
+            clientName: cleanName,
+            element: svgEl,
+            widthMm: design.widthMm,
+            heightMm: design.heightMm,
+            shape: design.shape,
+            holePreset: design.holes.preset,
+            quantity: Math.min(200, Math.max(10, nesting.config.requestedQuantity || 50)),
+            gapXMm: nesting.config.gapXMm,
+            gapYMm: nesting.config.gapYMm,
+            existingJobs: currentList,
+            config: workbenchConfig,
+          });
+          currentList.push(newJob);
+          lastCreatedId = newJob.id;
+          addedCount++;
+        } else {
+          const dataUrl = await readFileAsDataUrl(file);
+          const rasterEl = await processImageDataUrlInBrowser({
+            dataUrl,
+            name: cleanName,
+            targetWidthMm: roundMm(design.widthMm * 0.7, 2),
+            centerXMm: roundMm(design.widthMm / 2, 2),
+            centerYMm: roundMm(design.heightMm / 2, 2),
+            options: DEFAULT_IMAGE_PROCESSING,
+          });
+
+          const newJob = createWorkbenchJobFromUploadedLogo({
+            logoName: cleanName,
+            clientName: cleanName,
+            element: rasterEl,
+            widthMm: design.widthMm,
+            heightMm: design.heightMm,
+            shape: design.shape,
+            holePreset: design.holes.preset,
+            quantity: Math.min(200, Math.max(10, nesting.config.requestedQuantity || 50)),
+            gapXMm: nesting.config.gapXMm,
+            gapYMm: nesting.config.gapYMm,
+            existingJobs: currentList,
+            config: workbenchConfig,
+          });
+          currentList.push(newJob);
+          lastCreatedId = newJob.id;
+          addedCount++;
+        }
+      }
+
+      // Acomodar todos los trabajos automáticamente aprovechando el ancho (73 cm si es rollo)
+      const arranged = autoArrangeWorkbenchJobs(
+        currentList,
+        workbenchConfig,
+        4,
+        workbenchConfig.isRollMaterial || isEco
+      );
+      onUpdateJobs(arranged);
+      if (lastCreatedId) setSelectedJobId(lastCreatedId);
+      onNotify(
+        `${addedCount} trabajo(s) con logos distintos cargados y acomodados en la misma tirada.`
+      );
+    } catch (err) {
+      onNotify(
+        `Error al procesar logos para la tirada: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    } finally {
+      setIsUploadingLogos(false);
+    }
+  };
+
   // Acciones de agregar trabajos a la plancha
   const handleAddActiveBatch = () => {
     const newJob = createWorkbenchJobFromOrder({
       design,
       nesting,
       batchIndex: activeBatchIndex,
-      mode: 'active_batch',
+      mode: workbenchConfig.isRollMaterial || isEco ? 'roll_strip' : 'active_batch',
       projectName,
       clientName,
       orderId: activeOrderId,
       existingJobs: workbenchJobs,
       config: workbenchConfig,
     });
-    const next = [...workbenchJobs, newJob];
+    const next = autoArrangeWorkbenchJobs(
+      [...workbenchJobs, newJob],
+      workbenchConfig,
+      4,
+      workbenchConfig.isRollMaterial || isEco
+    );
     onUpdateJobs(next);
     setSelectedJobId(newJob.id);
-    onNotify(`Tanda "${newJob.name}" agregada a la plancha de trabajo.`);
+    onNotify(`Trabajo "${newJob.name}" agregado a la tirada en plancha.`);
   };
 
   const handleAddSinglePiece = () => {
@@ -252,29 +413,41 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const newJob = createWorkbenchJobFromOrder({
       design: targetOrder.labelDesign,
       nesting,
-      mode: 'custom_grid',
-      customColumns: Math.min(5, Math.max(1, targetOrder.nestingConfig.requestedQuantity)),
-      customRows: Math.min(
-        4,
-        Math.max(1, Math.ceil(targetOrder.nestingConfig.requestedQuantity / 5))
-      ),
+      mode: 'roll_strip',
+      customQuantity: targetOrder.nestingConfig.requestedQuantity,
       projectName: targetOrder.projectName,
       clientName: targetOrder.clientName,
       orderId: targetOrder.id,
       existingJobs: workbenchJobs,
       config: workbenchConfig,
     });
-    const next = [...workbenchJobs, newJob];
+    const next = autoArrangeWorkbenchJobs(
+      [...workbenchJobs, newJob],
+      workbenchConfig,
+      4,
+      workbenchConfig.isRollMaterial || isEco
+    );
     onUpdateJobs(next);
     setSelectedJobId(newJob.id);
     setOrderToAppendId('');
-    onNotify(`Pedido "${targetOrder.projectName}" combinado en la misma plancha.`);
+    onNotify(
+      `Pedido "${targetOrder.projectName}" (${newJob.pieceCount} u.) combinado en la misma tirada.`
+    );
   };
 
-  const handleAutoArrangeAll = () => {
-    const arranged = autoArrangeWorkbenchJobs(workbenchJobs, workbenchConfig, 4);
+  const handleAutoArrangeAll = (optimizeForRollWidth = true) => {
+    const arranged = autoArrangeWorkbenchJobs(
+      workbenchJobs,
+      workbenchConfig,
+      4,
+      optimizeForRollWidth
+    );
     onUpdateJobs(arranged);
-    onNotify('Trabajos acomodados automáticamente dentro de la plancha sin superposiciones.');
+    onNotify(
+      optimizeForRollWidth
+        ? `Tirada optimizada a todo el ancho (${workbenchConfig.sheetWidthMm} mm) para minimizar el consumo lineal de rollo.`
+        : 'Trabajos acomodados automáticamente dentro de la plancha.'
+    );
   };
 
   const handleDuplicateSelectedJob = () => {
@@ -282,14 +455,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const copy: WorkbenchJobItem = {
       ...structuredClone(selectedJob),
       id: `wb-job-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: `${selectedJob.name} (Copia)`,
-      xMm: roundMm(Math.min(workbenchConfig.machineBedWidthMm - selectedJob.widthMm, selectedJob.xMm + selectedJob.widthMm + 4)),
-      yMm: selectedJob.yMm,
+      name: `${selectedJob.name.replace(/\s*\(\d+\s*u\.\)$/, '')} Copia (${selectedJob.pieceCount} u.)`,
     };
-    const next = [...workbenchJobs, copy];
+    const next = autoArrangeWorkbenchJobs(
+      [...workbenchJobs, copy],
+      workbenchConfig,
+      4,
+      false
+    );
     onUpdateJobs(next);
     setSelectedJobId(copy.id);
-    onNotify(`Trabajo "${selectedJob.name}" duplicado en la plancha.`);
+    onNotify(`Trabajo "${selectedJob.name}" duplicado en la tirada.`);
   };
 
   const handleDeleteJob = (id: string) => {
@@ -308,17 +484,41 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     onUpdateJobs(next);
   };
 
-  const handleUpdateSelectedJobGrid = (updates: {
+  const handleUpdateSelectedJobDesignOrQty = (updates: {
+    baseName?: string;
+    clientName?: string;
+    widthMm?: number;
+    heightMm?: number;
+    shape?: LabelShapeType;
+    holePreset?: HolePreset;
+    pieceCount?: number;
     columns?: number;
     rows?: number;
     gapXMm?: number;
     gapYMm?: number;
     blockRotationDeg?: 0 | 90;
-    pieceCount?: number;
+    autoFitColumnsToRoll?: boolean;
   }) => {
     if (!selectedJob) return;
-    const rebuilt = updateWorkbenchJobGrid(selectedJob, updates);
-    onUpdateJobs(workbenchJobs.map((j) => (j.id === selectedJob.id ? rebuilt : j)));
+    const rebuilt = updateWorkbenchJobDesignAndQuantity(
+      selectedJob,
+      updates,
+      workbenchConfig
+    );
+    const updatedList = workbenchJobs.map((j) =>
+      j.id === selectedJob.id ? rebuilt : j
+    );
+    // Si cambió la cantidad o las medidas de etiqueta, reacomodar automáticamente la tirada para que no colisionen
+    if (
+      updates.pieceCount !== undefined ||
+      updates.widthMm !== undefined ||
+      updates.heightMm !== undefined ||
+      updates.autoFitColumnsToRoll
+    ) {
+      onUpdateJobs(autoArrangeWorkbenchJobs(updatedList, workbenchConfig, 4, false));
+    } else {
+      onUpdateJobs(updatedList);
+    }
   };
 
   // Gestión de Capas C00..C02
@@ -401,8 +601,20 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const mm = clientToMillimeters(e.clientX, e.clientY);
     const dx = mm.x - drag.startMouseX;
     const dy = mm.y - drag.startMouseY;
-    const nextX = roundMm(Math.max(0, Math.min(workbenchConfig.machineBedWidthMm - 5, drag.initialJobX + dx)), 1);
-    const nextY = roundMm(Math.max(0, Math.min(workbenchConfig.machineBedHeightMm - 5, drag.initialJobY + dy)), 1);
+    const nextX = roundMm(
+      Math.max(
+        0,
+        Math.min(workbenchConfig.machineBedWidthMm - 5, drag.initialJobX + dx)
+      ),
+      1
+    );
+    const nextY = roundMm(
+      Math.max(
+        0,
+        Math.min(workbenchConfig.machineBedHeightMm - 5, drag.initialJobY + dy)
+      ),
+      1
+    );
 
     onUpdateJobs(
       workbenchJobs.map((j) =>
@@ -434,7 +646,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       const udpPackets = buildRuidaUdpPackets(compiled.rdBytes);
 
       if (!isTauri()) {
-        // En navegador web descargamos el archivo .RD compilado directamente
         const blob = new Blob([compiled.rdBytes], { type: 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -590,7 +801,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     vbHeight = ob.height + pad * 2;
   }
 
-  // Coordenadas visuales de la esquina de Home de la máquina Ruida
   const machineHomeCoords = useMemo(() => {
     const w = workbenchConfig.machineBedWidthMm;
     const h = workbenchConfig.machineBedHeightMm;
@@ -626,69 +836,85 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       aria-label="Mesa de Trabajo Vank 9060 estilo LightBurn"
       className="fixed inset-0 z-50 bg-[#070a0e]/95 backdrop-blur-sm flex flex-col text-slate-100 select-none"
     >
+      {/* Input oculto para subir múltiples logos a la vez */}
+      <input
+        ref={multiLogoInputRef}
+        type="file"
+        multiple
+        accept=".png,.jpg,.jpeg,.svg"
+        aria-label="Subir varios logos a la tirada"
+        onChange={handleMultiLogoFilesSelected}
+        className="hidden"
+      />
+
       {/* 1. CABECERA SUPERIOR ESTILO LIGHTBURN */}
-      <header className="h-14 bg-[#11161f] border-b border-slate-800 px-4 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+      <header className="min-h-14 py-2 bg-[#11161f] border-b border-slate-800 px-4 flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-500/40 flex items-center justify-center text-cyan-400 shrink-0">
             <Cpu className="w-4 h-4" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold text-white">
-                Mesa de Trabajo y Plancha — Vank 9060 CO₂
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-sm font-bold text-white truncate">
+                Mesa de Trabajo y Tirada Multi-Logo — Vank 9060 CO₂
               </h2>
-              <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
-                Ruida RDC8445S · 900×600 mm
+              <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded bg-amber-950/90 text-amber-300 border border-amber-700/80 shrink-0">
+                {workbenchConfig.sheetWidthMm === 730
+                  ? 'Rollo Ecocuero 73 cm × 5 m'
+                  : `Plancha ${workbenchConfig.sheetWidthMm}×${workbenchConfig.sheetHeightMm} mm`}
               </span>
             </div>
-            <p className="text-[11px] text-slate-400">
-              Armá la plancha, configurá las capas C00/C01/C02 y cargá el trabajo directo a la Vank o a LightBurn
+            <p className="text-[11px] text-slate-400 truncate hidden sm:block">
+              Combiná varios logos, medidas y cantidades en la misma tirada de 73 cm y cargalo directo a la Vank 9060
             </p>
           </div>
         </div>
 
-        {/* Botonera rápida de inserción en plancha */}
-        <div className="flex items-center gap-2">
+        {/* Botonera rápida de inserción multi-trabajo en plancha */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            disabled={isUploadingLogos}
+            onClick={() => multiLogoInputRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow transition-colors whitespace-nowrap"
+            title="Seleccionar varios archivos de logos (PNG, JPG o SVG) para combinarlos en la misma tirada"
+          >
+            <Upload className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {isUploadingLogos
+                ? 'Cargando logos...'
+                : '+ Subir Varios Logos a la Tirada'}
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={handleAddActiveBatch}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold shadow transition-colors"
-            title="Enviar la tanda actual del asistente a la plancha"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold shadow transition-colors whitespace-nowrap"
+            title="Agregar el diseño actual del editor a la tirada"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span>+ Mandar Tanda Actual ({nesting.batches[activeBatchIndex]?.count ?? 0} u.)</span>
+            <Plus className="w-3.5 h-3.5 shrink-0" />
+            <span>+ Sumar Diseño Actual</span>
           </button>
 
           <button
             type="button"
-            onClick={handleAddSinglePiece}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold transition-colors"
-            title="Enviar 1 etiqueta suelta para acomodar en recorte"
-          >
-            <Plus className="w-3.5 h-3.5 text-cyan-400" />
-            <span>+ 1 Etiqueta Suelta</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleAutoArrangeAll}
+            onClick={() => handleAutoArrangeAll(true)}
             disabled={workbenchJobs.length === 0}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 text-xs font-semibold disabled:opacity-40 transition-colors"
-            title="Acomodar todos los trabajos automáticamente en la plancha"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 text-xs font-semibold disabled:opacity-40 transition-colors whitespace-nowrap"
+            title="Acomodar todos los trabajos a todo el ancho (73 cm) para consumir el menor largo posible del rollo"
           >
-            <Grid className="w-3.5 h-3.5" />
-            <span>Acomodar en Plancha</span>
+            <Grid className="w-3.5 h-3.5 shrink-0" />
+            <span>Optimizar Ancho {roundMm(workbenchConfig.sheetWidthMm / 10, 1)} cm</span>
           </button>
-
-          <div className="h-5 w-px bg-slate-800 mx-1" />
 
           <button
             type="button"
             onClick={onClose}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold border border-slate-700"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold border border-slate-700 whitespace-nowrap"
           >
-            <X className="w-3.5 h-3.5" />
-            <span>Volver al Editor</span>
+            <X className="w-3.5 h-3.5 shrink-0" />
+            <span>Volver</span>
           </button>
         </div>
       </header>
@@ -696,50 +922,50 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       {/* 2. CUERPO PRINCIPAL: LIENZO 900x600 MM + DOCKS LATERALES ESTILO LIGHTBURN */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* ÁREA IZQUIERDA/CENTRAL: MESA DE TRABAJO Y SIMULADOR */}
-        <div className="flex-1 flex flex-col bg-[#080b10] relative min-w-0">
+        <div className="flex-1 flex flex-col bg-[#080b10] relative min-w-0 overflow-hidden">
           {/* Sub-barra de vista de cámara y reproductor de simulación */}
-          <div className="h-11 bg-[#0e131b] border-b border-slate-800/90 px-4 flex items-center justify-between text-xs shrink-0">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mr-1">
-                Cámara:
+          <div className="min-h-10 py-1.5 bg-[#0e131b] border-b border-slate-800/90 px-3 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mr-0.5">
+                Vista:
               </span>
               <button
                 type="button"
                 onClick={() => setCameraView('sheet')}
-                className={`px-2.5 py-1 rounded font-medium transition ${
+                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
                   cameraView === 'sheet'
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                Plancha ({workbenchConfig.sheetWidthMm}×{workbenchConfig.sheetHeightMm} mm)
+                Rollo/Plancha ({workbenchConfig.sheetWidthMm}×{workbenchConfig.sheetHeightMm} mm)
               </button>
               <button
                 type="button"
                 onClick={() => setCameraView('machine')}
-                className={`px-2.5 py-1 rounded font-medium transition ${
+                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
                   cameraView === 'machine'
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                Mesa Vank 9060 (900×600 mm)
+                Mesa Vank 900×600
               </button>
               <button
                 type="button"
                 onClick={() => setCameraView('occupied')}
-                className={`px-2.5 py-1 rounded font-medium transition ${
+                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
                   cameraView === 'occupied'
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                Enfocar Lote
+                Enfocar Tirada
               </button>
             </div>
 
             {/* Controles del Simulador de Recorrido (Preview LightBurn) */}
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -747,18 +973,18 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   setShowSimulation(next);
                   if (!next) setIsPlayingSim(false);
                 }}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded font-semibold border transition ${
+                className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-semibold border transition whitespace-nowrap ${
                   showSimulation
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
                     : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-white'
                 }`}
               >
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Simulador de Trayectoria</span>
+                <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
+                <span>Simulador</span>
               </button>
 
               {showSimulation && (
-                <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-lg">
+                <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-lg">
                   <button
                     type="button"
                     onClick={() => {
@@ -785,22 +1011,25 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       setSimProgress(Number(e.target.value));
                     }}
                     aria-label="Progreso de simulación láser"
-                    className="w-28 accent-cyan-400 cursor-pointer"
+                    className="w-20 accent-cyan-400 cursor-pointer"
                   />
-                  <span className="font-mono text-[11px] text-cyan-300 w-10 text-right">
+                  <span className="font-mono text-[10px] text-cyan-300 w-8 text-right">
                     {Math.round(simProgress)}%
                   </span>
                 </div>
               )}
 
-              <div className="flex items-center gap-2 font-mono text-[11px] bg-slate-900/90 border border-slate-800 px-2.5 py-1 rounded">
-                <span className="text-slate-400">Tiempo est.:</span>
-                <span className="text-emerald-400 font-bold">
-                  {formatDuration(simulation.totalDurationSec)}
+              <div className="flex items-center gap-1.5 font-mono text-[11px] bg-slate-900/90 border border-slate-800 px-2 py-1 rounded whitespace-nowrap">
+                <span className="text-amber-300 font-bold">
+                  {validation.totalJobs} logo(s)
                 </span>
-                <span className="text-slate-600">|</span>
+                <span className="text-slate-600">·</span>
                 <span className="text-cyan-300 font-bold">
                   {validation.totalPieces} u.
+                </span>
+                <span className="text-slate-600">·</span>
+                <span className="text-emerald-400 font-bold">
+                  {formatDuration(simulation.totalDurationSec)}
                 </span>
               </div>
             </div>
@@ -913,7 +1142,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 );
               })}
 
-              {/* 2. PLANCHA DE MATERIAL COLOCADA SOBRE LA MESA */}
+              {/* 2. PLANCHA / ROLLO DE MATERIAL COLOCADO SOBRE LA MESA */}
               <g id="workbench-material-sheet">
                 <rect
                   x={workbenchConfig.sheetOffsetXMm}
@@ -925,7 +1154,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   stroke="#38bdf8"
                   strokeWidth="0.9"
                 />
-                {/* Margen seguro interior de la plancha */}
                 {workbenchConfig.sheetSafetyMarginMm > 0 && (
                   <rect
                     x={
@@ -953,6 +1181,45 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     strokeOpacity={0.65}
                   />
                 )}
+
+                {/* Línea horizontal de corte/avance del rollo consumido en esta tirada */}
+                {rollMetrics.usedLengthMm > 0 &&
+                  rollMetrics.usedLengthMm <= workbenchConfig.sheetHeightMm && (
+                    <g pointerEvents="none">
+                      <line
+                        x1={workbenchConfig.sheetOffsetXMm}
+                        y1={workbenchConfig.sheetOffsetYMm + rollMetrics.usedLengthMm}
+                        x2={
+                          workbenchConfig.sheetOffsetXMm +
+                          workbenchConfig.sheetWidthMm
+                        }
+                        y2={workbenchConfig.sheetOffsetYMm + rollMetrics.usedLengthMm}
+                        stroke="#10b981"
+                        strokeWidth="0.7"
+                        strokeDasharray="4 2"
+                      />
+                      <text
+                        x={
+                          workbenchConfig.sheetOffsetXMm +
+                          workbenchConfig.sheetWidthMm -
+                          4
+                        }
+                        y={
+                          workbenchConfig.sheetOffsetYMm +
+                          rollMetrics.usedLengthMm +
+                          5
+                        }
+                        textAnchor="end"
+                        fill="#34d399"
+                        fontSize="4.6"
+                        fontFamily="monospace"
+                        fontWeight="bold"
+                      >
+                        ▲ AVANCE DE ROLLO EN ESTA TIRADA: {rollMetrics.usedLengthCm} cm ({rollMetrics.usedLengthMm} mm) · Restan {rollMetrics.remainingRollLengthCm} cm de 5 m
+                      </text>
+                    </g>
+                  )}
+
                 <text
                   x={workbenchConfig.sheetOffsetXMm + 4}
                   y={workbenchConfig.sheetOffsetYMm + workbenchConfig.sheetHeightMm - 3}
@@ -961,12 +1228,13 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   fontFamily="monospace"
                   opacity={0.85}
                 >
-                  PLANCHA: {material.name} ({workbenchConfig.sheetWidthMm}×
-                  {workbenchConfig.sheetHeightMm} mm)
+                  {workbenchConfig.sheetWidthMm === 730
+                    ? `ROLLO ECOCUERO 73 CM × 5 M (Tirada activa en mesa: 730×${workbenchConfig.sheetHeightMm} mm)`
+                    : `PLANCHA: ${material.name} (${workbenchConfig.sheetWidthMm}×${workbenchConfig.sheetHeightMm} mm)`}
                 </text>
               </g>
 
-              {/* 3. TRABAJOS POSICIONADOS EN LA PLANCHA */}
+              {/* 3. TRABAJOS POSICIONADOS EN LA PLANCHA / ROLLO */}
               {workbenchJobs
                 .filter((j) => j.visible)
                 .map((job) => {
@@ -990,7 +1258,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       onPointerDown={(e) => handleJobPointerDown(e, job)}
                       className={job.locked ? 'cursor-not-allowed' : 'cursor-move'}
                     >
-                      {/* Caja envolvente interactiva del lote/trabajo */}
                       <rect
                         x={-1}
                         y={-1}
@@ -1014,7 +1281,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                         strokeDasharray={isSelected ? undefined : '2 1.5'}
                       />
 
-                      {/* Etiqueta superior del bloque */}
                       <text
                         x={0}
                         y={-2.2}
@@ -1023,13 +1289,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                         fontWeight="bold"
                         fontFamily="monospace"
                       >
-                        {job.name} [{job.xMm}, {job.yMm} mm]
+                        {job.name} · {job.labelDesign.widthMm}×{job.labelDesign.heightMm}mm [{job.columns}×{job.rows}]
                       </text>
 
-                      {/* Instancias de etiquetas dentro del trabajo */}
                       {job.instances.map((inst) => (
                         <g key={`${job.id}-inst-${inst.instanceIndex}`}>
-                          {/* Fondo sutil de pieza */}
                           <rect
                             x={inst.localXMm}
                             y={inst.localYMm}
@@ -1143,7 +1407,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     );
                   })}
 
-                  {/* Cabezal Láser CO2 animado */}
                   <g
                     transform={`translate(${simulatedLaserHead.x}, ${simulatedLaserHead.y})`}
                   >
@@ -1207,35 +1470,477 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             </svg>
 
             {/* Leyenda inferior flotante estilo LightBurn */}
-            <div className="absolute bottom-3 left-4 bg-[#11161f]/90 border border-slate-800 rounded-lg px-3 py-1.5 flex items-center gap-4 text-[11px] text-slate-300 backdrop-blur-sm">
+            <div className="absolute bottom-3 left-4 bg-[#11161f]/90 border border-slate-800 rounded-lg px-3 py-1.5 flex flex-wrap items-center gap-3 text-[11px] text-slate-300 backdrop-blur-sm">
               <div className="flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block border border-white/60" />
                 <span>
-                  Origen del Trabajo ({validation.jobOriginPointMm.x},{' '}
+                  Origen ({validation.jobOriginPointMm.x},{' '}
                   {validation.jobOriginPointMm.y} mm)
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" />
-                <span>Home Máquina ({workbenchConfig.machineOriginCorner})</span>
+                <span>Home ({workbenchConfig.machineOriginCorner})</span>
               </div>
               <span className="text-slate-500">•</span>
-              <span className="text-slate-400">
-                Arrastrá cualquier bloque con el mouse para acomodarlo en la plancha
+              <span className="text-emerald-300 font-mono">
+                Avance tirada: {rollMetrics.usedLengthCm} cm de 500 cm (5 m)
               </span>
             </div>
           </div>
         </div>
 
-        {/* PANEL LATERAL DERECHO: CORTES/CAPAS + PLANCHA + CONTROL VANK 9060 */}
-        <aside className="w-[470px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0 divide-y divide-slate-800">
-          {/* SECCIÓN 1: CORTES / CAPAS (CUTS / LAYERS ESTILO LIGHTBURN) */}
+        {/* PANEL LATERAL DERECHO: ROLLO 73CM + MULTI-TRABAJO + CAPAS + CONTROL VANK 9060 */}
+        <aside className="w-[420px] xl:w-[475px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0 divide-y divide-slate-800">
+          {/* SECCIÓN 1: ROLLO ECOCUERO 73 CM × 5 M Y TIRADA MULTI-TRABAJO */}
           <div className="p-3.5 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5">
+                <Ruler className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>
+                  Rollo Ecocuero 73 cm × 5 m · Trabajos ({workbenchJobs.length})
+                </span>
+              </h3>
+              {workbenchConfig.sheetWidthMm !== 730 && (
+                <button
+                  type="button"
+                  onClick={handleApplyEcocueroRoll73cm}
+                  className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 text-[10px] font-bold"
+                >
+                  Usar Rollo Ecocuero 73 cm
+                </button>
+              )}
+            </div>
+
+            {/* Tarjeta de Consumo Real del Rollo de Ecocuero (73 cm x 5 m) */}
+            <div className="p-2.5 rounded-lg bg-gradient-to-br from-amber-950/30 to-slate-900 border border-amber-700/40 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-amber-300">
+                  Rollo Ecocuero: {rollMetrics.rollWidthCm} cm ancho × 5 m (500 cm)
+                </span>
+                <span className="text-[10px] font-mono bg-slate-950/80 px-2 py-0.5 rounded text-emerald-300 border border-slate-800">
+                  Ancho usado: {rollMetrics.widthUtilizationPercent}%
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 text-center bg-slate-950/70 p-2 rounded border border-slate-800/80">
+                <div>
+                  <span className="text-[10px] text-slate-400 block">
+                    Avance en Tirada
+                  </span>
+                  <span className="font-mono font-bold text-emerald-400 text-xs">
+                    {rollMetrics.usedLengthCm} cm
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono block">
+                    ({rollMetrics.usedLengthMm} mm)
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block">
+                    Restante de 5 m
+                  </span>
+                  <span className="font-mono font-bold text-cyan-300 text-xs">
+                    {rollMetrics.remainingRollLengthCm} cm
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono block">
+                    ({rollMetrics.remainingRollLengthMeters} m)
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block">
+                    Rinde el Rollo 5m
+                  </span>
+                  <span className="font-mono font-bold text-amber-300 text-xs">
+                    {rollMetrics.estimatedRunsPerRoll > 0
+                      ? `~${rollMetrics.estimatedRunsPerRoll} tiradas`
+                      : '—'}
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono block">
+                    ({rollMetrics.rollConsumptionPercent}% del rollo)
+                  </span>
+                </div>
+              </div>
+
+              {/* Botones para subir varios trabajos / logos en la misma tirada */}
+              <div className="grid grid-cols-2 gap-1.5 pt-1">
+                <button
+                  type="button"
+                  disabled={isUploadingLogos}
+                  onClick={() => multiLogoInputRef.current?.click()}
+                  className="py-1.5 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] flex items-center justify-center gap-1.5 shadow"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>+ Subir Varios Logos</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleAutoArrangeAll(true)}
+                  disabled={workbenchJobs.length === 0}
+                  className="py-1.5 px-2.5 rounded-lg bg-amber-600/25 hover:bg-amber-600/35 border border-amber-500/50 text-amber-200 font-bold text-[11px] flex items-center justify-center gap-1.5"
+                >
+                  <Grid className="w-3.5 h-3.5" />
+                  <span>Optimizar en 73 cm</span>
+                </button>
+              </div>
+
+              {/* Combinar también desde biblioteca de pedidos guardados */}
               <div className="flex items-center gap-1.5">
-                <Layers className="w-4 h-4 text-cyan-400" />
+                <select
+                  aria-label="Combinar otro pedido en la plancha"
+                  value={orderToAppendId}
+                  onChange={(e) => handleAddFromCatalogOrder(e.target.value)}
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px] text-cyan-300"
+                >
+                  <option value="">
+                    + Sumar pedido guardado de la biblioteca a esta tirada...
+                  </option>
+                  {ordersCatalog.map((ord) => (
+                    <option key={ord.id} value={ord.id}>
+                      {ord.projectName} ({ord.labelDesign.widthMm}×
+                      {ord.labelDesign.heightMm} mm · {ord.nestingConfig.requestedQuantity}{' '}
+                      u.)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Lista de trabajos / logos en la tirada actual + Editor individual de medida y cantidad */}
+            {workbenchJobs.length > 0 && (
+              <div className="space-y-2">
+                <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+                  {workbenchJobs.map((job, idx) => (
+                    <div
+                      key={job.id}
+                      onClick={() => setSelectedJobId(job.id)}
+                      className={`px-2.5 py-1.5 rounded border text-xs flex items-center justify-between cursor-pointer transition ${
+                        selectedJob?.id === job.id
+                          ? 'bg-cyan-950/60 border-cyan-500/70 text-white'
+                          : 'bg-slate-900/70 border-slate-800 text-slate-300 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="truncate pr-2">
+                        <span className="font-mono text-[10px] text-amber-400 mr-1.5">
+                          #{idx + 1}
+                        </span>
+                        <span className="font-semibold">{job.name}</span>
+                        <span className="text-[10px] text-cyan-300 font-mono ml-2">
+                          {job.labelDesign.widthMm}×{job.labelDesign.heightMm} mm
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-mono ml-1.5">
+                          ({job.columns} col × {job.rows} fil)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteJob(job.id);
+                          }}
+                          className="p-1 text-slate-400 hover:text-red-400"
+                          title="Quitar trabajo de la tirada"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Inspector del trabajo seleccionado: Cambiar cantidad, ancho x alto, forma, agujeros */}
+                {selectedJob && (
+                  <div className="p-2.5 rounded-lg bg-slate-900/95 border border-cyan-900/60 space-y-2.5 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-cyan-300 truncate">
+                        Editar Trabajo: {selectedJob.name}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              blockRotationDeg:
+                                selectedJob.blockRotationDeg === 90 ? 0 : 90,
+                            })
+                          }
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-200 flex items-center gap-1"
+                        >
+                          <RotateCw className="w-3 h-3 text-cyan-400" />
+                          <span>Rotar 90°</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDuplicateSelectedJob}
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-200 flex items-center gap-1"
+                        >
+                          <Copy className="w-3 h-3 text-cyan-400" />
+                          <span>Duplicar</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Cantidad y Medidas de la etiqueta de este logo */}
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <label>
+                        <span className="text-[10px] text-emerald-300 font-semibold block">
+                          Cantidad (u.)
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={5000}
+                          step={10}
+                          aria-label="Cantidad de etiquetas del trabajo seleccionado"
+                          value={selectedJob.pieceCount}
+                          onChange={(e) =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              pieceCount: Math.max(1, Number(e.target.value) || 1),
+                              autoFitColumnsToRoll: true,
+                            })
+                          }
+                          className="w-full bg-slate-950 border border-emerald-600/60 rounded px-2 py-1 font-mono text-emerald-300 font-bold"
+                        />
+                      </label>
+                      <label>
+                        <span className="text-[10px] text-slate-300 block">
+                          Ancho Etiq. (mm)
+                        </span>
+                        <input
+                          type="number"
+                          min={5}
+                          max={400}
+                          step={1}
+                          aria-label="Ancho de etiqueta del trabajo seleccionado"
+                          value={selectedJob.labelDesign.widthMm}
+                          onChange={(e) =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              widthMm: Math.max(5, Number(e.target.value) || 10),
+                              autoFitColumnsToRoll: true,
+                            })
+                          }
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                        />
+                      </label>
+                      <label>
+                        <span className="text-[10px] text-slate-300 block">
+                          Alto Etiq. (mm)
+                        </span>
+                        <input
+                          type="number"
+                          min={5}
+                          max={400}
+                          step={1}
+                          aria-label="Alto de etiqueta del trabajo seleccionado"
+                          value={selectedJob.labelDesign.heightMm}
+                          onChange={(e) =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              heightMm: Math.max(5, Number(e.target.value) || 10),
+                              autoFitColumnsToRoll: true,
+                            })
+                          }
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                        />
+                      </label>
+                    </div>
+
+                    {/* Botones rápidos de medidas y cantidades para este logo */}
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-[10px] text-slate-400 mr-1">Medidas:</span>
+                      {STANDARD_DIMENSION_PRESETS.slice(3, 8).map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              widthMm: p.widthMm,
+                              heightMm: p.heightMm,
+                              autoFitColumnsToRoll: true,
+                            })
+                          }
+                          className={`px-1.5 py-0.5 rounded font-mono text-[10px] border ${
+                            selectedJob.labelDesign.widthMm === p.widthMm &&
+                            selectedJob.labelDesign.heightMm === p.heightMm
+                              ? 'bg-cyan-500/20 border-cyan-500 text-cyan-300 font-bold'
+                              : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {p.widthMm}×{p.heightMm}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Forma, Orificios y Posición X/Y del bloque */}
+                    <div className="grid grid-cols-4 gap-1.5">
+                      <label className="col-span-2">
+                        <span className="text-[10px] text-slate-400 block">
+                          Orificios
+                        </span>
+                        <select
+                          aria-label="Orificios del trabajo seleccionado"
+                          value={selectedJob.labelDesign.holes.preset}
+                          onChange={(e) =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              holePreset: e.target.value as HolePreset,
+                            })
+                          }
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200"
+                        >
+                          <option value="none">Sin orificios</option>
+                          <option value="single_left">1 lateral</option>
+                          <option value="two_horizontal">2 laterales (costura)</option>
+                          <option value="single_top">1 superior (colgante)</option>
+                          <option value="four_corners">4 esquinas</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span className="text-[10px] text-slate-400 block">
+                          Pos X (mm)
+                        </span>
+                        <input
+                          type="number"
+                          step={1}
+                          value={selectedJob.xMm}
+                          onChange={(e) =>
+                            handleUpdateSelectedJob({
+                              xMm: roundMm(Number(e.target.value) || 0),
+                            })
+                          }
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                      <label>
+                        <span className="text-[10px] text-slate-400 block">
+                          Pos Y (mm)
+                        </span>
+                        <input
+                          type="number"
+                          step={1}
+                          value={selectedJob.yMm}
+                          onChange={(e) =>
+                            handleUpdateSelectedJob({
+                              yMm: roundMm(Number(e.target.value) || 0),
+                            })
+                          }
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Dimensiones de la Plancha o Rollo en Mesa */}
+            <div className="p-2.5 rounded-lg bg-slate-900/70 border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-slate-300">
+                  Formato de Material en Mesa
+                </span>
+                <select
+                  aria-label="Presets de plancha"
+                  value=""
+                  onChange={(e) => {
+                    const preset = MATERIAL_SHEET_PRESETS.find(
+                      (p) => p.label === e.target.value
+                    );
+                    if (preset) {
+                      const nextCfg: WorkbenchConfig = {
+                        ...workbenchConfig,
+                        sheetWidthMm: preset.widthMm,
+                        sheetHeightMm: preset.heightMm,
+                        isRollMaterial: preset.widthMm === 730,
+                      };
+                      onUpdateConfig(nextCfg);
+                    }
+                  }}
+                  className="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-cyan-300"
+                >
+                  <option value="">Cambiar formato...</option>
+                  {MATERIAL_SHEET_PRESETS.map((p) => (
+                    <option key={p.label} value={p.label}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5 text-xs">
+                <label>
+                  <span className="text-[10px] text-slate-400 block">
+                    Ancho ({roundMm(workbenchConfig.sheetWidthMm / 10, 1)} cm)
+                  </span>
+                  <input
+                    type="number"
+                    min={10}
+                    max={900}
+                    value={workbenchConfig.sheetWidthMm}
+                    onChange={(e) =>
+                      onUpdateConfig({
+                        ...workbenchConfig,
+                        sheetWidthMm: Math.max(
+                          10,
+                          Math.min(900, Number(e.target.value) || 100)
+                        ),
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                  />
+                </label>
+                <label>
+                  <span className="text-[10px] text-slate-400 block">
+                    Tirada Mesa (mm)
+                  </span>
+                  <input
+                    type="number"
+                    min={10}
+                    max={600}
+                    value={workbenchConfig.sheetHeightMm}
+                    onChange={(e) =>
+                      onUpdateConfig({
+                        ...workbenchConfig,
+                        sheetHeightMm: Math.max(
+                          10,
+                          Math.min(600, Number(e.target.value) || 100)
+                        ),
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
+                  />
+                </label>
+                <label>
+                  <span className="text-[10px] text-slate-400 block">
+                    Largo Rollo (m)
+                  </span>
+                  <input
+                    type="number"
+                    min={0.5}
+                    max={100}
+                    step={0.5}
+                    value={roundMm(workbenchConfig.rollTotalLengthMm / 1000, 2)}
+                    onChange={(e) =>
+                      onUpdateConfig({
+                        ...workbenchConfig,
+                        rollTotalLengthMm: Math.max(
+                          500,
+                          Math.round((Number(e.target.value) || 5) * 1000)
+                        ),
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-amber-300"
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* SECCIÓN 2: CORTES / CAPAS (CUTS / LAYERS ESTILO LIGHTBURN) */}
+          <div className="p-3.5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <div className="flex items-center gap-1.5">
+                <Layers className="w-4 h-4 text-cyan-400 shrink-0" />
                 <h3 className="text-xs font-bold uppercase tracking-wider text-white">
-                  Cortes / Capas (Cuts / Layers)
+                  Cortes / Capas
                 </h3>
               </div>
               <div className="flex items-center gap-1.5">
@@ -1243,7 +1948,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   type="button"
                   onClick={handleSyncFromMaterial}
                   className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 border border-slate-700"
-                  title="Cargar velocidades y potencias desde el perfil del material"
                 >
                   Cargar de material
                 </button>
@@ -1251,7 +1955,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   type="button"
                   onClick={handleSaveLayersToMaterial}
                   className="flex items-center gap-1 px-2 py-1 rounded bg-cyan-950/80 hover:bg-cyan-900 text-[10px] text-cyan-300 border border-cyan-800 font-semibold"
-                  title="Guardar velocidades y potencias actuales en el perfil del material"
                 >
                   <Save className="w-3 h-3" />
                   <span>Guardar en {material.code}</span>
@@ -1277,7 +1980,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                         : 'bg-slate-900/90 border-slate-800'
                     }`}
                   >
-                    {/* Fila superior de la capa: Color, Código, Modo, Orden, Aire, Salida, Ver */}
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
                         <span
@@ -1329,7 +2031,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Controles numéricos de Velocidad, Potencia Máx/Mín, Pasadas e Intervalo */}
                     <div className="grid grid-cols-4 gap-1.5">
                       <label className="block">
                         <span className="text-[10px] text-slate-400 block">
@@ -1433,7 +2134,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       </label>
                     </div>
 
-                    {/* Fila inferior de switches: Intervalo (si es Fill), Air Assist, Salida, Mostrar */}
                     <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">
                       {layer.mode !== 'line' ? (
                         <label className="flex items-center gap-1.5 text-slate-300">
@@ -1510,263 +2210,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             </div>
           </div>
 
-          {/* SECCIÓN 2: PLANCHA Y TRABAJOS EN MESA */}
-          <div className="p-3.5 space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5">
-                <Grid className="w-4 h-4 text-cyan-400" />
-                <span>Plancha y Trabajos ({workbenchJobs.length})</span>
-              </h3>
-              {/* Selector para combinar otro pedido guardado en la misma plancha */}
-              <select
-                aria-label="Combinar otro pedido en la plancha"
-                value={orderToAppendId}
-                onChange={(e) => handleAddFromCatalogOrder(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[11px] text-cyan-300"
-              >
-                <option value="">+ Combinar otro pedido en plancha...</option>
-                {ordersCatalog.map((ord) => (
-                  <option key={ord.id} value={ord.id}>
-                    {ord.projectName} ({ord.labelDesign.widthMm}×{ord.labelDesign.heightMm} mm)
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Medidas de la plancha colocada en la Vank 9060 */}
-            <div className="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 space-y-2">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="font-semibold text-slate-300">
-                  Recorte / Plancha en Mesa (mm)
-                </span>
-                <select
-                  aria-label="Presets de plancha"
-                  value=""
-                  onChange={(e) => {
-                    const preset = MATERIAL_SHEET_PRESETS.find(
-                      (p) => p.label === e.target.value
-                    );
-                    if (preset) {
-                      onUpdateConfig({
-                        ...workbenchConfig,
-                        sheetWidthMm: preset.widthMm,
-                        sheetHeightMm: preset.heightMm,
-                      });
-                    }
-                  }}
-                  className="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-slate-300"
-                >
-                  <option value="">Formatos rápidos...</option>
-                  {MATERIAL_SHEET_PRESETS.map((p) => (
-                    <option key={p.label} value={p.label}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-4 gap-1.5 text-xs">
-                <label>
-                  <span className="text-[10px] text-slate-400 block">Ancho Plancha</span>
-                  <input
-                    type="number"
-                    min={10}
-                    max={900}
-                    value={workbenchConfig.sheetWidthMm}
-                    onChange={(e) =>
-                      onUpdateConfig({
-                        ...workbenchConfig,
-                        sheetWidthMm: Math.max(10, Math.min(900, Number(e.target.value) || 100)),
-                      })
-                    }
-                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                  />
-                </label>
-                <label>
-                  <span className="text-[10px] text-slate-400 block">Alto Plancha</span>
-                  <input
-                    type="number"
-                    min={10}
-                    max={600}
-                    value={workbenchConfig.sheetHeightMm}
-                    onChange={(e) =>
-                      onUpdateConfig({
-                        ...workbenchConfig,
-                        sheetHeightMm: Math.max(10, Math.min(600, Number(e.target.value) || 100)),
-                      })
-                    }
-                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                  />
-                </label>
-                <label>
-                  <span className="text-[10px] text-slate-400 block">Posición X</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={890}
-                    value={workbenchConfig.sheetOffsetXMm}
-                    onChange={(e) =>
-                      onUpdateConfig({
-                        ...workbenchConfig,
-                        sheetOffsetXMm: Math.max(0, Number(e.target.value) || 0),
-                      })
-                    }
-                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                  />
-                </label>
-                <label>
-                  <span className="text-[10px] text-slate-400 block">Posición Y</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={590}
-                    value={workbenchConfig.sheetOffsetYMm}
-                    onChange={(e) =>
-                      onUpdateConfig({
-                        ...workbenchConfig,
-                        sheetOffsetYMm: Math.max(0, Number(e.target.value) || 0),
-                      })
-                    }
-                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                  />
-                </label>
-              </div>
-            </div>
-
-            {/* Lista e Inspector del Trabajo Seleccionado en la Plancha */}
-            {workbenchJobs.length > 0 && (
-              <div className="space-y-2">
-                <div className="max-h-28 overflow-y-auto space-y-1 pr-1">
-                  {workbenchJobs.map((job) => (
-                    <div
-                      key={job.id}
-                      onClick={() => setSelectedJobId(job.id)}
-                      className={`px-2.5 py-1.5 rounded border text-xs flex items-center justify-between cursor-pointer transition ${
-                        selectedJob?.id === job.id
-                          ? 'bg-cyan-950/50 border-cyan-500/60 text-white'
-                          : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
-                      }`}
-                    >
-                      <div className="truncate">
-                        <span className="font-semibold">{job.name}</span>
-                        <span className="text-[10px] text-slate-400 font-mono ml-2">
-                          X:{job.xMm} Y:{job.yMm} mm ({job.widthMm}×{job.heightMm} mm)
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteJob(job.id);
-                          }}
-                          className="p-1 text-slate-400 hover:text-red-400"
-                          title="Quitar de la plancha"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {selectedJob && (
-                  <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-cyan-300 truncate">
-                        Ajustar: {selectedJob.name}
-                      </span>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleUpdateSelectedJobGrid({
-                              blockRotationDeg:
-                                selectedJob.blockRotationDeg === 90 ? 0 : 90,
-                            })
-                          }
-                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-200 flex items-center gap-1"
-                        >
-                          <RotateCw className="w-3 h-3 text-cyan-400" />
-                          <span>Rotar 90°</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleDuplicateSelectedJob}
-                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-200 flex items-center gap-1"
-                        >
-                          <Copy className="w-3 h-3 text-cyan-400" />
-                          <span>Duplicar</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-4 gap-1.5">
-                      <label>
-                        <span className="text-[10px] text-slate-400 block">X (mm)</span>
-                        <input
-                          type="number"
-                          step={0.5}
-                          value={selectedJob.xMm}
-                          onChange={(e) =>
-                            handleUpdateSelectedJob({
-                              xMm: roundMm(Number(e.target.value) || 0),
-                            })
-                          }
-                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                        />
-                      </label>
-                      <label>
-                        <span className="text-[10px] text-slate-400 block">Y (mm)</span>
-                        <input
-                          type="number"
-                          step={0.5}
-                          value={selectedJob.yMm}
-                          onChange={(e) =>
-                            handleUpdateSelectedJob({
-                              yMm: roundMm(Number(e.target.value) || 0),
-                            })
-                          }
-                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                        />
-                      </label>
-                      <label>
-                        <span className="text-[10px] text-slate-400 block">Columnas</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={200}
-                          value={selectedJob.columns}
-                          onChange={(e) =>
-                            handleUpdateSelectedJobGrid({
-                              columns: Math.max(1, Number(e.target.value) || 1),
-                            })
-                          }
-                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                        />
-                      </label>
-                      <label>
-                        <span className="text-[10px] text-slate-400 block">Filas</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={200}
-                          value={selectedJob.rows}
-                          onChange={(e) =>
-                            handleUpdateSelectedJobGrid({
-                              rows: Math.max(1, Number(e.target.value) || 1),
-                            })
-                          }
-                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
           {/* SECCIÓN 3: PANEL LÁSER Y CARGA DIRECTA A VANK 9060 (RUIDA RDC8445S) */}
           <div className="p-3.5 space-y-3">
             <div className="flex items-center justify-between">
@@ -1791,7 +2234,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </span>
             </div>
 
-            {/* Configuración de Origen y Start From (Idéntico a LightBurn) */}
             <div className="grid grid-cols-2 gap-3 p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs">
               <div className="space-y-2">
                 <label className="block">
@@ -1838,7 +2280,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 </label>
               </div>
 
-              {/* Grilla de 9 puntos de Origen del Trabajo (Job Origin) */}
               <div className="flex flex-col items-center justify-center">
                 <span className="text-[10px] text-slate-400 mb-1.5">
                   Origen del Trabajo (Job Origin)
@@ -1876,7 +2317,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </div>
             </div>
 
-            {/* Parámetros de Conexión de Red UDP Ruida RDC8445S */}
             <div className="grid grid-cols-3 gap-2 p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs">
               <label className="col-span-1">
                 <span className="text-[10px] text-slate-400 block">
@@ -1931,7 +2371,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </label>
             </div>
 
-            {/* Avisos de validación geométrica o de parámetros de capa */}
             {validation.issues.length > 0 && (
               <div className="space-y-1 max-h-28 overflow-y-auto">
                 {validation.issues.map((issue, idx) => (
@@ -1954,7 +2393,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </div>
             )}
 
-            {/* Confirmación de seguridad pre-envío */}
             <label className="flex items-start gap-2 p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300 cursor-pointer">
               <input
                 type="checkbox"
@@ -1982,7 +2420,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </div>
             )}
 
-            {/* Botones de Acción Principal hacia la Vank 9060 y LightBurn */}
             <div className="space-y-2 pt-1">
               <button
                 type="button"
@@ -1994,7 +2431,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 <span>
                   {isSendingToRuida
                     ? 'Enviando a Ruida RDC8445S...'
-                    : `Cargar Trabajo en Memoria Vank 9060 (${workbenchConfig.ruidaIpAddress})`}
+                    : `Cargar Tirada en Memoria Vank 9060 (${workbenchConfig.ruidaIpAddress})`}
                 </span>
               </button>
 
@@ -2018,7 +2455,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   disabled={!validation.isValidForMachineSend}
                   onClick={handleDownloadRdFile}
                   className="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-emerald-300 font-bold text-xs flex items-center justify-center gap-1.5 transition"
-                  title="Descargar archivo binario .RD para pendrive USB en puerto U-Disk de la Ruida"
                 >
                   <Download className="w-3.5 h-3.5" />
                   <span>Descargar .RD (USB)</span>
@@ -2043,7 +2479,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 border border-slate-800 text-slate-300 font-semibold text-[11px] flex items-center justify-center gap-1.5"
                 >
                   <FileCode2 className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Exportar Plancha (.SVG)</span>
+                  <span>Exportar Tirada (.SVG)</span>
                 </button>
               </div>
             </div>

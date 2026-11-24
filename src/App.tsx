@@ -51,11 +51,16 @@ import { RotaryPanel } from './components/RotaryPanel';
 import { VankWorkbenchModal } from './components/VankWorkbenchModal';
 import { DEFAULT_ROTARY_CONFIG, RotaryConfig } from './core/rotary/rotaryEngine';
 import {
+  autoArrangeWorkbenchJobs,
   createWorkbenchJobFromOrder,
   syncLayersWithMaterialProfile,
 } from './core/workbench/workbenchEngine';
 import {
   createDefaultWorkbenchConfig,
+  ECOCUERO_BED_PASS_HEIGHT_MM,
+  ECOCUERO_ROLL_TOTAL_LENGTH_MM,
+  ECOCUERO_ROLL_WIDTH_MM,
+  isEcocueroMaterial,
   WorkbenchConfig,
   WorkbenchJobItem,
 } from './core/workbench/workbenchTypes';
@@ -243,13 +248,15 @@ export function App() {
   const [isRotaryOpen, setIsRotaryOpen] = useState<boolean>(false);
   const [rotaryConfig, setRotaryConfig] = useState<RotaryConfig>(() => initialOrder.rotaryConfig ?? DEFAULT_ROTARY_CONFIG);
   const [isWorkbenchOpen, setIsWorkbenchOpen] = useState<boolean>(false);
-  const [workbenchConfig, setWorkbenchConfig] = useState<WorkbenchConfig>(() =>
-    createDefaultWorkbenchConfig(
-      initialOrder.nestingConfig.sheetWidthMm,
-      initialOrder.nestingConfig.sheetHeightMm,
-      initialOrder.materialProfileSnapshot ?? INITIAL_MATERIALS_CATALOG[0]
-    )
-  );
+  const [workbenchConfig, setWorkbenchConfig] = useState<WorkbenchConfig>(() => {
+    const mat = initialOrder.materialProfileSnapshot ?? INITIAL_MATERIALS_CATALOG[0];
+    const isEco = isEcocueroMaterial(mat);
+    return createDefaultWorkbenchConfig(
+      isEco ? ECOCUERO_ROLL_WIDTH_MM : initialOrder.nestingConfig.sheetWidthMm,
+      isEco ? ECOCUERO_BED_PASS_HEIGHT_MM : initialOrder.nestingConfig.sheetHeightMm,
+      mat
+    );
+  });
   const [workbenchJobs, setWorkbenchJobs] = useState<WorkbenchJobItem[]>([]);
   const ordersDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -1133,10 +1140,16 @@ export function App() {
   const handleSendToWorkbench = (
     mode: 'active_batch' | 'single_piece' | 'open_only' = 'active_batch'
   ) => {
+    const isEco = isEcocueroMaterial(activeMaterial);
+    const targetSheetW = isEco ? ECOCUERO_ROLL_WIDTH_MM : nestingConfig.sheetWidthMm;
+    const targetSheetH = isEco ? ECOCUERO_BED_PASS_HEIGHT_MM : nestingConfig.sheetHeightMm;
+
     const updatedCfg: WorkbenchConfig = {
       ...workbenchConfig,
-      sheetWidthMm: nestingConfig.sheetWidthMm,
-      sheetHeightMm: nestingConfig.sheetHeightMm,
+      sheetWidthMm: targetSheetW,
+      sheetHeightMm: targetSheetH,
+      isRollMaterial: isEco || targetSheetW === ECOCUERO_ROLL_WIDTH_MM,
+      rollTotalLengthMm: ECOCUERO_ROLL_TOTAL_LENGTH_MM,
       layers: syncLayersWithMaterialProfile(workbenchConfig.layers, activeMaterial),
     };
     setWorkbenchConfig(updatedCfg);
@@ -1146,14 +1159,23 @@ export function App() {
         design: labelDesign,
         nesting: nestingResult,
         batchIndex: activeBatchIndex,
-        mode: mode === 'single_piece' ? 'single_piece' : 'active_batch',
+        mode:
+          mode === 'single_piece'
+            ? 'single_piece'
+            : updatedCfg.isRollMaterial
+              ? 'roll_strip'
+              : 'active_batch',
         projectName,
         clientName,
         orderId: activeOrderId,
         existingJobs: mode === 'open_only' ? [] : workbenchJobs,
         config: updatedCfg,
       });
-      setWorkbenchJobs((prev) => (mode === 'open_only' && prev.length === 0 ? [nextJob] : [...prev, nextJob]));
+      setWorkbenchJobs((prev) => {
+        const list =
+          mode === 'open_only' && prev.length === 0 ? [nextJob] : [...prev, nextJob];
+        return autoArrangeWorkbenchJobs(list, updatedCfg, 4, updatedCfg.isRollMaterial);
+      });
     }
     setIsWorkbenchOpen(true);
   };
@@ -2241,13 +2263,33 @@ export function App() {
                 <div className="studio-material">
                   <label htmlFor="production-material" className="block text-slate-300 font-semibold mb-2">Material</label>
                   <select id="production-material" value={selectedMaterialId}
-                    onChange={(e) => pushStateWithHistory(labelDesign, nestingConfig, e.target.value)}
+                    onChange={(e) => {
+                      const nextMatId = e.target.value;
+                      const nextMat = materials.find((m) => m.id === nextMatId);
+                      const isEco = isEcocueroMaterial(nextMat);
+                      const nextNesting = isEco
+                        ? {
+                            ...nestingConfig,
+                            sheetWidthMm: ECOCUERO_ROLL_WIDTH_MM,
+                            sheetHeightMm: ECOCUERO_BED_PASS_HEIGHT_MM,
+                          }
+                        : nestingConfig;
+                      pushStateWithHistory(labelDesign, nextNesting, nextMatId);
+                      if (isEco) {
+                        notify('Material Ecocuero: formato ajustado a Rollo 73 cm × 5 m (730 × 600 mm en mesa Vank 9060).');
+                      }
+                    }}
                     className="w-full bg-slate-900 border border-slate-700 rounded text-slate-200">
                     {materials.map((mat) => <option key={mat.id} value={mat.id}>{mat.name}</option>)}
                   </select>
                   <div className="flex items-center gap-2 mt-2 text-slate-400">
                     <span className="w-3 h-3 rounded-full border border-slate-600" style={{ backgroundColor: activeMaterial.visual.surfaceColor }} />
-                    Espesor {activeMaterial.thicknessMm} mm
+                    <span>Espesor {activeMaterial.thicknessMm} mm</span>
+                    {isEcocueroMaterial(activeMaterial) && (
+                      <span className="text-[10px] font-mono bg-amber-950/80 text-amber-300 border border-amber-700/70 px-1.5 py-0.5 rounded">
+                        Rollo 73 cm × 5 m
+                      </span>
+                    )}
                   </div>
                 </div>
 
