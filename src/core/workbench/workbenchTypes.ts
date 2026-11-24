@@ -1,8 +1,9 @@
 /**
- * Astra Studio — Módulo Mesa de Trabajo y Control Vank 9060 (Estilo LightBurn)
+ * Astra Studio — Módulo Mesa de Trabajo y Control Vank 9060 (Estilo LightBurn Pro 2.2)
  * Tipos de dominio para armado libre en plancha o rollo de Ecocuero (73 cm x 5 m),
- * empaquetado continuo Cero Desperdicio (intercalado pieza a pieza sin huecos entre logos),
- * capas de corte/grabado (C00..C29), simulación de trayectoria y carga a Ruida RDC8445S.
+ * empaquetado continuo Cero Desperdicio, editor avanzado de ajustes de corte/grabado (C00..C29),
+ * generador de Matriz de Calibración de Potencia x Velocidad (Material Test Generator),
+ * Biblioteca de Materiales y carga directa a Ruida RDC8445S (192.168.0.195).
  */
 
 import {
@@ -17,13 +18,22 @@ import {
 
 /** Dirección IP real de la Vank 9060 (Ruida RDC8445S) en la red local del taller */
 export const VANK_9060_DEFAULT_IP = '192.168.0.195';
+/** Ancho real del rollo de Ecocuero cortado para entrar en la mesa de la Vank 9060 (73 cm = 730 mm) */
 export const ECOCUERO_ROLL_WIDTH_MM = 730;
 /** Profundidad máxima de una tirada sobre la mesa de la Vank 9060 (60 cm = 600 mm) */
 export const ECOCUERO_BED_PASS_HEIGHT_MM = 600;
 /** Largo total del rollo de Ecocuero enrollado a lo largo (5 m = 5000 mm = 500 cm) */
 export const ECOCUERO_ROLL_TOTAL_LENGTH_MM = 5000;
 
-export type LightBurnCutMode = 'fill' | 'line' | 'offset_fill';
+export type LightBurnCutMode = 'image' | 'fill' | 'line' | 'offset_fill';
+
+export type LightBurnImageDitherMode =
+  | 'threshold'
+  | 'jarvis'
+  | 'stucki'
+  | 'halftone'
+  | 'grayscale'
+  | 'pass_through';
 
 export type MachineOriginCorner = 'top_right' | 'top_left' | 'bottom_left' | 'bottom_right';
 
@@ -47,6 +57,40 @@ export type MaterialSavingPreset =
   | 'compact_safe'
   | 'standard';
 
+/** Paleta oficial de 30 capas de LightBurn (C00..C29) + T1 y T2 */
+export const LIGHTBURN_PALETTE_COLORS: { code: string; index: number; hex: string }[] = [
+  { code: '00', index: 0, hex: '#000000' },
+  { code: '01', index: 1, hex: '#0000FF' },
+  { code: '02', index: 2, hex: '#FF0000' },
+  { code: '03', index: 3, hex: '#00E000' },
+  { code: '04', index: 4, hex: '#D0D000' },
+  { code: '05', index: 5, hex: '#FF8000' },
+  { code: '06', index: 6, hex: '#00E0E0' },
+  { code: '07', index: 7, hex: '#FF00FF' },
+  { code: '08', index: 8, hex: '#B4B4B4' },
+  { code: '09', index: 9, hex: '#0000A0' },
+  { code: '10', index: 10, hex: '#A00000' },
+  { code: '11', index: 11, hex: '#00A000' },
+  { code: '12', index: 12, hex: '#A0A000' },
+  { code: '13', index: 13, hex: '#C08000' },
+  { code: '14', index: 14, hex: '#00A0FF' },
+  { code: '15', index: 15, hex: '#A000A0' },
+  { code: '16', index: 16, hex: '#808080' },
+  { code: '17', index: 17, hex: '#7D87B9' },
+  { code: '18', index: 18, hex: '#BB7784' },
+  { code: '19', index: 19, hex: '#4A6FE3' },
+  { code: '20', index: 20, hex: '#D33F6A' },
+  { code: '21', index: 21, hex: '#8CD790' },
+  { code: '22', index: 22, hex: '#F0B98D' },
+  { code: '23', index: 23, hex: '#F6C4E1' },
+  { code: '24', index: 24, hex: '#FA9ED4' },
+  { code: '25', index: 25, hex: '#500A78' },
+  { code: '26', index: 26, hex: '#B45A00' },
+  { code: '27', index: 27, hex: '#004754' },
+  { code: '28', index: 28, hex: '#86FA88' },
+  { code: '29', index: 29, hex: '#FFDB66' },
+];
+
 export interface WorkbenchLayerConfig {
   /** Índice de capa estilo LightBurn: 0 (C00), 1 (C01), 2 (C02)... */
   cutIndex: number;
@@ -54,11 +98,11 @@ export interface WorkbenchLayerConfig {
   code: string;
   /** Rol lógico vinculado a las capas del diseño */
   role: OperationLayerType;
-  /** Nombre descriptivo de la capa (ej. 'GRABADO', 'AGUJEROS INTERNOS', 'CORTE EXTERIOR') */
+  /** Nombre descriptivo de la capa (ej. 'GRABADO', 'ORIFICIOS INTERNOS', 'CORTE EXTERIOR') */
   name: string;
   /** Color hexadecimal estándar de la paleta LightBurn */
   hexColor: string;
-  /** Modo de operación láser */
+  /** Modo de operación láser estilo LightBurn: Imagen, Relleno (Fill), Línea (Line), Relleno Offset */
   mode: LightBurnCutMode;
   /** Velocidad en mm/s — Null indica pendiente de ingreso/validación por el operador */
   speedMmPerSec: number | null;
@@ -68,10 +112,24 @@ export interface WorkbenchLayerConfig {
   minPowerPercent: number | null;
   /** Cantidad de pasadas (1..20) */
   passes: number;
-  /** Intervalo de escaneo entre líneas en mm (para modo fill/grabado, ej. 0.10 mm = 254 DPI) */
+  /** Intervalo de escaneo entre líneas en mm (ej. 0.073 mm = 348 DPI, 0.100 mm = 254 DPI) */
   lineIntervalMm: number;
   /** Ángulo de barrido en grados (por defecto 0°) */
   scanAngleDeg: number;
+  /** Barrido bidireccional activado (por defecto true) */
+  bidirectional?: boolean;
+  /** Sombreado cruzado (Cross-hatch) al finalizar la pasada */
+  crossHatch?: boolean;
+  /** Porcentaje de sobreescaneo (Overscan) en modo Relleno/Imagen */
+  overscanPercent?: number;
+  /** Modo de tramado cuando mode === 'image' (Umbral, Jarvis, Stucki, Halftone, Escala de grises) */
+  imageDitherMode?: LightBurnImageDitherMode;
+  /** Desplazamiento de Kerf en mm para modo Línea (+ hacia afuera, - hacia adentro) */
+  kerfOffsetMm?: number;
+  /** Sobre-corte (Overcut) en mm al cerrar contornos en modo Línea */
+  overcutMm?: number;
+  /** Retardo de inicio/perforación en milisegundos */
+  startPauseMs?: number;
   /** Asistencia de aire (Air Assist) activada en la controladora Ruida */
   airAssist: boolean;
   /** Si la capa se envía a la salida láser */
@@ -82,6 +140,79 @@ export interface WorkbenchLayerConfig {
   priority: number;
   /** Confirmado por el operador para el material actual */
   operatorValidated: boolean;
+}
+
+export interface MaterialTestGridConfig {
+  /** Tipo de matriz de prueba: Grabado (Imagen/Relleno) o Corte (Línea) */
+  testType: 'engrave_grid' | 'cut_grid';
+  /** Capa destino donde se aplicará el resultado ganador */
+  targetRole: 'ENGRAVE' | 'HOLES' | 'CUT';
+  /** Rango de Velocidad (mm/s) — Eje Y (Filas) */
+  minSpeedMmS: number;
+  maxSpeedMmS: number;
+  speedSteps: number; // 2..8 filas
+  /** Rango de Potencia Máx (%) — Eje X (Columnas) */
+  minPowerPercent: number;
+  maxPowerPercent: number;
+  powerSteps: number; // 2..8 columnas
+  /** Intervalo de línea en mm (para prueba de grabado, ej. 0.073 mm = 348 DPI) */
+  lineIntervalMm: number;
+  /** Tamaño de cada celda cuadrada en mm (ej. 10 mm) */
+  cellSizeMm: number;
+  /** Separación entre celdas en mm (ej. 3 mm) */
+  cellGapMm: number;
+  /** Asistencia de aire durante la prueba */
+  airAssist: boolean;
+  /** Pasadas por celda */
+  passes: number;
+}
+
+export interface MaterialTestCell {
+  row: number;
+  col: number;
+  cutIndex: number;
+  layerCode: string;
+  hexColor: string;
+  speedMmPerSec: number;
+  maxPowerPercent: number;
+  minPowerPercent: number;
+  lineIntervalMm: number;
+  xMm: Millimeters;
+  yMm: Millimeters;
+  sizeMm: Millimeters;
+}
+
+export interface SavedMaterialLibraryEntry {
+  id: string;
+  materialName: string;
+  thicknessMm: number;
+  description: string;
+  updatedAt: string;
+  engrave: {
+    mode: LightBurnCutMode;
+    speedMmPerSec: number;
+    maxPowerPercent: number;
+    minPowerPercent: number;
+    lineIntervalMm: number;
+    passes: number;
+    airAssist: boolean;
+    imageDitherMode: LightBurnImageDitherMode;
+  };
+  holes: {
+    speedMmPerSec: number;
+    maxPowerPercent: number;
+    minPowerPercent: number;
+    passes: number;
+    airAssist: boolean;
+  };
+  cut: {
+    speedMmPerSec: number;
+    maxPowerPercent: number;
+    minPowerPercent: number;
+    passes: number;
+    airAssist: boolean;
+    kerfOffsetMm: number;
+  };
 }
 
 export interface WorkbenchPlacedInstance {
@@ -141,15 +272,21 @@ export interface WorkbenchConfig {
   /** Dimensiones físicas de la mesa Vank 9060 (900 x 600 mm) */
   machineBedWidthMm: Millimeters;
   machineBedHeightMm: Millimeters;
-  /** Esquina donde hace Home la máquina Ruida (en Vank 9060 suele ser superior-derecha o superior-izquierda) */
+  /** Esquina donde hace Home la máquina Ruida (en Vank 9060 es superior-derecha) */
   machineOriginCorner: MachineOriginCorner;
-  /** Modo "Comenzar desde" estilo LightBurn */
+  /** Modo "Iniciar desde" estilo LightBurn */
   startFromMode: StartFromMode;
-  /** Punto de anclaje del origen del trabajo (9 puntos) */
+  /** Punto de anclaje del origen del trabajo (9 puntos — en Vank 9060 por defecto top_right) */
   jobOriginAnchor: JobOriginAnchor;
   /** Coordenadas del origen de usuario o cabezal en la mesa (mm) */
   userOriginXMm: Millimeters;
   userOriginYMm: Millimeters;
+  /** Solicitar nombre de archivo al enviar a la Vank 9060 */
+  promptForFilenameOnSend?: boolean;
+  /** Cortar sólo gráficos seleccionados */
+  cutSelectedGraphicsOnly?: boolean;
+  /** Usar origen de selección */
+  useSelectionOrigin?: boolean;
   /** Dimensiones de la plancha/rollo colocada sobre la mesa (mm). Para Ecocuero: 730 x 600 mm */
   sheetWidthMm: Millimeters;
   sheetHeightMm: Millimeters;
@@ -289,8 +426,12 @@ export function createDefaultWorkbenchLayers(material?: MaterialProfile): Workbe
       maxPowerPercent: eng?.maxPowerPercent ?? null,
       minPowerPercent: eng?.minPowerPercent ?? null,
       passes: eng?.passes ?? 1,
-      lineIntervalMm: eng?.lineIntervalMm ?? 0.1,
+      lineIntervalMm: eng?.lineIntervalMm ?? 0.073,
       scanAngleDeg: 0,
+      bidirectional: true,
+      crossHatch: false,
+      overscanPercent: 2.5,
+      imageDitherMode: 'threshold',
       airAssist: false,
       outputEnabled: true,
       visible: true,
@@ -310,6 +451,9 @@ export function createDefaultWorkbenchLayers(material?: MaterialProfile): Workbe
       passes: hol?.passes ?? 1,
       lineIntervalMm: 0.1,
       scanAngleDeg: 0,
+      kerfOffsetMm: 0,
+      overcutMm: 0,
+      startPauseMs: 0,
       airAssist: true,
       outputEnabled: true,
       visible: true,
@@ -329,6 +473,9 @@ export function createDefaultWorkbenchLayers(material?: MaterialProfile): Workbe
       passes: cut?.passes ?? 1,
       lineIntervalMm: 0.1,
       scanAngleDeg: 0,
+      kerfOffsetMm: 0,
+      overcutMm: 0,
+      startPauseMs: 0,
       airAssist: true,
       outputEnabled: true,
       visible: true,
@@ -365,6 +512,9 @@ export function createDefaultWorkbenchConfig(
     jobOriginAnchor: 'top_left',
     userOriginXMm: 0,
     userOriginYMm: 0,
+    promptForFilenameOnSend: true,
+    cutSelectedGraphicsOnly: false,
+    useSelectionOrigin: false,
     sheetWidthMm: resolvedWidth,
     sheetHeightMm: resolvedHeight,
     isRollMaterial: isEco || resolvedWidth === ECOCUERO_ROLL_WIDTH_MM,

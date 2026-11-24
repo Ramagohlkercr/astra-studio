@@ -7,6 +7,18 @@ import {
   exportWorkbenchToSvg,
 } from '../workbench/lbrn2Exporter';
 import {
+  applyLibraryEntryToWorkbenchLayers,
+  compileMaterialTestToRuidaRd,
+  DEFAULT_CUT_TEST_CONFIG,
+  DEFAULT_ENGRAVE_TEST_CONFIG,
+  deleteMaterialLibraryEntry,
+  exportMaterialTestToLbrn2,
+  exportMaterialTestToSvg,
+  generateMaterialTestCells,
+  loadMaterialLibrary,
+  saveMaterialLibraryEntry,
+} from '../workbench/materialCalibrationEngine';
+import {
   buildRuidaUdpPackets,
   compileWorkbenchToRuidaRd,
   decodeRuidaAbsCoordMm,
@@ -612,5 +624,125 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(cmp.rows).toBe(5);
     expect(cmp.emptySlots).toBe(0);
     expect(cmp.freeSideWidthCm).toBeGreaterThan(eq.freeSideWidthCm);
+  });
+
+  it('14. Genera Matriz de Calibración de Potencia x Velocidad (Grabado C00 0.073mm/348 DPI y Corte C02) y exporta a LightBurn (.lbrn2), Ruida (.RD) y SVG', () => {
+    const engraveGrid = generateMaterialTestCells(DEFAULT_ENGRAVE_TEST_CONFIG);
+    // 5 velocidades x 5 potencias = 25 celdas (C00 a C24)
+    expect(engraveGrid.cells).toHaveLength(25);
+    expect(engraveGrid.speedValues).toEqual([200, 300, 400, 500, 600]);
+    expect(engraveGrid.powerValues).toEqual([15, 20, 25, 30, 35]);
+    expect(engraveGrid.cells[0].lineIntervalMm).toBe(0.073);
+
+    const lbrn2Matrix = exportMaterialTestToLbrn2(
+      DEFAULT_ENGRAVE_TEST_CONFIG,
+      'Ecocuero_73cm'
+    );
+    expect(lbrn2Matrix.cellCount).toBe(25);
+    expect(lbrn2Matrix.lbrn2Content).toContain('<CutSetting type="Scan">');
+    expect(lbrn2Matrix.lbrn2Content).toContain('<speed Value="600"/>');
+    expect(lbrn2Matrix.lbrn2Content).toContain('<maxPower Value="30"/>');
+    expect(lbrn2Matrix.lbrn2Content).toContain('<interval Value="0.073"/>');
+
+    const rdMatrix = compileMaterialTestToRuidaRd(
+      DEFAULT_CUT_TEST_CONFIG,
+      'CALCORTE'
+    );
+    expect(rdMatrix.ruidaJobName).toBe('CALCORTE');
+    expect(rdMatrix.totalPieces).toBe(25);
+    expect(rdMatrix.rdBytes.length).toBeGreaterThan(100);
+    expect(rdMatrix.rawUnscrambledBytes[0]).toBe(0xd8);
+    expect(
+      rdMatrix.rawUnscrambledBytes[rdMatrix.rawUnscrambledBytes.length - 1]
+    ).toBe(0xd7);
+
+    const svgMatrix = exportMaterialTestToSvg(
+      DEFAULT_ENGRAVE_TEST_CONFIG,
+      'Ecocuero'
+    );
+    expect(svgMatrix.svgContent).toContain('600mm/s');
+    expect(svgMatrix.svgContent).toContain('30%');
+  });
+
+  it('15. Persiste entradas en la Biblioteca de Materiales LightBurn y aplica modo Imagen 600mm/s · 30% · Intervalo 0.073mm (348 DPI) a las capas', () => {
+    const config = createDefaultWorkbenchConfig(730, 600, material);
+    expect(config.ruidaIpAddress).toBe('192.168.0.195');
+
+    const entry = {
+      id: 'test-vank-lb-600-30',
+      materialName: 'Ecocuero 73cm — Captura LightBurn Vank 9060',
+      thicknessMm: 1.4,
+      description: 'C00 Imagen 600/30 Int 0.073mm · C01/C02 Línea 100/100',
+      updatedAt: '2026-11-24T18:45:00.000Z',
+      engrave: {
+        mode: 'image' as const,
+        speedMmPerSec: 600,
+        maxPowerPercent: 30,
+        minPowerPercent: 30,
+        lineIntervalMm: 0.073,
+        passes: 1,
+        airAssist: true,
+        imageDitherMode: 'jarvis' as const,
+      },
+      holes: {
+        speedMmPerSec: 100,
+        maxPowerPercent: 100,
+        minPowerPercent: 100,
+        passes: 1,
+        airAssist: true,
+      },
+      cut: {
+        speedMmPerSec: 100,
+        maxPowerPercent: 100,
+        minPowerPercent: 100,
+        passes: 1,
+        airAssist: true,
+        kerfOffsetMm: 0.08,
+      },
+    };
+
+    const savedList = saveMaterialLibraryEntry(entry);
+    expect(savedList.some((e) => e.id === entry.id)).toBe(true);
+    expect(loadMaterialLibrary().some((e) => e.id === entry.id)).toBe(true);
+
+    const appliedLayers = applyLibraryEntryToWorkbenchLayers(entry, config.layers);
+    const c00 = appliedLayers.find((l) => l.cutIndex === 0)!;
+    const c02 = appliedLayers.find((l) => l.cutIndex === 2)!;
+
+    expect(c00.mode).toBe('image');
+    expect(c00.speedMmPerSec).toBe(600);
+    expect(c00.maxPowerPercent).toBe(30);
+    expect(c00.minPowerPercent).toBe(30);
+    expect(c00.lineIntervalMm).toBe(0.073);
+    expect(c00.operatorValidated).toBe(true);
+
+    expect(c02.mode).toBe('line');
+    expect(c02.speedMmPerSec).toBe(100);
+    expect(c02.maxPowerPercent).toBe(100);
+    expect(c02.kerfOffsetMm).toBe(0.08);
+
+    // Exportar proyecto con modo Imagen e intervalo 0.073 mm a .lbrn2
+    const job = createWorkbenchJobFromOrder({
+      design: sampleOrder.labelDesign,
+      nesting,
+      mode: 'single_piece',
+      projectName: 'Prueba_Imagen_0073',
+      clientName: 'Cliente',
+      orderId: 'ord-img',
+      existingJobs: [],
+      config: { ...config, layers: appliedLayers },
+    });
+    const lbrn2 = exportWorkbenchToLbrn2(
+      [job],
+      { ...config, layers: appliedLayers },
+      'Prueba_Imagen_0073'
+    );
+    expect(lbrn2.lbrn2Content).toContain('<CutSetting type="Image">');
+    expect(lbrn2.lbrn2Content).toContain('<interval Value="0.073"/>');
+    expect(lbrn2.lbrn2Content).toContain('<ditherMode Value="jarvis"/>');
+    expect(lbrn2.lbrn2Content).toContain('<kerf Value="0.08"/>');
+
+    const afterDelete = deleteMaterialLibraryEntry(entry.id);
+    expect(afterDelete.some((e) => e.id === entry.id)).toBe(false);
   });
 });

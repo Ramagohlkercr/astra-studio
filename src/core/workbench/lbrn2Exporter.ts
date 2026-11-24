@@ -76,11 +76,13 @@ function buildLightBurnPathShapeXml(
  */
 function buildCutSettingXml(layer: WorkbenchLayerConfig): string {
   const cutType =
-    layer.mode === 'fill'
-      ? 'Scan'
-      : layer.mode === 'offset_fill'
-        ? 'Offset'
-        : 'Cut';
+    layer.mode === 'image'
+      ? 'Image'
+      : layer.mode === 'fill'
+        ? 'Scan'
+        : layer.mode === 'offset_fill'
+          ? 'Offset'
+          : 'Cut';
 
   const lines: string[] = [
     `  <CutSetting type="${cutType}">`,
@@ -105,10 +107,27 @@ function buildCutSettingXml(layer: WorkbenchLayerConfig): string {
     lines.push(`    <minPower Value="${roundMm(layer.maxPowerPercent, 2)}"/>`);
   }
 
-  if (layer.mode === 'fill' || layer.mode === 'offset_fill') {
-    lines.push(`    <interval Value="${roundMm(layer.lineIntervalMm || 0.1, 4)}"/>`);
+  if (layer.mode === 'fill' || layer.mode === 'image' || layer.mode === 'offset_fill') {
+    lines.push(`    <interval Value="${roundMm(layer.lineIntervalMm || 0.073, 4)}"/>`);
     lines.push(`    <angle Value="${roundMm(layer.scanAngleDeg || 0, 1)}"/>`);
-    lines.push(`    <bidir Value="1"/>`);
+    lines.push(`    <bidir Value="${layer.bidirectional === false ? 0 : 1}"/>`);
+    if (layer.crossHatch) {
+      lines.push(`    <crossHatch Value="1"/>`);
+    }
+    if (layer.overscanPercent !== undefined && layer.overscanPercent > 0) {
+      lines.push(`    <overscan Value="1"/>`);
+      lines.push(`    <overscanPercent Value="${roundMm(layer.overscanPercent, 2)}"/>`);
+    }
+    if (layer.imageDitherMode) {
+      lines.push(`    <ditherMode Value="${layer.imageDitherMode}"/>`);
+    }
+  } else if (layer.mode === 'line') {
+    if (layer.kerfOffsetMm && Math.abs(layer.kerfOffsetMm) > 0.001) {
+      lines.push(`    <kerf Value="${roundMm(layer.kerfOffsetMm, 3)}"/>`);
+    }
+    if (layer.overcutMm && layer.overcutMm > 0.001) {
+      lines.push(`    <overcut Value="${roundMm(layer.overcutMm, 3)}"/>`);
+    }
   }
 
   lines.push(`  </CutSetting>`);

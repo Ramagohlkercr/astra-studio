@@ -5,12 +5,14 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
+  BookOpen,
   CheckCircle2,
   Copy,
   Cpu,
   Download,
   ExternalLink,
   FileCode2,
+  FlaskConical,
   Grid,
   Layers,
   Pause,
@@ -20,6 +22,7 @@ import {
   Ruler,
   Save,
   Send,
+  Sliders,
   Sparkles,
   Target,
   Trash2,
@@ -56,6 +59,18 @@ import {
   exportWorkbenchToSvg,
 } from '../core/workbench/lbrn2Exporter';
 import {
+  applyLibraryEntryToWorkbenchLayers,
+  compileMaterialTestToRuidaRd,
+  DEFAULT_CUT_TEST_CONFIG,
+  DEFAULT_ENGRAVE_TEST_CONFIG,
+  deleteMaterialLibraryEntry,
+  exportMaterialTestToLbrn2,
+  exportMaterialTestToSvg,
+  generateMaterialTestCells,
+  loadMaterialLibrary,
+  saveMaterialLibraryEntry,
+} from '../core/workbench/materialCalibrationEngine';
+import {
   buildRuidaUdpPackets,
   compileWorkbenchToRuidaRd,
 } from '../core/workbench/ruidaCompiler';
@@ -78,8 +93,13 @@ import {
   ECOCUERO_ROLL_WIDTH_MM,
   isEcocueroMaterial,
   JobOriginAnchor,
+  LIGHTBURN_PALETTE_COLORS,
   LightBurnCutMode,
+  LightBurnImageDitherMode,
   MachineOriginCorner,
+  MaterialTestCell,
+  MaterialTestGridConfig,
+  SavedMaterialLibraryEntry,
   StartFromMode,
   WorkbenchConfig,
   WorkbenchJobItem,
@@ -168,6 +188,27 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     text: string;
   } | null>(null);
   const [orderToAppendId, setOrderToAppendId] = useState<string>('');
+  const [selectedLayerCutIndex, setSelectedLayerCutIndex] = useState<number>(0);
+  const [showAdvancedLayerSettings, setShowAdvancedLayerSettings] =
+    useState<boolean>(false);
+  const [bottomDockTab, setBottomDockTab] = useState<'laser' | 'material_library'>(
+    'laser'
+  );
+  const [showCalibrationMatrixModal, setShowCalibrationMatrixModal] =
+    useState<boolean>(false);
+  const [calibrationConfig, setCalibrationConfig] =
+    useState<MaterialTestGridConfig>(() => ({
+      ...DEFAULT_ENGRAVE_TEST_CONFIG,
+    }));
+  const [selectedCalibrationCell, setSelectedCalibrationCell] =
+    useState<MaterialTestCell | null>(null);
+  const [materialLibrary, setMaterialLibrary] = useState<SavedMaterialLibraryEntry[]>(
+    () => loadMaterialLibrary()
+  );
+  const [libraryEntryName, setLibraryEntryName] = useState<string>(
+    () => `${material.name} (${material.thicknessMm} mm)`
+  );
+  const [libraryNotes, setLibraryNotes] = useState<string>('');
 
   const multiLogoInputRef = useRef<HTMLInputElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -591,6 +632,292 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     );
     onSaveMaterialParameters(updatedMat);
     onNotify(`Velocidades y potencias guardadas en el perfil de "${material.name}".`);
+  };
+
+  const selectedLayer = useMemo(
+    () =>
+      workbenchConfig.layers.find((l) => l.cutIndex === selectedLayerCutIndex) ??
+      workbenchConfig.layers[0],
+    [workbenchConfig.layers, selectedLayerCutIndex]
+  );
+
+  const calibrationGrid = useMemo(
+    () => generateMaterialTestCells(calibrationConfig),
+    [calibrationConfig]
+  );
+
+  // Aplicar celda ganadora de la matriz de calibración a la capa correspondiente
+  const handleApplyWinningCalibrationCell = (
+    cell: MaterialTestCell,
+    alsoSaveToLibrary: boolean
+  ) => {
+    const targetCutIndex =
+      calibrationConfig.targetRole === 'ENGRAVE'
+        ? 0
+        : calibrationConfig.targetRole === 'HOLES'
+          ? 1
+          : 2;
+
+    const nextLayers = workbenchConfig.layers.map((l) => {
+      if (l.cutIndex !== targetCutIndex) return l;
+      return {
+        ...l,
+        speedMmPerSec: cell.speedMmPerSec,
+        maxPowerPercent: cell.maxPowerPercent,
+        minPowerPercent: cell.minPowerPercent,
+        lineIntervalMm:
+          calibrationConfig.testType === 'engrave_grid'
+            ? cell.lineIntervalMm
+            : l.lineIntervalMm,
+        passes: calibrationConfig.passes,
+        airAssist: calibrationConfig.airAssist,
+        operatorValidated: true,
+      };
+    });
+
+    onUpdateConfig({
+      ...workbenchConfig,
+      layers: nextLayers,
+    });
+    setSelectedLayerCutIndex(targetCutIndex);
+
+    if (alsoSaveToLibrary) {
+      const eng = nextLayers.find((l) => l.role === 'ENGRAVE') ?? nextLayers[0];
+      const hol = nextLayers.find((l) => l.role === 'HOLES') ?? nextLayers[1];
+      const cut = nextLayers.find((l) => l.role === 'CUT') ?? nextLayers[2];
+      const entry: SavedMaterialLibraryEntry = {
+        id: `matlib-${Date.now()}`,
+        materialName:
+          libraryEntryName.trim() ||
+          `${material.name} (${cell.speedMmPerSec}mm/s · ${cell.maxPowerPercent}%)`,
+        thicknessMm: material.thicknessMm,
+        description: `Calibrado con Matriz (${cell.layerCode}: ${cell.speedMmPerSec} mm/s · ${cell.maxPowerPercent}% · Int. ${cell.lineIntervalMm} mm)`,
+        updatedAt: new Date().toISOString(),
+        engrave: {
+          mode: eng.mode === 'image' ? 'image' : 'fill',
+          speedMmPerSec: eng.speedMmPerSec ?? 300,
+          maxPowerPercent: eng.maxPowerPercent ?? 25,
+          minPowerPercent: eng.minPowerPercent ?? eng.maxPowerPercent ?? 25,
+          lineIntervalMm: eng.lineIntervalMm,
+          passes: eng.passes,
+          airAssist: eng.airAssist,
+          imageDitherMode: eng.imageDitherMode ?? 'jarvis',
+        },
+        holes: {
+          speedMmPerSec: hol.speedMmPerSec ?? 20,
+          maxPowerPercent: hol.maxPowerPercent ?? 55,
+          minPowerPercent: hol.minPowerPercent ?? 45,
+          passes: hol.passes,
+          airAssist: hol.airAssist,
+        },
+        cut: {
+          speedMmPerSec: cut.speedMmPerSec ?? 20,
+          maxPowerPercent: cut.maxPowerPercent ?? 60,
+          minPowerPercent: cut.minPowerPercent ?? 50,
+          passes: cut.passes,
+          airAssist: cut.airAssist,
+          kerfOffsetMm: cut.kerfOffsetMm ?? 0,
+        },
+      };
+      const updatedLib = saveMaterialLibraryEntry(entry);
+      setMaterialLibrary(updatedLib);
+    }
+
+    onNotify(
+      `✓ Calibración aplicada a C0${targetCutIndex}: ${cell.speedMmPerSec} mm/s · Potencia ${cell.maxPowerPercent}%${
+        calibrationConfig.testType === 'engrave_grid'
+          ? ` · Intervalo ${cell.lineIntervalMm} mm (${Math.round(
+              25.4 / cell.lineIntervalMm
+            )} DPI)`
+          : ''
+      }`
+    );
+  };
+
+  // Guardar las 3 capas actuales en la Biblioteca de Materiales LightBurn
+  const handleSaveCurrentLayersToLibrary = () => {
+    const eng =
+      workbenchConfig.layers.find((l) => l.role === 'ENGRAVE') ??
+      workbenchConfig.layers[0];
+    const hol =
+      workbenchConfig.layers.find((l) => l.role === 'HOLES') ??
+      workbenchConfig.layers[1];
+    const cut =
+      workbenchConfig.layers.find((l) => l.role === 'CUT') ??
+      workbenchConfig.layers[2];
+
+    if (
+      (eng.speedMmPerSec === null || eng.maxPowerPercent === null) &&
+      (cut.speedMmPerSec === null || cut.maxPowerPercent === null)
+    ) {
+      onNotify(
+        'Ingresá velocidades y potencias en al menos una capa antes de guardar en la Biblioteca de Materiales.'
+      );
+      return;
+    }
+
+    const entry: SavedMaterialLibraryEntry = {
+      id: `matlib-${Date.now()}`,
+      materialName:
+        libraryEntryName.trim() || `${material.name} (${material.thicknessMm} mm)`,
+      thicknessMm: material.thicknessMm,
+      description:
+        libraryNotes.trim() ||
+        `C00 ${eng.speedMmPerSec ?? '—'}/${eng.maxPowerPercent ?? '—'} (Int ${eng.lineIntervalMm}mm) · C02 ${cut.speedMmPerSec ?? '—'}/${cut.maxPowerPercent ?? '—'}`,
+      updatedAt: new Date().toISOString(),
+      engrave: {
+        mode: eng.mode === 'image' ? 'image' : 'fill',
+        speedMmPerSec: eng.speedMmPerSec ?? 600,
+        maxPowerPercent: eng.maxPowerPercent ?? 30,
+        minPowerPercent: eng.minPowerPercent ?? eng.maxPowerPercent ?? 30,
+        lineIntervalMm: eng.lineIntervalMm,
+        passes: eng.passes,
+        airAssist: eng.airAssist,
+        imageDitherMode: eng.imageDitherMode ?? 'jarvis',
+      },
+      holes: {
+        speedMmPerSec: hol.speedMmPerSec ?? cut.speedMmPerSec ?? 100,
+        maxPowerPercent: hol.maxPowerPercent ?? cut.maxPowerPercent ?? 100,
+        minPowerPercent: hol.minPowerPercent ?? hol.maxPowerPercent ?? 100,
+        passes: hol.passes,
+        airAssist: hol.airAssist,
+      },
+      cut: {
+        speedMmPerSec: cut.speedMmPerSec ?? 100,
+        maxPowerPercent: cut.maxPowerPercent ?? 100,
+        minPowerPercent: cut.minPowerPercent ?? cut.maxPowerPercent ?? 100,
+        passes: cut.passes,
+        airAssist: cut.airAssist,
+        kerfOffsetMm: cut.kerfOffsetMm ?? 0,
+      },
+    };
+
+    const nextLib = saveMaterialLibraryEntry(entry);
+    setMaterialLibrary(nextLib);
+    setLibraryNotes('');
+    onNotify(
+      `Preset "${entry.materialName}" guardado en la Biblioteca de Materiales.`
+    );
+  };
+
+  const handleApplyLibraryEntry = (entry: SavedMaterialLibraryEntry) => {
+    const nextLayers = applyLibraryEntryToWorkbenchLayers(
+      entry,
+      workbenchConfig.layers
+    );
+    onUpdateConfig({
+      ...workbenchConfig,
+      layers: nextLayers,
+    });
+    onNotify(
+      `Preset "${entry.materialName}" aplicado a las capas C00, C01 y C02.`
+    );
+  };
+
+  const handleDeleteLibraryEntry = (id: string) => {
+    const nextLib = deleteMaterialLibraryEntry(id);
+    setMaterialLibrary(nextLib);
+  };
+
+  // Exportar o enviar la Matriz de Calibración a LightBurn (.lbrn2), .RD, .SVG o UDP directo a 192.168.0.195
+  const handleExportCalibrationLbrn2 = async (openInLightBurn: boolean) => {
+    try {
+      const artifact = exportMaterialTestToLbrn2(calibrationConfig, material.name);
+      if (openInLightBurn && isTauri()) {
+        const res = await invoke<{
+          saved_path: string;
+          launched_lightburn: boolean;
+          message: string;
+        }>('open_lbrn2_in_lightburn', {
+          folderName: 'Matrices_Calibracion_Vank9060',
+          filename: artifact.filenameSuggested,
+          lbrn2Content: artifact.lbrn2Content,
+        });
+        onNotify(res.message);
+        return;
+      }
+      onRequestSaveFiles([
+        {
+          name: artifact.filenameSuggested,
+          content: artifact.lbrn2Content,
+        },
+      ]);
+      onNotify(`Matriz LightBurn "${artifact.filenameSuggested}" generada.`);
+    } catch (err) {
+      onNotify(
+        `Error al exportar matriz .lbrn2: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  };
+
+  const handleDownloadCalibrationRd = () => {
+    try {
+      const compiled = compileMaterialTestToRuidaRd(calibrationConfig, 'CALTEST');
+      const blob = new Blob([compiled.rdBytes], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = compiled.filenameSuggested;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      onNotify(
+        `Matriz Ruida "${compiled.filenameSuggested}" (${compiled.totalPieces} celdas) descargada.`
+      );
+    } catch (err) {
+      onNotify(
+        `Error al compilar matriz .RD: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  };
+
+  const handleSendCalibrationMatrixToVank = async () => {
+    try {
+      const compiled = compileMaterialTestToRuidaRd(calibrationConfig, 'CALTEST');
+      const udpPackets = buildRuidaUdpPackets(compiled.rdBytes);
+      if (!isTauri()) {
+        handleDownloadCalibrationRd();
+        return;
+      }
+      setIsSendingToRuida(true);
+      const packetArrays = udpPackets.map((pkt) => Array.from(pkt));
+      const response = await invoke<{
+        success: boolean;
+        packets_sent: number;
+        bytes_sent: number;
+        remote_endpoint: string;
+        message: string;
+      }>('upload_rd_to_ruida', {
+        ip: workbenchConfig.ruidaIpAddress,
+        port: workbenchConfig.ruidaPort,
+        packets: packetArrays,
+      });
+      onNotify(response.message);
+    } catch (err) {
+      onNotify(
+        `Error al enviar matriz a ${workbenchConfig.ruidaIpAddress}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    } finally {
+      setIsSendingToRuida(false);
+    }
+  };
+
+  const handleExportCalibrationSvg = () => {
+    const svgArt = exportMaterialTestToSvg(calibrationConfig, material.name);
+    onRequestSaveFiles([
+      {
+        name: svgArt.filenameSuggested,
+        content: svgArt.svgContent,
+      },
+    ]);
+    onNotify(`Matriz SVG "${svgArt.filenameSuggested}" lista para guardar.`);
   };
 
   // Arrastre de bloques en el lienzo SVG
@@ -2039,289 +2366,753 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             </div>
           </div>
 
-          {/* SECCIÓN 2: CORTES / CAPAS (CUTS / LAYERS ESTILO LIGHTBURN) */}
-          <div className="p-3.5 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-1.5">
+          {/* SECCIÓN 2: CORTES / CAPAS (CUTS / LAYERS ESTILO LIGHTBURN PRO 2.2) */}
+          <div className="p-3 space-y-2.5">
+            {/* Barra de título estilo LightBurn con acento naranja */}
+            <div className="flex flex-wrap items-center justify-between gap-1.5 bg-gradient-to-r from-slate-900 via-slate-900 to-orange-600/30 border border-slate-800 rounded px-2.5 py-1.5">
               <div className="flex items-center gap-1.5">
-                <Layers className="w-4 h-4 text-cyan-400 shrink-0" />
-                <h3 className="text-xs font-bold uppercase tracking-wider text-white">
-                  Cortes / Capas
+                <Layers className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                <h3 className="text-xs font-bold tracking-wide text-white">
+                  Cortes/Capas
                 </h3>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setShowCalibrationMatrixModal(true)}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 text-[10px] font-extrabold shadow"
+                  title="Abrir Generador de Matriz de Calibración de Potencia × Velocidad estilo LightBurn"
+                >
+                  <FlaskConical className="w-3 h-3" />
+                  <span>🧪 Matriz Calibración</span>
+                </button>
                 <button
                   type="button"
                   onClick={handleSyncFromMaterial}
-                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 border border-slate-700"
+                  className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 border border-slate-700"
+                  title="Cargar parámetros guardados en el material activo"
                 >
-                  Cargar de material
+                  Cargar
                 </button>
                 <button
                   type="button"
                   onClick={handleSaveLayersToMaterial}
-                  className="flex items-center gap-1 px-2 py-1 rounded bg-cyan-950/80 hover:bg-cyan-900 text-[10px] text-cyan-300 border border-cyan-800 font-semibold"
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-cyan-950/90 hover:bg-cyan-900 text-[10px] text-cyan-300 border border-cyan-800 font-semibold"
+                  title={`Guardar velocidades y potencias en ${material.name}`}
                 >
-                  <Save className="w-3 h-3" />
-                  <span>Guardar en {material.code}</span>
+                  <Save className="w-2.5 h-2.5" />
+                  <span>Guardar</span>
                 </button>
               </div>
             </div>
 
-            <div className="space-y-2">
-              {sortedLayers.map((layer, idx) => {
-                const isMissingParams =
-                  layer.outputEnabled &&
-                  (layer.speedMmPerSec === null ||
-                    layer.speedMmPerSec <= 0 ||
-                    layer.maxPowerPercent === null ||
-                    layer.maxPowerPercent <= 0);
+            {/* Tabla compacta estilo LightBurn 2.2: # | Capa | Modo | Veloc./Potencia | Salida | Mostrar | Aire */}
+            <div className="flex items-stretch gap-1.5">
+              <div className="flex-1 rounded border border-slate-800 bg-[#080b10] overflow-hidden">
+                <table className="w-full text-[11px] border-collapse">
+                  <thead>
+                    <tr className="bg-slate-900/95 text-slate-300 border-b border-slate-800 text-[10px]">
+                      <th className="py-1 px-1.5 text-left font-semibold">#</th>
+                      <th className="py-1 px-1 text-left font-semibold">Capa</th>
+                      <th className="py-1 px-1.5 text-left font-semibold">Modo</th>
+                      <th className="py-1 px-1.5 text-left font-semibold">
+                        Veloc./Potencia
+                      </th>
+                      <th className="py-1 px-1 text-center font-semibold">Salida</th>
+                      <th className="py-1 px-1 text-center font-semibold">Mostrar</th>
+                      <th className="py-1 px-1 text-center font-semibold">Aire</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {sortedLayers.map((layer) => {
+                      const isSelected =
+                        selectedLayer?.cutIndex === layer.cutIndex;
+                      const isMissingParams =
+                        layer.outputEnabled &&
+                        (layer.speedMmPerSec === null ||
+                          layer.speedMmPerSec <= 0 ||
+                          layer.maxPowerPercent === null ||
+                          layer.maxPowerPercent <= 0);
 
-                return (
-                  <div
-                    key={layer.cutIndex}
-                    className={`p-2.5 rounded-lg border text-xs space-y-2 ${
-                      isMissingParams
-                        ? 'bg-amber-950/15 border-amber-600/50'
-                        : 'bg-slate-900/90 border-slate-800'
+                      return (
+                        <tr
+                          key={layer.cutIndex}
+                          onClick={() => setSelectedLayerCutIndex(layer.cutIndex)}
+                          className={`cursor-pointer transition-colors ${
+                            isSelected
+                              ? 'bg-sky-500/25 text-white'
+                              : isMissingParams
+                                ? 'bg-amber-950/20 hover:bg-slate-900/90 text-slate-200'
+                                : 'hover:bg-slate-900/80 text-slate-200'
+                          }`}
+                        >
+                          <td className="py-1.5 px-1.5 font-mono font-bold text-[11px]">
+                            {layer.code}
+                          </td>
+                          <td className="py-1.5 px-1">
+                            <span
+                              className="inline-flex items-center justify-center w-6 h-4 rounded-sm font-mono text-[10px] font-bold border border-white/30 shadow-inner"
+                              style={{
+                                backgroundColor: layer.hexColor,
+                                color:
+                                  layer.cutIndex === 0 || layer.cutIndex === 1
+                                    ? '#ffffff'
+                                    : '#ffffff',
+                              }}
+                              title={layer.name}
+                            >
+                              {layer.cutIndex.toString().padStart(2, '0')}
+                            </span>
+                          </td>
+                          <td
+                            className="py-1 px-1"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <select
+                              aria-label={`Modo de capa ${layer.code}`}
+                              value={layer.mode}
+                              onChange={(e) => {
+                                setSelectedLayerCutIndex(layer.cutIndex);
+                                handleUpdateLayer(layer.cutIndex, {
+                                  mode: e.target.value as LightBurnCutMode,
+                                });
+                              }}
+                              className="w-full bg-slate-950/90 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-white font-medium"
+                            >
+                              <option value="image">Imagen</option>
+                              <option value="fill">Relleno</option>
+                              <option value="line">Línea</option>
+                              <option value="offset_fill">Relleno Offset</option>
+                            </select>
+                          </td>
+                          <td className="py-1.5 px-1.5 font-mono text-[11px]">
+                            {layer.speedMmPerSec !== null &&
+                            layer.maxPowerPercent !== null ? (
+                              <span className="text-white font-semibold">
+                                {layer.speedMmPerSec} / {layer.maxPowerPercent}
+                              </span>
+                            ) : (
+                              <span className="text-amber-400 text-[10px] font-semibold">
+                                Sin calibrar
+                              </span>
+                            )}
+                          </td>
+                          {/* Interruptor Píldora Verde: Salida */}
+                          <td
+                            className="py-1.5 px-1 text-center"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={layer.outputEnabled}
+                              aria-label={`Salida ${layer.code}`}
+                              onClick={() =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  outputEnabled: !layer.outputEnabled,
+                                })
+                              }
+                              className={`w-7 h-3.5 rounded-full inline-flex items-center px-0.5 transition-colors border ${
+                                layer.outputEnabled
+                                  ? 'bg-emerald-500 border-emerald-300 justify-end'
+                                  : 'bg-slate-800 border-slate-600 justify-start'
+                              }`}
+                            >
+                              <span className="w-2.5 h-2.5 rounded-full bg-white shadow" />
+                            </button>
+                          </td>
+                          {/* Interruptor Píldora Verde: Mostrar */}
+                          <td
+                            className="py-1.5 px-1 text-center"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={layer.visible}
+                              aria-label={`Mostrar ${layer.code}`}
+                              onClick={() =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  visible: !layer.visible,
+                                })
+                              }
+                              className={`w-7 h-3.5 rounded-full inline-flex items-center px-0.5 transition-colors border ${
+                                layer.visible
+                                  ? 'bg-emerald-500 border-emerald-300 justify-end'
+                                  : 'bg-slate-800 border-slate-600 justify-start'
+                              }`}
+                            >
+                              <span className="w-2.5 h-2.5 rounded-full bg-white shadow" />
+                            </button>
+                          </td>
+                          {/* Interruptor Píldora Verde: Aire */}
+                          <td
+                            className="py-1.5 px-1 text-center"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={layer.airAssist}
+                              aria-label={`Aire ${layer.code}`}
+                              onClick={() =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  airAssist: !layer.airAssist,
+                                })
+                              }
+                              className={`w-7 h-3.5 rounded-full inline-flex items-center px-0.5 transition-colors border ${
+                                layer.airAssist
+                                  ? 'bg-emerald-500 border-emerald-300 justify-end'
+                                  : 'bg-slate-800 border-slate-600 justify-start'
+                              }`}
+                            >
+                              <span className="w-2.5 h-2.5 rounded-full bg-white shadow" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Botones laterales ▲ / ▼ de prioridad estilo LightBurn */}
+              <div className="flex flex-col justify-center gap-1">
+                <button
+                  type="button"
+                  onClick={() =>
+                    selectedLayer &&
+                    handleMoveLayerPriority(selectedLayer.cutIndex, 'up')
+                  }
+                  title="Subir prioridad de la capa seleccionada (ejecutar antes)"
+                  className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200"
+                >
+                  <ArrowUp className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    selectedLayer &&
+                    handleMoveLayerPriority(selectedLayer.cutIndex, 'down')
+                  }
+                  title="Bajar prioridad de la capa seleccionada (ejecutar después)"
+                  className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200"
+                >
+                  <ArrowDown className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* INSPECTOR DE PARÁMETROS DE LA CAPA SELECCIONADA (IDÉNTICO A LIGHTBURN PRO 2.2) */}
+            {selectedLayer && (
+              <div className="p-2.5 rounded-lg bg-slate-900/95 border border-slate-800 space-y-2.5 text-xs">
+                <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                  {/* Columna Izquierda: Color de capa, Contador de pasadas, Intervalo (mm) */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
+                        Color de capa
+                      </span>
+                      <div
+                        className="w-24 h-5 rounded border border-white/30 flex items-center justify-center font-mono text-[10px] font-bold shadow-inner"
+                        style={{ backgroundColor: selectedLayer.hexColor }}
+                      >
+                        {selectedLayer.code} ·{' '}
+                        {selectedLayer.role === 'ENGRAVE'
+                          ? 'Grabado'
+                          : selectedLayer.role === 'HOLES'
+                            ? 'Orificios'
+                            : 'Corte'}
+                      </div>
+                    </div>
+
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
+                        Contador de pasadas
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={20}
+                        step={1}
+                        aria-label={`Pasadas ${selectedLayer.code}`}
+                        value={selectedLayer.passes}
+                        onChange={(e) =>
+                          handleUpdateLayer(selectedLayer.cutIndex, {
+                            passes: Math.max(1, Number(e.target.value) || 1),
+                          })
+                        }
+                        className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-right font-mono text-xs text-white"
+                      />
+                    </label>
+
+                    {selectedLayer.mode !== 'line' ? (
+                      <label className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-slate-300 whitespace-nowrap">
+                          Intervalo (mm)
+                        </span>
+                        <input
+                          type="number"
+                          min={0.02}
+                          max={1.0}
+                          step={0.001}
+                          aria-label={`Intervalo ${selectedLayer.code}`}
+                          value={selectedLayer.lineIntervalMm}
+                          onChange={(e) => {
+                            const val = Math.max(
+                              0.02,
+                              Math.min(1.0, Number(e.target.value) || 0.073)
+                            );
+                            handleUpdateLayer(selectedLayer.cutIndex, {
+                              lineIntervalMm: roundMm(val, 3),
+                            });
+                          }}
+                          className="w-24 bg-slate-950 border border-cyan-500/50 rounded px-2 py-0.5 text-right font-mono text-xs text-cyan-300 font-bold"
+                        />
+                      </label>
+                    ) : (
+                      <label className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-slate-300 whitespace-nowrap">
+                          Kerf Offset (mm)
+                        </span>
+                        <input
+                          type="number"
+                          min={-1}
+                          max={1}
+                          step={0.02}
+                          aria-label={`Kerf ${selectedLayer.code}`}
+                          value={selectedLayer.kerfOffsetMm ?? 0}
+                          onChange={(e) =>
+                            handleUpdateLayer(selectedLayer.cutIndex, {
+                              kerfOffsetMm: roundMm(Number(e.target.value) || 0, 3),
+                            })
+                          }
+                          className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-right font-mono text-xs text-white"
+                        />
+                      </label>
+                    )}
+                  </div>
+
+                  {/* Columna Derecha: Velocidad (mm/s), Potencia máx. (%), Potencia mín. (%) */}
+                  <div className="space-y-1.5">
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
+                        Velocidad (mm/s)
+                      </span>
+                      <input
+                        type="number"
+                        min={0.1}
+                        max={1000}
+                        step={1}
+                        aria-label={`Velocidad ${selectedLayer.code}`}
+                        placeholder="Ej: 600"
+                        value={selectedLayer.speedMmPerSec ?? ''}
+                        onChange={(e) => {
+                          const val =
+                            e.target.value === '' ? null : Number(e.target.value);
+                          handleUpdateLayer(selectedLayer.cutIndex, {
+                            speedMmPerSec: val,
+                          });
+                        }}
+                        className={`w-24 bg-slate-950 border rounded px-2 py-0.5 text-right font-mono text-xs font-bold ${
+                          selectedLayer.speedMmPerSec === null ||
+                          selectedLayer.speedMmPerSec <= 0
+                            ? 'border-amber-500 text-amber-200'
+                            : 'border-slate-700 text-white'
+                        }`}
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
+                        Potencia máx. (%)
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        aria-label={`Potencia máxima ${selectedLayer.code}`}
+                        placeholder="Ej: 30"
+                        value={selectedLayer.maxPowerPercent ?? ''}
+                        onChange={(e) => {
+                          const val =
+                            e.target.value === '' ? null : Number(e.target.value);
+                          handleUpdateLayer(selectedLayer.cutIndex, {
+                            maxPowerPercent: val,
+                            minPowerPercent:
+                              selectedLayer.minPowerPercent === null && val !== null
+                                ? val
+                                : selectedLayer.minPowerPercent,
+                          });
+                        }}
+                        className={`w-24 bg-slate-950 border rounded px-2 py-0.5 text-right font-mono text-xs font-bold ${
+                          selectedLayer.maxPowerPercent === null ||
+                          selectedLayer.maxPowerPercent <= 0
+                            ? 'border-amber-500 text-amber-200'
+                            : 'border-slate-700 text-white'
+                        }`}
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-slate-300 whitespace-nowrap">
+                        Potencia mín. (%)
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        aria-label={`Potencia mínima ${selectedLayer.code}`}
+                        placeholder="Ej: 30"
+                        value={selectedLayer.minPowerPercent ?? ''}
+                        onChange={(e) => {
+                          const val =
+                            e.target.value === '' ? null : Number(e.target.value);
+                          handleUpdateLayer(selectedLayer.cutIndex, {
+                            minPowerPercent: val,
+                          });
+                        }}
+                        className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-0.5 text-right font-mono text-xs text-white"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {/* Sincronización DPI <-> Intervalo + Presets Rápidos + Botón Editor de Ajustes Avanzados */}
+                <div className="pt-1.5 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-1.5">
+                  {selectedLayer.mode !== 'line' ? (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950/60 border border-cyan-800/60 px-1.5 py-0.5 rounded">
+                        {Math.round(
+                          25.4 / Math.max(0.02, selectedLayer.lineIntervalMm)
+                        )}{' '}
+                        DPI
+                      </span>
+                      {[
+                        { mm: 0.073, label: '0.073 (348 DPI)' },
+                        { mm: 0.08, label: '0.080 (318 DPI)' },
+                        { mm: 0.1, label: '0.100 (254 DPI)' },
+                      ].map((p) => (
+                        <button
+                          key={p.mm}
+                          type="button"
+                          onClick={() =>
+                            handleUpdateLayer(selectedLayer.cutIndex, {
+                              lineIntervalMm: p.mm,
+                            })
+                          }
+                          className={`px-1.5 py-0.5 rounded font-mono text-[9px] border ${
+                            Math.abs(selectedLayer.lineIntervalMm - p.mm) < 0.001
+                              ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200 font-bold'
+                              : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                      <span>Corte Vectorial 1:1</span>
+                      <span>·</span>
+                      <span>Overcut: {selectedLayer.overcutMm ?? 0} mm</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setShowAdvancedLayerSettings(!showAdvancedLayerSettings)
+                    }
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border transition ${
+                      showAdvancedLayerSettings
+                        ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300'
+                        : 'bg-slate-950 border-slate-700 text-slate-300 hover:text-white'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="w-4 h-4 rounded border border-white/30 shrink-0"
-                          style={{ backgroundColor: layer.hexColor }}
-                        />
-                        <span className="font-mono font-bold text-white">
-                          {layer.code}
-                        </span>
-                        <span className="font-semibold text-slate-200">
-                          {layer.name}
-                        </span>
-                      </div>
+                    <Sliders className="w-3 h-3" />
+                    <span>Ajustes Avanzados</span>
+                  </button>
+                </div>
 
-                      <div className="flex items-center gap-1">
-                        <select
-                          aria-label={`Modo de capa ${layer.code}`}
-                          value={layer.mode}
-                          onChange={(e) =>
-                            handleUpdateLayer(layer.cutIndex, {
-                              mode: e.target.value as LightBurnCutMode,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-cyan-300 font-semibold"
-                        >
-                          <option value="fill">Fill (Relleno)</option>
-                          <option value="line">Line (Corte)</option>
-                          <option value="offset_fill">Offset Fill</option>
-                        </select>
-
-                        <button
-                          type="button"
-                          disabled={idx === 0}
-                          onClick={() => handleMoveLayerPriority(layer.cutIndex, 'up')}
-                          title="Subir prioridad (ejecutar antes)"
-                          className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30"
-                        >
-                          <ArrowUp className="w-3 h-3" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={idx === sortedLayers.length - 1}
-                          onClick={() => handleMoveLayerPriority(layer.cutIndex, 'down')}
-                          title="Bajar prioridad (ejecutar después)"
-                          className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30"
-                        >
-                          <ArrowDown className="w-3 h-3" />
-                        </button>
-                      </div>
+                {/* PANEL DESPLEGABLE: EDITOR AVANZADO DE CAPA (CUT SETTINGS EDITOR LIGHTBURN) */}
+                {showAdvancedLayerSettings && (
+                  <div className="p-2.5 rounded-lg bg-slate-950 border border-cyan-900/60 space-y-2 text-[11px]">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-cyan-300">
+                        Editor de Ajustes de Capa ({selectedLayer.code} ·{' '}
+                        {selectedLayer.name})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleUpdateLayer(0, {
+                            mode: 'image',
+                            speedMmPerSec: 600,
+                            maxPowerPercent: 30,
+                            minPowerPercent: 30,
+                            lineIntervalMm: 0.073,
+                            passes: 1,
+                            airAssist: true,
+                          });
+                          handleUpdateLayer(1, {
+                            mode: 'line',
+                            speedMmPerSec: 100,
+                            maxPowerPercent: 100,
+                            minPowerPercent: 100,
+                            passes: 1,
+                            airAssist: true,
+                          });
+                          handleUpdateLayer(2, {
+                            mode: 'line',
+                            speedMmPerSec: 100,
+                            maxPowerPercent: 100,
+                            minPowerPercent: 100,
+                            passes: 1,
+                            airAssist: true,
+                          });
+                          onNotify(
+                            'Cargados valores de tu captura LightBurn: C00 Imagen 600mm/s · 30% · Int 0.073mm (348 DPI) | C01/C02 Línea 100/100.'
+                          );
+                        }}
+                        className="px-2 py-0.5 rounded bg-emerald-950 hover:bg-emerald-900 border border-emerald-600/60 text-emerald-300 text-[10px] font-bold"
+                      >
+                        Cargar Valores Captura LightBurn (600/30 · 0.073)
+                      </button>
                     </div>
 
-                    <div className="grid grid-cols-4 gap-1.5">
-                      <label className="block">
-                        <span className="text-[10px] text-slate-400 block">
-                          Vel. (mm/s)
-                        </span>
-                        <input
-                          type="number"
-                          min={0.1}
-                          max={1000}
-                          step={1}
-                          aria-label={`Velocidad ${layer.code}`}
-                          placeholder="Ej: 200"
-                          value={layer.speedMmPerSec ?? ''}
-                          onChange={(e) => {
-                            const val =
-                              e.target.value === '' ? null : Number(e.target.value);
-                            handleUpdateLayer(layer.cutIndex, {
-                              speedMmPerSec: val,
-                            });
-                          }}
-                          className={`w-full bg-slate-950 border rounded px-2 py-1 text-xs font-mono ${
-                            layer.speedMmPerSec === null || layer.speedMmPerSec <= 0
-                              ? 'border-amber-500/80 text-amber-200'
-                              : 'border-slate-700 text-white'
-                          }`}
-                        />
-                      </label>
-
-                      <label className="block">
-                        <span className="text-[10px] text-slate-400 block">
-                          Pot. Máx (%)
-                        </span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={100}
-                          step={0.5}
-                          aria-label={`Potencia máxima ${layer.code}`}
-                          placeholder="Ej: 25"
-                          value={layer.maxPowerPercent ?? ''}
-                          onChange={(e) => {
-                            const val =
-                              e.target.value === '' ? null : Number(e.target.value);
-                            handleUpdateLayer(layer.cutIndex, {
-                              maxPowerPercent: val,
-                              minPowerPercent:
-                                layer.minPowerPercent === null && val !== null
-                                  ? val
-                                  : layer.minPowerPercent,
-                            });
-                          }}
-                          className={`w-full bg-slate-950 border rounded px-2 py-1 text-xs font-mono ${
-                            layer.maxPowerPercent === null || layer.maxPowerPercent <= 0
-                              ? 'border-amber-500/80 text-amber-200'
-                              : 'border-slate-700 text-white'
-                          }`}
-                        />
-                      </label>
-
-                      <label className="block">
-                        <span className="text-[10px] text-slate-400 block">
-                          Pot. Mín (%)
-                        </span>
-                        <input
-                          type="number"
-                          min={0}
-                          max={100}
-                          step={0.5}
-                          aria-label={`Potencia mínima ${layer.code}`}
-                          placeholder="Esquinas"
-                          value={layer.minPowerPercent ?? ''}
-                          onChange={(e) => {
-                            const val =
-                              e.target.value === '' ? null : Number(e.target.value);
-                            handleUpdateLayer(layer.cutIndex, {
-                              minPowerPercent: val,
-                            });
-                          }}
-                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-white"
-                        />
-                      </label>
-
-                      <label className="block">
-                        <span className="text-[10px] text-slate-400 block">
-                          Pasadas
-                        </span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={20}
-                          step={1}
-                          aria-label={`Pasadas ${layer.code}`}
-                          value={layer.passes}
-                          onChange={(e) =>
-                            handleUpdateLayer(layer.cutIndex, {
-                              passes: Math.max(1, Number(e.target.value) || 1),
-                            })
-                          }
-                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-white"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[11px]">
-                      {layer.mode !== 'line' ? (
-                        <label className="flex items-center gap-1.5 text-slate-300">
-                          <span>Intervalo:</span>
+                    {selectedLayer.mode !== 'line' ? (
+                      <div className="grid grid-cols-3 gap-2">
+                        <label className="col-span-1">
+                          <span className="text-[10px] text-slate-400 block">
+                            Modo de Imagen / Tramado
+                          </span>
                           <select
-                            value={layer.lineIntervalMm}
+                            value={selectedLayer.imageDitherMode ?? 'jarvis'}
                             onChange={(e) =>
-                              handleUpdateLayer(layer.cutIndex, {
-                                lineIntervalMm: Number(e.target.value),
+                              handleUpdateLayer(selectedLayer.cutIndex, {
+                                imageDitherMode:
+                                  e.target.value as LightBurnImageDitherMode,
                               })
                             }
-                            className="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 font-mono text-[10px] text-cyan-300"
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-white"
                           >
-                            <option value={0.08}>0.08 mm (318 DPI)</option>
-                            <option value={0.1}>0.10 mm (254 DPI)</option>
-                            <option value={0.125}>0.125 mm (203 DPI)</option>
-                            <option value={0.15}>0.15 mm (169 DPI)</option>
+                            <option value="threshold">Umbral (Threshold)</option>
+                            <option value="jarvis">Jarvis (Difusión)</option>
+                            <option value="stucki">Stucki</option>
+                            <option value="halftone">Semitono (Halftone)</option>
+                            <option value="grayscale">Escala de Grises</option>
+                            <option value="passthrough">Pass-Through</option>
                           </select>
                         </label>
-                      ) : (
-                        <span className="text-[10px] text-slate-400">
-                          Vector continuo 1:1
-                        </span>
-                      )}
 
-                      <div className="flex items-center gap-3">
-                        <label className="flex items-center gap-1 cursor-pointer text-slate-300">
+                        <label>
+                          <span className="text-[10px] text-slate-400 block">
+                            Ángulo Barrido (°)
+                          </span>
                           <input
-                            type="checkbox"
-                            checked={layer.airAssist}
+                            type="number"
+                            min={-180}
+                            max={180}
+                            step={15}
+                            value={selectedLayer.scanAngleDeg}
                             onChange={(e) =>
-                              handleUpdateLayer(layer.cutIndex, {
-                                airAssist: e.target.checked,
+                              handleUpdateLayer(selectedLayer.cutIndex, {
+                                scanAngleDeg: Number(e.target.value) || 0,
                               })
                             }
-                            className="accent-cyan-500"
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
                           />
-                          <Wind className="w-3 h-3 text-cyan-400" />
-                          <span>Aire</span>
                         </label>
 
-                        <label className="flex items-center gap-1 cursor-pointer text-slate-300">
+                        <label>
+                          <span className="text-[10px] text-slate-400 block">
+                            Overscan (%)
+                          </span>
                           <input
-                            type="checkbox"
-                            checked={layer.outputEnabled}
+                            type="number"
+                            min={0}
+                            max={20}
+                            step={0.5}
+                            value={selectedLayer.overscanPercent ?? 2.5}
                             onChange={(e) =>
-                              handleUpdateLayer(layer.cutIndex, {
-                                outputEnabled: e.target.checked,
+                              handleUpdateLayer(selectedLayer.cutIndex, {
+                                overscanPercent: Math.max(
+                                  0,
+                                  Number(e.target.value) || 0
+                                ),
                               })
                             }
-                            className="accent-emerald-500"
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
                           />
-                          <span>Salida</span>
                         </label>
 
-                        <label className="flex items-center gap-1 cursor-pointer text-slate-300">
-                          <input
-                            type="checkbox"
-                            checked={layer.visible}
-                            onChange={(e) =>
-                              handleUpdateLayer(layer.cutIndex, {
-                                visible: e.target.checked,
-                              })
-                            }
-                            className="accent-cyan-500"
-                          />
-                          <span>Ver</span>
+                        <label className="col-span-3 flex items-center gap-4 pt-1">
+                          <span className="flex items-center gap-1.5 cursor-pointer text-slate-200">
+                            <input
+                              type="checkbox"
+                              checked={selectedLayer.bidirectional ?? true}
+                              onChange={(e) =>
+                                handleUpdateLayer(selectedLayer.cutIndex, {
+                                  bidirectional: e.target.checked,
+                                })
+                              }
+                              className="accent-emerald-500"
+                            />
+                            <span>Barrido Bidireccional</span>
+                          </span>
+
+                          <span className="flex items-center gap-1.5 cursor-pointer text-slate-200">
+                            <input
+                              type="checkbox"
+                              checked={selectedLayer.crossHatch ?? false}
+                              onChange={(e) =>
+                                handleUpdateLayer(selectedLayer.cutIndex, {
+                                  crossHatch: e.target.checked,
+                                })
+                              }
+                              className="accent-cyan-500"
+                            />
+                            <span>Pasada Cruzada (Cross-hatch 90°)</span>
+                          </span>
                         </label>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-2">
+                        <label>
+                          <span className="text-[10px] text-slate-400 block">
+                            Kerf Offset (mm)
+                          </span>
+                          <input
+                            type="number"
+                            min={-1}
+                            max={1}
+                            step={0.02}
+                            value={selectedLayer.kerfOffsetMm ?? 0}
+                            onChange={(e) =>
+                              handleUpdateLayer(selectedLayer.cutIndex, {
+                                kerfOffsetMm: roundMm(
+                                  Number(e.target.value) || 0,
+                                  3
+                                ),
+                              })
+                            }
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                          />
+                        </label>
+                        <label>
+                          <span className="text-[10px] text-slate-400 block">
+                            Sobrecorte / Overcut (mm)
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={5}
+                            step={0.1}
+                            value={selectedLayer.overcutMm ?? 0}
+                            onChange={(e) =>
+                              handleUpdateLayer(selectedLayer.cutIndex, {
+                                overcutMm: Math.max(0, Number(e.target.value) || 0),
+                              })
+                            }
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                          />
+                        </label>
+                        <label>
+                          <span className="text-[10px] text-slate-400 block">
+                            Pausa Perforación (ms)
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={2000}
+                            step={25}
+                            value={selectedLayer.startPauseMs ?? 0}
+                            onChange={(e) =>
+                              handleUpdateLayer(selectedLayer.cutIndex, {
+                                startPauseMs: Math.max(
+                                  0,
+                                  Math.round(Number(e.target.value) || 0)
+                                ),
+                              })
+                            }
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                          />
+                        </label>
+                      </div>
+                    )}
                   </div>
-                );
-              })}
-            </div>
+                )}
+
+                {/* Avisos rápidos de capas aún no configuradas para poder editarlas sin cambiar de fila */}
+                <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                  {sortedLayers.map((l) => {
+                    const unconfigured =
+                      l.outputEnabled &&
+                      (l.speedMmPerSec === null || l.maxPowerPercent === null);
+                    return (
+                      <button
+                        key={l.cutIndex}
+                        type="button"
+                        onClick={() => setSelectedLayerCutIndex(l.cutIndex)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono border flex items-center gap-1 ${
+                          selectedLayer.cutIndex === l.cutIndex
+                            ? 'bg-sky-500/20 border-sky-400 text-white font-bold'
+                            : unconfigured
+                              ? 'bg-amber-950/40 border-amber-600/60 text-amber-300'
+                              : 'bg-slate-950 border-slate-800 text-slate-400'
+                        }`}
+                      >
+                        <span
+                          className="w-2 h-2 rounded-full"
+                          style={{ backgroundColor: l.hexColor }}
+                        />
+                        <span>
+                          {l.code}:{' '}
+                          {l.speedMmPerSec !== null && l.maxPowerPercent !== null
+                            ? `${l.speedMmPerSec}/${l.maxPowerPercent}`
+                            : 'Falta vel/pot'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* SECCIÓN 3: PANEL LÁSER Y CARGA DIRECTA A VANK 9060 (RUIDA RDC8445S) */}
-          <div className="p-3.5 space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-white flex items-center gap-1.5">
-                <Target className="w-4 h-4 text-emerald-400" />
-                <span>Control Láser — Vank 9060 (Ruida)</span>
-              </h3>
+          {/* SECCIÓN 3: DOCK INFERIOR DERECHO CON PESTAÑAS "Láser" | "Biblioteca de materiales" */}
+          <div className="p-3 space-y-2.5 flex-1 flex flex-col">
+            {/* Pestañas estilo LightBurn Pro 2.2 */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setBottomDockTab('laser')}
+                  className={`px-3 py-1 rounded-t text-xs font-bold border-b-2 transition ${
+                    bottomDockTab === 'laser'
+                      ? 'bg-slate-900 border-orange-500 text-white'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Láser
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBottomDockTab('material_library')}
+                  className={`flex items-center gap-1 px-3 py-1 rounded-t text-xs font-bold border-b-2 transition ${
+                    bottomDockTab === 'material_library'
+                      ? 'bg-slate-900 border-orange-500 text-white'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Biblioteca de materiales ({materialLibrary.length})</span>
+                </button>
+              </div>
+
               <span
                 className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                   validation.isValidForMachineSend
@@ -2332,265 +3123,868 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 }`}
               >
                 {validation.isValidForMachineSend
-                  ? '✓ Listo para Vank 9060'
+                  ? 'Ready · Vank 9060'
                   : validation.isValidForExport
                     ? 'Falta vel/potencia Ruida'
                     : 'Revisar geometría'}
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs">
-              <div className="space-y-2">
-                <label className="block">
-                  <span className="text-[10px] text-slate-400 block mb-1">
-                    Comenzar desde (Start From)
-                  </span>
-                  <select
-                    aria-label="Comenzar desde"
-                    value={workbenchConfig.startFromMode}
-                    onChange={(e) =>
-                      onUpdateConfig({
-                        ...workbenchConfig,
-                        startFromMode: e.target.value as StartFromMode,
-                      })
-                    }
-                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white"
-                  >
-                    <option value="user_origin">Origen de Usuario (Ruida Origin)</option>
-                    <option value="current_position">Posición Actual del Cabezal</option>
-                    <option value="absolute_coords">Coordenadas Absolutas (Mesa)</option>
-                  </select>
-                </label>
-
-                <label className="block">
-                  <span className="text-[10px] text-slate-400 block mb-1">
-                    Esquina Home de la Vank
-                  </span>
-                  <select
-                    aria-label="Esquina Home de la Vank"
-                    value={workbenchConfig.machineOriginCorner}
-                    onChange={(e) =>
-                      onUpdateConfig({
-                        ...workbenchConfig,
-                        machineOriginCorner: e.target.value as MachineOriginCorner,
-                      })
-                    }
-                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
-                  >
-                    <option value="top_right">Superior Derecha (Estándar Ruida)</option>
-                    <option value="top_left">Superior Izquierda</option>
-                    <option value="bottom_left">Inferior Izquierda</option>
-                    <option value="bottom_right">Inferior Derecha</option>
-                  </select>
-                </label>
-              </div>
-
-              <div className="flex flex-col items-center justify-center">
-                <span className="text-[10px] text-slate-400 mb-1.5">
-                  Origen del Trabajo (Job Origin)
-                </span>
-                <div className="grid grid-cols-3 gap-1.5 p-2 rounded-lg bg-slate-950 border border-slate-800">
-                  {JOB_ORIGIN_ANCHORS.map((anchor) => {
-                    const active = workbenchConfig.jobOriginAnchor === anchor.id;
-                    return (
-                      <button
-                        key={anchor.id}
-                        type="button"
-                        title={anchor.label}
-                        aria-label={`Origen del trabajo: ${anchor.label}`}
-                        onClick={() =>
+            {bottomDockTab === 'laser' ? (
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-2 gap-3 p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs">
+                  <div className="space-y-2">
+                    <label className="block">
+                      <span className="text-[10px] text-slate-400 block mb-1">
+                        Iniciar desde (Start From)
+                      </span>
+                      <select
+                        aria-label="Comenzar desde"
+                        value={workbenchConfig.startFromMode}
+                        onChange={(e) =>
                           onUpdateConfig({
                             ...workbenchConfig,
-                            jobOriginAnchor: anchor.id,
+                            startFromMode: e.target.value as StartFromMode,
                           })
                         }
-                        className={`w-5 h-5 rounded flex items-center justify-center border transition ${
-                          active
-                            ? 'bg-emerald-500 border-white text-slate-950 shadow'
-                            : 'bg-slate-800 border-slate-700 hover:bg-slate-700'
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white"
+                      >
+                        <option value="user_origin">Origen del usuario</option>
+                        <option value="current_position">Posición actual</option>
+                        <option value="absolute_coords">Coordenadas absolutas</option>
+                      </select>
+                    </label>
+
+                    <label className="block">
+                      <span className="text-[10px] text-slate-400 block mb-1">
+                        Esquina Home de la Vank
+                      </span>
+                      <select
+                        aria-label="Esquina Home de la Vank"
+                        value={workbenchConfig.machineOriginCorner}
+                        onChange={(e) =>
+                          onUpdateConfig({
+                            ...workbenchConfig,
+                            machineOriginCorner:
+                              e.target.value as MachineOriginCorner,
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
+                      >
+                        <option value="top_right">
+                          Superior Derecha (Estándar Ruida)
+                        </option>
+                        <option value="top_left">Superior Izquierda</option>
+                        <option value="bottom_left">Inferior Izquierda</option>
+                        <option value="bottom_right">Inferior Derecha</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="flex flex-col items-center justify-center">
+                    <span className="text-[10px] text-slate-400 mb-1.5">
+                      Origen del trabajo
+                    </span>
+                    <div className="grid grid-cols-3 gap-1.5 p-2 rounded-lg bg-slate-950 border border-slate-800">
+                      {JOB_ORIGIN_ANCHORS.map((anchor) => {
+                        const active =
+                          workbenchConfig.jobOriginAnchor === anchor.id;
+                        return (
+                          <button
+                            key={anchor.id}
+                            type="button"
+                            title={anchor.label}
+                            aria-label={`Origen del trabajo: ${anchor.label}`}
+                            onClick={() =>
+                              onUpdateConfig({
+                                ...workbenchConfig,
+                                jobOriginAnchor: anchor.id,
+                              })
+                            }
+                            className={`w-5 h-5 rounded-full flex items-center justify-center border transition ${
+                              active
+                                ? 'bg-emerald-500 border-white text-slate-950 shadow'
+                                : 'bg-slate-800 border-slate-700 hover:bg-slate-700'
+                            }`}
+                          >
+                            <span
+                              className={`w-2 h-2 rounded-full ${
+                                active ? 'bg-slate-950' : 'bg-slate-400'
+                              }`}
+                            />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Dispositivo Vank 9060 (192.168.0.195) + Nombre de archivo */}
+                <div className="grid grid-cols-3 gap-2 p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs">
+                  <label className="col-span-1">
+                    <span className="text-[10px] text-slate-400 block">
+                      Dispositivo / IP Vank 9060
+                    </span>
+                    <input
+                      type="text"
+                      value={workbenchConfig.ruidaIpAddress}
+                      onChange={(e) =>
+                        onUpdateConfig({
+                          ...workbenchConfig,
+                          ruidaIpAddress: e.target.value,
+                        })
+                      }
+                      placeholder="192.168.0.195"
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-cyan-300"
+                    />
+                  </label>
+                  <label className="col-span-1">
+                    <span className="text-[10px] text-slate-400 block">
+                      Puerto UDP Ruida
+                    </span>
+                    <input
+                      type="number"
+                      value={workbenchConfig.ruidaPort}
+                      onChange={(e) =>
+                        onUpdateConfig({
+                          ...workbenchConfig,
+                          ruidaPort: Number(e.target.value) || 50200,
+                        })
+                      }
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-slate-300"
+                    />
+                  </label>
+                  <label className="col-span-1">
+                    <span className="text-[10px] text-slate-400 block">
+                      Nombre de archivo
+                    </span>
+                    <input
+                      type="text"
+                      maxLength={8}
+                      value={workbenchConfig.ruidaJobName}
+                      onChange={(e) =>
+                        onUpdateConfig({
+                          ...workbenchConfig,
+                          ruidaJobName: e.target.value.toUpperCase(),
+                        })
+                      }
+                      placeholder="ASTRA01"
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-emerald-300 uppercase"
+                    />
+                  </label>
+                </div>
+
+                {validation.issues.length > 0 && (
+                  <div className="space-y-1 max-h-24 overflow-y-auto">
+                    {validation.issues.map((issue, idx) => (
+                      <div
+                        key={idx}
+                        className={`p-2 rounded text-[11px] flex items-start gap-1.5 border ${
+                          issue.severity === 'error'
+                            ? 'bg-red-950/40 border-red-800 text-red-200'
+                            : 'bg-amber-950/40 border-amber-800 text-amber-200'
                         }`}
                       >
-                        <span
-                          className={`w-2 h-2 rounded-full ${
-                            active ? 'bg-slate-950' : 'bg-slate-400'
-                          }`}
-                        />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
+                        {issue.severity === 'error' ? (
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-400 mt-0.5" />
+                        ) : (
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-400 mt-0.5" />
+                        )}
+                        <span>{issue.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
-            <div className="grid grid-cols-3 gap-2 p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 text-xs">
-              <label className="col-span-1">
-                <span className="text-[10px] text-slate-400 block">
-                  IP Vank 9060 (LAN)
-                </span>
-                <input
-                  type="text"
-                  value={workbenchConfig.ruidaIpAddress}
-                  onChange={(e) =>
-                    onUpdateConfig({
-                      ...workbenchConfig,
-                      ruidaIpAddress: e.target.value,
-                    })
-                  }
-                  placeholder="192.168.0.195"
-                  className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-cyan-300"
-                />
-              </label>
-              <label className="col-span-1">
-                <span className="text-[10px] text-slate-400 block">
-                  Puerto UDP Ruida
-                </span>
-                <input
-                  type="number"
-                  value={workbenchConfig.ruidaPort}
-                  onChange={(e) =>
-                    onUpdateConfig({
-                      ...workbenchConfig,
-                      ruidaPort: Number(e.target.value) || 50200,
-                    })
-                  }
-                  className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-slate-300"
-                />
-              </label>
-              <label className="col-span-1">
-                <span className="text-[10px] text-slate-400 block">
-                  Nombre en Pantalla
-                </span>
-                <input
-                  type="text"
-                  maxLength={8}
-                  value={workbenchConfig.ruidaJobName}
-                  onChange={(e) =>
-                    onUpdateConfig({
-                      ...workbenchConfig,
-                      ruidaJobName: e.target.value.toUpperCase(),
-                    })
-                  }
-                  placeholder="ASTRA01"
-                  className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-emerald-300 uppercase"
-                />
-              </label>
-            </div>
+                <label className="flex items-start gap-2 p-2 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={safetyConfirmed}
+                    onChange={(e) => setSafetyConfirmed(e.target.checked)}
+                    className="mt-0.5 accent-emerald-500"
+                  />
+                  <span>
+                    <strong>Verificación de operador:</strong> Confirmo material libre de PVC, foco y altura Z ajustados, chiller/extracción encendidos y parámetros de velocidad/potencia validados.
+                  </span>
+                </label>
 
-            {validation.issues.length > 0 && (
-              <div className="space-y-1 max-h-28 overflow-y-auto">
-                {validation.issues.map((issue, idx) => (
+                {ruidaStatusMsg && (
                   <div
-                    key={idx}
-                    className={`p-2 rounded text-[11px] flex items-start gap-1.5 border ${
-                      issue.severity === 'error'
-                        ? 'bg-red-950/40 border-red-800 text-red-200'
-                        : 'bg-amber-950/40 border-amber-800 text-amber-200'
+                    role="alert"
+                    className={`p-2 rounded-lg border text-xs ${
+                      ruidaStatusMsg.type === 'success'
+                        ? 'bg-emerald-950/60 border-emerald-700 text-emerald-200'
+                        : ruidaStatusMsg.type === 'error'
+                          ? 'bg-red-950/60 border-red-700 text-red-200'
+                          : 'bg-cyan-950/60 border-cyan-700 text-cyan-200'
                     }`}
                   >
-                    {issue.severity === 'error' ? (
-                      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-400 mt-0.5" />
-                    ) : (
-                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-400 mt-0.5" />
-                    )}
-                    <span>{issue.message}</span>
+                    {ruidaStatusMsg.text}
                   </div>
-                ))}
+                )}
+
+                {/* Botonera de envío estilo LightBurn ("Enviar", "Guardar RD file", "Abrir en LightBurn") */}
+                <div className="space-y-1.5 pt-0.5">
+                  <button
+                    type="button"
+                    disabled={!validation.isValidForMachineSend || isSendingToRuida}
+                    onClick={() => void handleSendToVankRuida()}
+                    className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition"
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>
+                      {isSendingToRuida
+                        ? 'Enviando a Ruida RDC8445S...'
+                        : `Enviar a Vank 9060 (${workbenchConfig.ruidaIpAddress})`}
+                    </span>
+                  </button>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      disabled={!validation.isValidForExport}
+                      onClick={() => void handleOpenOrSaveLbrn2(true)}
+                      className="py-2 px-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>
+                        {isTauri()
+                          ? 'Abrir en LightBurn (.lbrn2)'
+                          : 'Guardar Proyecto (.lbrn2)'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!validation.isValidForMachineSend}
+                      onClick={handleDownloadRdFile}
+                      className="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-emerald-300 font-bold text-xs flex items-center justify-center gap-1.5 transition"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Guardar RD file (USB)</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      disabled={!validation.isValidForExport}
+                      onClick={() => void handleOpenOrSaveLbrn2(false)}
+                      className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 border border-slate-800 text-slate-300 font-semibold text-[11px] flex items-center justify-center gap-1.5"
+                    >
+                      <Save className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Guardar .lbrn2 en Carpeta</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!validation.isValidForExport}
+                      onClick={handleExportWorkbenchSvg}
+                      className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 border border-slate-800 text-slate-300 font-semibold text-[11px] flex items-center justify-center gap-1.5"
+                    >
+                      <FileCode2 className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Exportar Tirada (.SVG)</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* PESTAÑA: BIBLIOTECA DE MATERIALES (ESTILO LIGHTBURN) */
+              <div className="space-y-2.5 text-xs">
+                <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-cyan-300">
+                      Guardar Calibración Actual en Biblioteca
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowCalibrationMatrixModal(true)}
+                      className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/60 text-amber-300 text-[10px] font-bold"
+                    >
+                      🧪 Abrir Matriz Vel×Pot
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <input
+                      type="text"
+                      value={libraryEntryName}
+                      onChange={(e) => setLibraryEntryName(e.target.value)}
+                      placeholder="Ej: Ecocuero 73cm — Grabado Nítido"
+                      className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white"
+                    />
+                    <input
+                      type="text"
+                      value={libraryNotes}
+                      onChange={(e) => setLibraryNotes(e.target.value)}
+                      placeholder="Notas (ej: Int 0.073mm · 348 DPI)"
+                      className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSaveCurrentLayersToLibrary}
+                    className="w-full py-1.5 px-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[11px] flex items-center justify-center gap-1.5"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>+ Guardar Capas Actuales (C00/C01/C02) en Biblioteca</span>
+                  </button>
+                </div>
+
+                {/* Lista de presets guardados en la Biblioteca de Materiales */}
+                <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+                  {materialLibrary.length === 0 ? (
+                    <div className="p-3 rounded-lg bg-slate-900/50 border border-slate-800 text-slate-400 text-[11px] text-center">
+                      Todavía no guardaste presets en la Biblioteca de Materiales.
+                      Configurá C00/C01/C02 o usá la Matriz de Calibración y guardalos acá.
+                    </div>
+                  ) : (
+                    materialLibrary.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="p-2 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-bold text-white truncate">
+                            {entry.materialName}
+                          </div>
+                          <div className="text-[10px] font-mono text-cyan-300 truncate">
+                            C00: {entry.engrave.speedMmPerSec}mm/s ·{' '}
+                            {entry.engrave.maxPowerPercent}% (Int{' '}
+                            {entry.engrave.lineIntervalMm}mm) | C02:{' '}
+                            {entry.cut.speedMmPerSec}mm/s ·{' '}
+                            {entry.cut.maxPowerPercent}%
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleApplyLibraryEntry(entry)}
+                            className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px]"
+                          >
+                            Aplicar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteLibraryEntry(entry.id)}
+                            className="p-1 text-slate-400 hover:text-red-400"
+                            title="Eliminar preset"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             )}
-
-            <label className="flex items-start gap-2 p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={safetyConfirmed}
-                onChange={(e) => setSafetyConfirmed(e.target.checked)}
-                className="mt-0.5 accent-emerald-500"
-              />
-              <span>
-                <strong>Verificación de operador:</strong> Confirmo material libre de PVC, foco y altura Z ajustados, chiller/extracción encendidos y parámetros de velocidad/potencia validados.
-              </span>
-            </label>
-
-            {ruidaStatusMsg && (
-              <div
-                role="alert"
-                className={`p-2.5 rounded-lg border text-xs ${
-                  ruidaStatusMsg.type === 'success'
-                    ? 'bg-emerald-950/60 border-emerald-700 text-emerald-200'
-                    : ruidaStatusMsg.type === 'error'
-                      ? 'bg-red-950/60 border-red-700 text-red-200'
-                      : 'bg-cyan-950/60 border-cyan-700 text-cyan-200'
-                }`}
-              >
-                {ruidaStatusMsg.text}
-              </div>
-            )}
-
-            <div className="space-y-2 pt-1">
-              <button
-                type="button"
-                disabled={!validation.isValidForMachineSend || isSendingToRuida}
-                onClick={() => void handleSendToVankRuida()}
-                className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition"
-              >
-                <Send className="w-4 h-4" />
-                <span>
-                  {isSendingToRuida
-                    ? 'Enviando a Ruida RDC8445S...'
-                    : `Cargar Tirada en Memoria Vank 9060 (${workbenchConfig.ruidaIpAddress})`}
-                </span>
-              </button>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  disabled={!validation.isValidForExport}
-                  onClick={() => void handleOpenOrSaveLbrn2(true)}
-                  className="py-2 px-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>
-                    {isTauri()
-                      ? 'Abrir en LightBurn (.lbrn2)'
-                      : 'Guardar Proyecto (.lbrn2)'}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={!validation.isValidForMachineSend}
-                  onClick={handleDownloadRdFile}
-                  className="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-emerald-300 font-bold text-xs flex items-center justify-center gap-1.5 transition"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Descargar .RD (USB)</span>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  disabled={!validation.isValidForExport}
-                  onClick={() => void handleOpenOrSaveLbrn2(false)}
-                  className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 border border-slate-800 text-slate-300 font-semibold text-[11px] flex items-center justify-center gap-1.5"
-                >
-                  <Save className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Guardar .lbrn2 en Carpeta</span>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={!validation.isValidForExport}
-                  onClick={handleExportWorkbenchSvg}
-                  className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 border border-slate-800 text-slate-300 font-semibold text-[11px] flex items-center justify-center gap-1.5"
-                >
-                  <FileCode2 className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Exportar Tirada (.SVG)</span>
-                </button>
-              </div>
-            </div>
           </div>
         </aside>
       </div>
+
+      {/* 3. BARRA INFERIOR DE PALETA DE 30 COLORES LIGHTBURN (00..29 + T1, T2) */}
+      <footer className="h-8 bg-[#0e131b] border-t border-slate-800 px-3 flex items-center justify-between gap-2 text-[10px] shrink-0 overflow-x-auto">
+        <div className="flex items-center gap-0.5">
+          {LIGHTBURN_PALETTE_COLORS.map((c) => {
+            const isActiveJobLayer = c.index <= 2;
+            const isSelected = selectedLayerCutIndex === c.index;
+            return (
+              <button
+                key={c.code}
+                type="button"
+                onClick={() => {
+                  if (isActiveJobLayer) {
+                    setSelectedLayerCutIndex(c.index);
+                  }
+                }}
+                title={
+                  isActiveJobLayer
+                    ? `Seleccionar capa C${c.code}`
+                    : `Color LightBurn C${c.code} (Usado en Matriz de Calibración)`
+                }
+                className={`w-5 h-5 rounded-sm font-mono text-[9px] font-bold flex items-center justify-center border transition ${
+                  isSelected
+                    ? 'ring-2 ring-white border-white scale-110 z-10'
+                    : isActiveJobLayer
+                      ? 'border-white/50 opacity-100 hover:scale-105'
+                      : 'border-slate-700/60 opacity-65'
+                }`}
+                style={{
+                  backgroundColor: c.hex,
+                  color:
+                    c.index === 4 || c.index === 6 || c.index === 11 || c.index === 17
+                      ? '#000000'
+                      : '#ffffff',
+                }}
+              >
+                {c.code}
+              </button>
+            );
+          })}
+          <span className="w-5 h-5 rounded-sm font-mono text-[9px] font-bold flex items-center justify-center bg-orange-500 text-white ml-1">
+            T1
+          </span>
+          <span className="w-5 h-5 rounded-sm font-mono text-[9px] font-bold flex items-center justify-center bg-sky-500 text-white">
+            T2
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3 font-mono text-slate-400 whitespace-nowrap">
+          <span>
+            Dispositivo: <strong className="text-white">Vank 9060</strong> (
+            {workbenchConfig.ruidaIpAddress})
+          </span>
+          <span>·</span>
+          <span>
+            Tirada: {validation.totalPieces} u. ({rollMetrics.usedLengthCm} cm)
+          </span>
+        </div>
+      </footer>
+
+      {/* 4. MODAL INTERACTIVO: GENERADOR DE MATRIZ DE CALIBRACIÓN (POTENCIA × VELOCIDAD ESTILO LIGHTBURN) */}
+      {showCalibrationMatrixModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Generador de Matriz de Calibración de Potencia y Velocidad"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-4xl bg-[#0d121a] border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+            <div className="px-4 py-3 bg-gradient-to-r from-slate-900 to-amber-500/20 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FlaskConical className="w-5 h-5 text-amber-400" />
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    Generador de Matriz de Calibración (Potencia × Velocidad) — Vank 9060
+                  </h3>
+                  <p className="text-[11px] text-slate-300">
+                    Probá una grilla N×M en un retazo de {material.name}, hacé clic en la celda que mejor quedó y aplicala directo a tu capa
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCalibrationMatrixModal(false)}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto grid grid-cols-1 lg:grid-cols-12 gap-4 text-xs">
+              {/* Controles de rango de Velocidad, Potencia e Intervalo */}
+              <div className="lg:col-span-5 space-y-3">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCalibrationConfig({ ...DEFAULT_ENGRAVE_TEST_CONFIG });
+                      setSelectedCalibrationCell(null);
+                    }}
+                    className={`py-2 px-2.5 rounded-lg font-bold text-xs border transition ${
+                      calibrationConfig.testType === 'engrave_grid'
+                        ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                        : 'bg-slate-900 border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    Matriz de Grabado (C00)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCalibrationConfig({ ...DEFAULT_CUT_TEST_CONFIG });
+                      setSelectedCalibrationCell(null);
+                    }}
+                    className={`py-2 px-2.5 rounded-lg font-bold text-xs border transition ${
+                      calibrationConfig.testType === 'cut_grid'
+                        ? 'bg-red-500/20 border-red-400 text-red-200'
+                        : 'bg-slate-900 border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    Matriz de Corte (C01 / C02)
+                  </button>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2.5">
+                  <div className="font-bold text-slate-200">
+                    1. Rango de Velocidad — Filas (mm/s)
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Vel. Mín (mm/s)
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={1000}
+                        value={calibrationConfig.minSpeedMmS}
+                        onChange={(e) =>
+                          setCalibrationConfig({
+                            ...calibrationConfig,
+                            minSpeedMmS: Math.max(1, Number(e.target.value) || 10),
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                      />
+                    </label>
+                    <label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Vel. Máx (mm/s)
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={1000}
+                        value={calibrationConfig.maxSpeedMmS}
+                        onChange={(e) =>
+                          setCalibrationConfig({
+                            ...calibrationConfig,
+                            maxSpeedMmS: Math.max(1, Number(e.target.value) || 100),
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                      />
+                    </label>
+                    <label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Filas (2–5)
+                      </span>
+                      <input
+                        type="number"
+                        min={2}
+                        max={5}
+                        value={calibrationConfig.speedSteps}
+                        onChange={(e) =>
+                          setCalibrationConfig({
+                            ...calibrationConfig,
+                            speedSteps: Math.max(
+                              2,
+                              Math.min(5, Number(e.target.value) || 5)
+                            ),
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-cyan-300"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="font-bold text-slate-200 pt-1">
+                    2. Rango de Potencia — Columnas (%)
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Pot. Mín (%)
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={calibrationConfig.minPowerPercent}
+                        onChange={(e) =>
+                          setCalibrationConfig({
+                            ...calibrationConfig,
+                            minPowerPercent: Math.max(
+                              1,
+                              Math.min(100, Number(e.target.value) || 10)
+                            ),
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                      />
+                    </label>
+                    <label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Pot. Máx (%)
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={calibrationConfig.maxPowerPercent}
+                        onChange={(e) =>
+                          setCalibrationConfig({
+                            ...calibrationConfig,
+                            maxPowerPercent: Math.max(
+                              1,
+                              Math.min(100, Number(e.target.value) || 50)
+                            ),
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                      />
+                    </label>
+                    <label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Columnas (2–5)
+                      </span>
+                      <input
+                        type="number"
+                        min={2}
+                        max={5}
+                        value={calibrationConfig.powerSteps}
+                        onChange={(e) =>
+                          setCalibrationConfig({
+                            ...calibrationConfig,
+                            powerSteps: Math.max(
+                              2,
+                              Math.min(5, Number(e.target.value) || 5)
+                            ),
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-amber-300"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 pt-1">
+                    <label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Intervalo (mm)
+                      </span>
+                      <input
+                        type="number"
+                        min={0.03}
+                        max={0.5}
+                        step={0.001}
+                        value={calibrationConfig.lineIntervalMm}
+                        onChange={(e) =>
+                          setCalibrationConfig({
+                            ...calibrationConfig,
+                            lineIntervalMm: roundMm(
+                              Math.max(0.03, Number(e.target.value) || 0.073),
+                              3
+                            ),
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-cyan-300"
+                      />
+                    </label>
+                    <label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Muestra (mm)
+                      </span>
+                      <input
+                        type="number"
+                        min={5}
+                        max={25}
+                        value={calibrationConfig.cellSizeMm}
+                        onChange={(e) =>
+                          setCalibrationConfig({
+                            ...calibrationConfig,
+                            cellSizeMm: Math.max(5, Number(e.target.value) || 10),
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-white"
+                      />
+                    </label>
+                    <label>
+                      <span className="text-[10px] text-slate-400 block">
+                        Capa Destino
+                      </span>
+                      <select
+                        value={calibrationConfig.targetRole}
+                        onChange={(e) =>
+                          setCalibrationConfig({
+                            ...calibrationConfig,
+                            targetRole: e.target.value as
+                              | 'ENGRAVE'
+                              | 'HOLES'
+                              | 'CUT',
+                          })
+                        }
+                        className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-white"
+                      >
+                        <option value="ENGRAVE">C00 Grabado</option>
+                        <option value="HOLES">C01 Orificios</option>
+                        <option value="CUT">C02 Corte Ext.</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="text-[11px] text-slate-400 font-mono pt-1">
+                    Tamaño total del retazo:{' '}
+                    <strong className="text-emerald-300">
+                      {calibrationGrid.totalWidthMm} × {calibrationGrid.totalHeightMm} mm
+                    </strong>{' '}
+                    ({calibrationGrid.cells.length} muestras)
+                  </div>
+                </div>
+
+                {/* Botones para mandar la matriz a la Vank 9060 o abrirla en LightBurn */}
+                <div className="space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void handleSendCalibrationMatrixToVank()}
+                    className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>
+                      Enviar Matriz a Vank 9060 ({workbenchConfig.ruidaIpAddress})
+                    </span>
+                  </button>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void handleExportCalibrationLbrn2(true)}
+                      className="py-1.5 px-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-[11px] flex items-center justify-center gap-1"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>LightBurn .lbrn2</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDownloadCalibrationRd}
+                      className="py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 font-bold text-[11px] flex items-center justify-center gap-1"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>Matriz .RD</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleExportCalibrationSvg}
+                      className="py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-[11px] flex items-center justify-center gap-1"
+                    >
+                      <FileCode2 className="w-3 h-3" />
+                      <span>Matriz .SVG</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Grilla Visual Interactiva N×M: Clic en la celda ganadora para aplicarla */}
+              <div className="lg:col-span-7 flex flex-col justify-between p-3 rounded-xl bg-[#070a0f] border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white">
+                    3. Hacé clic en la muestra ganadora para cargar sus valores
+                  </span>
+                  <span className="text-[10px] font-mono text-cyan-300">
+                    Int: {calibrationConfig.lineIntervalMm} mm (
+                    {Math.round(25.4 / calibrationConfig.lineIntervalMm)} DPI)
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full border-separate border-spacing-1.5 text-center">
+                    <thead>
+                      <tr>
+                        <th className="p-1 text-[10px] font-mono text-slate-400">
+                          Vel \ Pot
+                        </th>
+                        {calibrationGrid.powerValues.map((p) => (
+                          <th
+                            key={`col-p-${p}`}
+                            className="p-1 text-[11px] font-mono font-bold text-amber-300 bg-slate-900/90 rounded border border-slate-800"
+                          >
+                            {p}%
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {calibrationGrid.speedValues.map((s, rIdx) => (
+                        <tr key={`row-s-${s}`}>
+                          <td className="p-1.5 text-[11px] font-mono font-bold text-cyan-300 bg-slate-900/90 rounded border border-slate-800 whitespace-nowrap">
+                            {s} mm/s
+                          </td>
+                          {calibrationGrid.powerValues.map((p, cIdx) => {
+                            const cell = calibrationGrid.cells.find(
+                              (item) => item.row === rIdx && item.col === cIdx
+                            )!;
+                            const isChosen =
+                              selectedCalibrationCell?.cutIndex === cell.cutIndex;
+
+                            return (
+                              <td key={cell.layerCode}>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedCalibrationCell(cell)}
+                                  className={`w-full py-2 px-1.5 rounded-lg border font-mono text-[10px] flex flex-col items-center justify-center gap-0.5 transition ${
+                                    isChosen
+                                      ? 'bg-emerald-500/25 border-emerald-400 ring-2 ring-emerald-400 text-white scale-105'
+                                      : 'bg-slate-900/80 hover:bg-slate-800 border-slate-700 text-slate-200'
+                                  }`}
+                                >
+                                  <span
+                                    className="px-1.5 py-0.2 rounded text-[9px] font-bold"
+                                    style={{
+                                      backgroundColor: cell.hexColor,
+                                      color: '#ffffff',
+                                    }}
+                                  >
+                                    {cell.layerCode}
+                                  </span>
+                                  <span className="font-bold text-white">
+                                    {s} / {p}%
+                                  </span>
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Barra de confirmación de la celda ganadora seleccionada */}
+                {selectedCalibrationCell ? (
+                  <div className="p-3 rounded-xl bg-emerald-950/50 border border-emerald-600/70 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-bold text-emerald-300">
+                        Celda Seleccionada: {selectedCalibrationCell.layerCode} →{' '}
+                        {selectedCalibrationCell.speedMmPerSec} mm/s ·{' '}
+                        {selectedCalibrationCell.maxPowerPercent}%
+                      </div>
+                      <div className="text-[10px] text-slate-300">
+                        Se aplicará a la capa{' '}
+                        {calibrationConfig.targetRole === 'ENGRAVE'
+                          ? 'C00 (Grabado)'
+                          : calibrationConfig.targetRole === 'HOLES'
+                            ? 'C01 (Orificios)'
+                            : 'C02 (Corte Exterior)'}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleApplyWinningCalibrationCell(
+                            selectedCalibrationCell,
+                            false
+                          );
+                          setShowCalibrationMatrixModal(false);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs"
+                      >
+                        ✓ Aplicar a Capa
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleApplyWinningCalibrationCell(
+                            selectedCalibrationCell,
+                            true
+                          );
+                          setShowCalibrationMatrixModal(false);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs"
+                      >
+                        💾 Aplicar y Guardar en Biblioteca
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-2.5 rounded-lg bg-slate-900/70 border border-slate-800 text-[11px] text-slate-400 text-center">
+                    Seleccioná arriba cualquier celda de la grilla (Vel × Pot) para cargar esa calibración en tu capa activa.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
