@@ -29,7 +29,7 @@ fn save_at(documents: &Path, logo_name: &str, files: Vec<LogoFile>) -> Result<Sa
     let mut names = std::collections::HashSet::new();
     for file in &files {
         if !names.insert(file.name.to_lowercase()) { return Err("Los nombres de archivo deben ser distintos.".into()); }
-        if !valid_component(&file.name, 120) || ![".svg", ".dxf", ".txt", ".json"].iter().any(|ext| file.name.to_lowercase().ends_with(ext)) {
+        if !valid_component(&file.name, 120) || ![".svg", ".dxf", ".txt", ".json", ".lbrn2", ".lbrn"].iter().any(|ext| file.name.to_lowercase().ends_with(ext)) {
             return Err("Nombre o formato de archivo no válido.".into());
         }
     }

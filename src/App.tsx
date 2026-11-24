@@ -48,7 +48,17 @@ import {
 import { LabelEditorCanvas } from './components/LabelEditorCanvas';
 import { ProductionBedPreview } from './components/ProductionBedPreview';
 import { RotaryPanel } from './components/RotaryPanel';
+import { VankWorkbenchModal } from './components/VankWorkbenchModal';
 import { DEFAULT_ROTARY_CONFIG, RotaryConfig } from './core/rotary/rotaryEngine';
+import {
+  createWorkbenchJobFromOrder,
+  syncLayersWithMaterialProfile,
+} from './core/workbench/workbenchEngine';
+import {
+  createDefaultWorkbenchConfig,
+  WorkbenchConfig,
+  WorkbenchJobItem,
+} from './core/workbench/workbenchTypes';
 import { exportProductionDxf } from './core/exporters/dxfExporter';
 import {
   parseAndAuditDxfR12,
@@ -232,6 +242,15 @@ export function App() {
   const [isOrdersModalOpen, setIsOrdersModalOpen] = useState<boolean>(false);
   const [isRotaryOpen, setIsRotaryOpen] = useState<boolean>(false);
   const [rotaryConfig, setRotaryConfig] = useState<RotaryConfig>(() => initialOrder.rotaryConfig ?? DEFAULT_ROTARY_CONFIG);
+  const [isWorkbenchOpen, setIsWorkbenchOpen] = useState<boolean>(false);
+  const [workbenchConfig, setWorkbenchConfig] = useState<WorkbenchConfig>(() =>
+    createDefaultWorkbenchConfig(
+      initialOrder.nestingConfig.sheetWidthMm,
+      initialOrder.nestingConfig.sheetHeightMm,
+      initialOrder.materialProfileSnapshot ?? INITIAL_MATERIALS_CATALOG[0]
+    )
+  );
+  const [workbenchJobs, setWorkbenchJobs] = useState<WorkbenchJobItem[]>([]);
   const ordersDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     if (isOrdersModalOpen) ordersDialog.current?.showModal?.();
@@ -1109,7 +1128,34 @@ export function App() {
   const handleDownloadKerfPattern = () => {
     const artifact = generateKerfCalibrationPatternSvg(activeMaterial.name);
     triggerDownload(artifact.filenameSuggested, artifact.svgContent, 'image/svg+xml');
+  };
 
+  const handleSendToWorkbench = (
+    mode: 'active_batch' | 'single_piece' | 'open_only' = 'active_batch'
+  ) => {
+    const updatedCfg: WorkbenchConfig = {
+      ...workbenchConfig,
+      sheetWidthMm: nestingConfig.sheetWidthMm,
+      sheetHeightMm: nestingConfig.sheetHeightMm,
+      layers: syncLayersWithMaterialProfile(workbenchConfig.layers, activeMaterial),
+    };
+    setWorkbenchConfig(updatedCfg);
+
+    if (mode !== 'open_only' || workbenchJobs.length === 0) {
+      const nextJob = createWorkbenchJobFromOrder({
+        design: labelDesign,
+        nesting: nestingResult,
+        batchIndex: activeBatchIndex,
+        mode: mode === 'single_piece' ? 'single_piece' : 'active_batch',
+        projectName,
+        clientName,
+        orderId: activeOrderId,
+        existingJobs: mode === 'open_only' ? [] : workbenchJobs,
+        config: updatedCfg,
+      });
+      setWorkbenchJobs((prev) => (mode === 'open_only' && prev.length === 0 ? [nextJob] : [...prev, nextJob]));
+    }
+    setIsWorkbenchOpen(true);
   };
 
   const handleCreateNewBlankOrder = () => {
@@ -1244,6 +1290,20 @@ export function App() {
           >
             <RotateCw className="w-3.5 h-3.5 text-cyan-400" />
             <span>Rotativo</span>
+          </button>
+
+          <button
+            onClick={() => handleSendToWorkbench('open_only')}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-700/80 rounded text-emerald-300 font-semibold transition-colors"
+            title="Abrir Mesa de Trabajo Vank 9060 estilo LightBurn y enviar a máquina"
+          >
+            <Layers className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Mesa Vank 9060</span>
+            {workbenchJobs.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-emerald-500 text-slate-950 font-mono text-[10px] font-bold">
+                {workbenchJobs.length}
+              </span>
+            )}
           </button>
 
           <label className="px-2.5 py-1 text-xs bg-slate-800 border border-slate-700 rounded text-slate-200 cursor-pointer">
@@ -2382,6 +2442,26 @@ export function App() {
                     </div>
                   )}
                 </div>
+
+                {/* ACCIÓN DIRECTA: MANDAR A PLANCHA / MESA DE TRABAJO VANK 9060 */}
+                <div className="pt-2 border-t border-slate-800 space-y-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSendToWorkbench('active_batch')}
+                    className="w-full py-2.5 px-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow transition-colors"
+                  >
+                    <Layers className="w-4 h-4" />
+                    <span>Mandar Tanda a Mesa / Plancha Vank 9060</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSendToWorkbench('single_piece')}
+                    className="w-full py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-semibold text-[11px] flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Mandar 1 Etiqueta Suelta a Plancha</span>
+                  </button>
+                </div>
               </div>
             )}
 
@@ -2671,6 +2751,15 @@ export function App() {
                 <div className="space-y-3 pt-2">
                   <button
                     disabled={!validationReport.isValid || isProcessingImage}
+                    onClick={() => handleSendToWorkbench('active_batch')}
+                    className="w-full py-3 px-4 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-transform hover:scale-[1.01]"
+                  >
+                    <Layers className="w-5 h-5" />
+                    <span>Mandar a Mesa / Plancha y Cargar en Vank 9060 (LightBurn / Ruida)</span>
+                  </button>
+
+                  <button
+                    disabled={!validationReport.isValid || isProcessingImage}
                     onClick={handleExportSvg}
                     className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-transform hover:scale-[1.01]"
                   >
@@ -2729,6 +2818,33 @@ export function App() {
       </dialog>}
 
       {isRotaryOpen && <RotaryPanel design={labelDesign} config={rotaryConfig} onConfigChange={setRotaryConfig} onClose={() => setIsRotaryOpen(false)} onSave={files => { setIsRotaryOpen(false); requestLogoSave(files); }} />}
+
+      {isWorkbenchOpen && (
+        <VankWorkbenchModal
+          design={labelDesign}
+          nesting={nestingResult}
+          activeBatchIndex={activeBatchIndex}
+          material={activeMaterial}
+          projectName={projectName}
+          clientName={clientName}
+          activeOrderId={activeOrderId}
+          ordersCatalog={orders}
+          workbenchConfig={workbenchConfig}
+          workbenchJobs={workbenchJobs}
+          onUpdateConfig={setWorkbenchConfig}
+          onUpdateJobs={setWorkbenchJobs}
+          onSaveMaterialParameters={(updatedMat) => {
+            setMaterials((prev) =>
+              prev.map((m) => (m.id === updatedMat.id ? updatedMat : m))
+            );
+          }}
+          onRequestSaveFiles={(files) => {
+            requestLogoSave(files);
+          }}
+          onNotify={notify}
+          onClose={() => setIsWorkbenchOpen(false)}
+        />
+      )}
 
       {/* 4. MODAL DE CATÁLOGO DE PEDIDOS */}
       {isOrdersModalOpen && (
