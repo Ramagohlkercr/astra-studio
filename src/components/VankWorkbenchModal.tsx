@@ -1421,10 +1421,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
       {/* 2. CUERPO PRINCIPAL: LIENZO 900x600 MM + DOCKS LATERALES ESTILO LIGHTBURN */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* ÁREA IZQUIERDA/CENTRAL: MESA DE TRABAJO, LUPA 1:1 Y SIMULADOR */}
+        {/* ÁREA IZQUIERDA/CENTRAL: MESA DE TRABAJO DESPEJADA + PANEL INFERIOR DE LUPA 1:1 Y ENCUADRE */}
         <div className="flex-1 flex flex-col bg-[#080b10] relative min-w-0 overflow-hidden">
-          {/* Sub-barra de vista de cámara, zoom interactivo, modo visual y simulador */}
-          <div className="min-h-10 py-1.5 bg-[#0e131b] border-b border-slate-800/90 px-3 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
+          {/* Sub-barra compacta de vista de cámara, zoom interactivo, modo visual y simulador */}
+          <div className="py-1 bg-[#0e131b] border-b border-slate-800/90 px-2.5 flex flex-wrap items-center justify-between gap-1.5 text-[11px] shrink-0">
             <div className="flex flex-wrap items-center gap-1">
               <button
                 type="button"
@@ -1432,13 +1432,13 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   setCameraView('tirada_roll');
                   setCanvasZoom(1.0);
                 }}
-                className={`px-2 py-1 rounded text-[11px] font-bold transition whitespace-nowrap ${
+                className={`px-2 py-0.5 rounded font-bold transition whitespace-nowrap ${
                   cameraView === 'tirada_roll'
                     ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                🔍 Tirada en Rollo 73 cm
+                🔍 Rollo 73 cm
               </button>
               <button
                 type="button"
@@ -1446,7 +1446,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   setCameraView('occupied');
                   setCanvasZoom(1.0);
                 }}
-                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
+                className={`px-2 py-0.5 rounded font-medium transition whitespace-nowrap ${
                   cameraView === 'occupied'
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
@@ -1460,13 +1460,13 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   setCameraView('sheet');
                   setCanvasZoom(1.0);
                 }}
-                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
+                className={`px-2 py-0.5 rounded font-medium transition whitespace-nowrap ${
                   cameraView === 'sheet'
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                Plancha ({workbenchConfig.sheetWidthMm}×{workbenchConfig.sheetHeightMm})
+                Plancha 730×600
               </button>
               <button
                 type="button"
@@ -1474,7 +1474,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   setCameraView('machine');
                   setCanvasZoom(1.0);
                 }}
-                className={`px-2 py-1 rounded text-[11px] font-medium transition whitespace-nowrap ${
+                className={`px-2 py-0.5 rounded font-medium transition whitespace-nowrap ${
                   cameraView === 'machine'
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
@@ -1484,13 +1484,13 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </button>
 
               {/* Controles de Zoom Interactivo */}
-              <div className="flex items-center bg-slate-900 border border-slate-800 rounded px-1 py-0.5 ml-1 gap-1">
+              <div className="flex items-center bg-slate-900 border border-slate-800 rounded px-1 py-0.5 gap-0.5">
                 <button
                   type="button"
                   onClick={() =>
                     setCanvasZoom((z) => roundMm(Math.max(0.75, z / 1.35), 2))
                   }
-                  className="px-1.5 py-0.2 rounded hover:bg-slate-800 text-slate-300 font-mono font-bold"
+                  className="px-1.5 rounded hover:bg-slate-800 text-slate-300 font-mono font-bold"
                   title="Alejar vista"
                 >
                   −
@@ -1498,7 +1498,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setCanvasZoom(1.0)}
-                  className="px-1.5 py-0.2 rounded hover:bg-slate-800 text-cyan-300 font-mono text-[10px] font-bold"
+                  className="px-1 rounded hover:bg-slate-800 text-cyan-300 font-mono text-[10px] font-bold"
                   title="Restablecer zoom 100%"
                 >
                   {Math.round(canvasZoom * 100)}%
@@ -1508,7 +1508,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   onClick={() =>
                     setCanvasZoom((z) => roundMm(Math.min(8, z * 1.35), 2))
                   }
-                  className="px-1.5 py-0.2 rounded hover:bg-slate-800 text-slate-300 font-mono font-bold"
+                  className="px-1.5 rounded hover:bg-slate-800 text-slate-300 font-mono font-bold"
                   title="Acercar vista para ver etiquetas en grande"
                 >
                   +
@@ -1517,7 +1517,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             </div>
 
             {/* Selector de Estilo Visual + Lupa 1:1 + Simulador */}
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1">
               <button
                 type="button"
                 onClick={() =>
@@ -1527,7 +1527,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       : 'technical_lightburn'
                   )
                 }
-                className={`px-2 py-1 rounded text-[11px] font-bold border transition whitespace-nowrap ${
+                className={`px-2 py-0.5 rounded font-bold border transition whitespace-nowrap ${
                   canvasVisualMode === 'technical_lightburn'
                     ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
                     : 'bg-amber-950/60 border-amber-700/60 text-amber-200'
@@ -1535,21 +1535,20 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 title="Alternar entre Vista Técnica LightBurn (Alto Contraste C00/C01/C02) y Textura Realista de Material"
               >
                 {canvasVisualMode === 'technical_lightburn'
-                  ? '🎨 Vista LightBurn (Alto Contraste)'
+                  ? '🎨 Alto Contraste'
                   : '🪵 Textura Material'}
               </button>
 
               <button
                 type="button"
                 onClick={() => setShowSingleLabelLoupe(!showSingleLabelLoupe)}
-                className={`px-2 py-1 rounded text-[11px] font-bold border transition whitespace-nowrap ${
+                className={`px-2 py-0.5 rounded font-bold border transition whitespace-nowrap ${
                   showSingleLabelLoupe
                     ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
                     : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                 }`}
-                title="Mostrar u ocultar ventana flotante con 1 etiqueta ampliada en detalle 1:1"
               >
-                🔬 Lupa 1 Etiqueta
+                🔬 Lupa 1:1
               </button>
 
               <button
@@ -1559,7 +1558,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   setShowSimulation(next);
                   if (!next) setIsPlayingSim(false);
                 }}
-                className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-semibold border transition whitespace-nowrap ${
+                className={`flex items-center gap-1 px-2 py-0.5 rounded font-semibold border transition whitespace-nowrap ${
                   showSimulation
                     ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
                     : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-white'
@@ -1570,20 +1569,19 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </button>
 
               {showSimulation && (
-                <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-lg">
+                <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 px-1.5 py-0.5 rounded">
                   <button
                     type="button"
                     onClick={() => {
                       if (simProgress >= 100) setSimProgress(0);
                       setIsPlayingSim(!isPlayingSim);
                     }}
-                    className="p-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white"
-                    title={isPlayingSim ? 'Pausar simulación' : 'Reproducir recorrido del cabezal'}
+                    className="p-0.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white"
                   >
                     {isPlayingSim ? (
-                      <Pause className="w-3 h-3" />
+                      <Pause className="w-2.5 h-2.5" />
                     ) : (
-                      <Play className="w-3 h-3" />
+                      <Play className="w-2.5 h-2.5" />
                     )}
                   </button>
                   <input
@@ -1597,19 +1595,12 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       setSimProgress(Number(e.target.value));
                     }}
                     aria-label="Progreso de simulación láser"
-                    className="w-16 accent-cyan-400 cursor-pointer"
+                    className="w-14 accent-cyan-400 cursor-pointer"
                   />
-                  <span className="font-mono text-[10px] text-cyan-300 w-7 text-right">
-                    {Math.round(simProgress)}%
-                  </span>
                 </div>
               )}
 
-              <div className="flex items-center gap-1.5 font-mono text-[11px] bg-slate-900/90 border border-slate-800 px-2 py-1 rounded whitespace-nowrap">
-                <span className="text-amber-300 font-bold">
-                  {validation.totalJobs} logo(s)
-                </span>
-                <span className="text-slate-600">·</span>
+              <div className="flex items-center gap-1 font-mono text-[10px] bg-slate-900/90 border border-slate-800 px-2 py-0.5 rounded whitespace-nowrap">
                 <span className="text-cyan-300 font-bold">
                   {validation.totalPieces} u.
                 </span>
@@ -1621,11 +1612,12 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             </div>
           </div>
 
-          {/* LIENZO INTERACTIVO SVG DE LA MESA 900x600 MM CON ZOOM Y ENCUADRE LÁSER */}
+          {/* LIENZO INTERACTIVO SVG 100% DESPEJADO (SIN VENTANAS QUE LO TAPEN) */}
           <div className="flex-1 relative overflow-hidden flex items-center justify-center p-2">
             <svg
               ref={svgRef}
               viewBox={`${vbMinX} ${vbMinY} ${vbWidth} ${vbHeight}`}
+              preserveAspectRatio="xMidYMid meet"
               onPointerMove={handleSvgPointerMove}
               onPointerUp={handleSvgPointerUp}
               onWheel={(e) => {
@@ -2166,26 +2158,14 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 />
               </g>
             </svg>
+          </div>
 
-            {/* VENTANA FLOTANTE DE LUPA 1:1 (DETALLE DE 1 ETIQUETA Y CAPAS C00/C01/C02 EN GRANDE) */}
+          {/* PANEL INFERIOR DEDICADO (FUERA DEL LIENZO PARA NO TAPAR EL ROLLO): LUPA 1:1 DE ETIQUETA + DATOS DE ENCUADRE VANK 9060 */}
+          <div className="bg-[#0c111a] border-t border-slate-800 px-3 py-2 flex flex-wrap items-center justify-between gap-3 shrink-0">
+            {/* Izquierda: Lupa 1:1 de 1 etiqueta en grande + Resumen de las 3 capas */}
             {showSingleLabelLoupe && selectedJob && (
-              <div className="absolute bottom-12 right-3 w-72 bg-[#0d121c]/95 border border-cyan-500/50 rounded-xl shadow-2xl p-2.5 space-y-2 backdrop-blur-md">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-1">
-                  <span className="text-[11px] font-extrabold text-cyan-300 flex items-center gap-1">
-                    <span>🔬 Lupa 1:1 — {selectedJob.labelDesign.widthMm}×{selectedJob.labelDesign.heightMm} mm</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setShowSingleLabelLoupe(false)}
-                    className="text-slate-400 hover:text-white text-[10px] px-1"
-                    title="Cerrar lupa"
-                  >
-                    ✕
-                  </button>
-                </div>
-
-                {/* SVG ampliado de 1 sola etiqueta del trabajo seleccionado */}
-                <div className="h-24 bg-[#070a0f] rounded-lg border border-slate-800 flex items-center justify-center p-1.5">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-28 h-16 bg-[#06090e] rounded-lg border border-cyan-500/40 flex items-center justify-center p-1 shrink-0 shadow-inner">
                   <svg
                     viewBox={`-2 -2 ${
                       (selectedJob.blockRotationDeg === 90
@@ -2202,79 +2182,67 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   </svg>
                 </div>
 
-                {/* Resumen visual de cómo se va a grabar y cortar esta etiqueta en la Vank 9060 */}
-                <div className="space-y-1 text-[10px] font-mono">
-                  {sortedLayers.map((l) => (
-                    <div
-                      key={`loupe-layer-${l.cutIndex}`}
-                      className="flex items-center justify-between bg-slate-900/90 px-2 py-0.5 rounded border border-slate-800"
-                    >
-                      <span className="flex items-center gap-1.5 text-slate-200 font-bold">
+                <div className="space-y-1 text-[10px] font-mono min-w-0">
+                  <div className="font-bold text-cyan-300 truncate">
+                    🔬 Muestra 1:1 — {selectedJob.name} ({selectedJob.labelDesign.widthMm}×{selectedJob.labelDesign.heightMm} mm)
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {sortedLayers.map((l) => (
+                      <span
+                        key={`loupe-layer-${l.cutIndex}`}
+                        className="inline-flex items-center gap-1 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800 text-slate-200"
+                      >
                         <span
-                          className="w-2.5 h-2.5 rounded-sm inline-block border border-white/40"
+                          className="w-2 h-2 rounded-sm inline-block border border-white/40"
                           style={{ backgroundColor: l.hexColor }}
                         />
-                        <span>
-                          {l.code}{' '}
-                          {l.role === 'ENGRAVE'
-                            ? 'Grabado'
-                            : l.role === 'HOLES'
-                              ? 'Orificios'
-                              : 'Corte'}
+                        <span className="font-bold">{l.code}:</span>
+                        <span
+                          className={
+                            l.speedMmPerSec && l.maxPowerPercent
+                              ? 'text-emerald-300 font-bold'
+                              : 'text-amber-400'
+                          }
+                        >
+                          {l.speedMmPerSec && l.maxPowerPercent
+                            ? `${l.speedMmPerSec}/${l.maxPowerPercent}%${
+                                l.mode !== 'line' ? ` (${l.lineIntervalMm}mm)` : ''
+                              }`
+                            : 'Sin calibrar'}
                         </span>
                       </span>
-                      <span
-                        className={
-                          l.speedMmPerSec && l.maxPowerPercent
-                            ? 'text-emerald-300 font-bold'
-                            : 'text-amber-400'
-                        }
-                      >
-                        {l.speedMmPerSec && l.maxPowerPercent
-                          ? `${l.speedMmPerSec} mm/s · ${l.maxPowerPercent}%${
-                              l.mode !== 'line' ? ` · ${l.lineIntervalMm}mm` : ''
-                            }`
-                          : 'Sin calibrar'}
-                      </span>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* Leyenda inferior flotante con guía de puntero láser y encuadre */}
-            <div className="absolute bottom-2.5 left-3 bg-[#11161f]/95 border border-slate-700 rounded-lg px-3 py-1.5 flex flex-wrap items-center gap-3 text-[11px] text-slate-200 backdrop-blur-sm shadow-lg">
-              <div className="flex items-center gap-1.5">
-                <span className="w-3 h-3 rounded-sm bg-emerald-500 inline-block border border-white" />
+            {/* Derecha: Guía de Puntero Láser (Origin) y Encuadre (Frame) en la Vank 9060 */}
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-200 ml-auto">
+              <div className="flex items-center gap-1.5 bg-slate-900/90 border border-slate-800 px-2 py-1 rounded">
+                <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block border border-white" />
                 <span>
-                  <strong>Puntero Láser (Origin):</strong>{' '}
+                  <strong>Puntero Láser:</strong>{' '}
                   {JOB_ORIGIN_ANCHORS.find(
                     (a) => a.id === workbenchConfig.jobOriginAnchor
-                  )?.label ?? workbenchConfig.jobOriginAnchor}{' '}
-                  ({validation.jobOriginPointMm.x}, {validation.jobOriginPointMm.y}{' '}
-                  mm)
+                  )?.label ?? workbenchConfig.jobOriginAnchor}
                 </span>
               </div>
               {validation.occupiedBoundsMm && (
-                <>
-                  <span className="text-slate-500">•</span>
-                  <span className="text-cyan-300 font-mono font-bold">
-                    Encuadre (Frame):{' '}
-                    {roundMm(validation.occupiedBoundsMm.width / 10, 1)} ×{' '}
-                    {roundMm(validation.occupiedBoundsMm.height / 10, 1)} cm
-                  </span>
-                </>
+                <div className="bg-slate-900/90 border border-slate-800 px-2 py-1 rounded text-cyan-300 font-mono font-bold">
+                  Frame: {roundMm(validation.occupiedBoundsMm.width / 10, 1)} ×{' '}
+                  {roundMm(validation.occupiedBoundsMm.height / 10, 1)} cm
+                </div>
               )}
-              <span className="text-slate-500">•</span>
-              <span className="text-emerald-300 font-mono font-bold">
-                Rollo usado: {rollMetrics.usedLengthCm} cm de 500 cm
-              </span>
+              <div className="bg-emerald-950/50 border border-emerald-700/60 px-2 py-1 rounded text-emerald-300 font-mono font-bold">
+                Rollo: {rollMetrics.usedLengthCm} cm de 500 cm
+              </div>
             </div>
           </div>
         </div>
 
         {/* PANEL LATERAL DERECHO: CAPAS ARRIBA DEL TODO + ROLLO 73CM + CONTROL VANK 9060 */}
-        <aside className="w-[450px] xl:w-[520px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0 divide-y divide-slate-800">
+        <aside className="w-[385px] lg:w-[430px] xl:w-[490px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0 divide-y divide-slate-800">
           {/* BARRA DE NAVEGACIÓN FIJA (STICKY) PARA ENCONTRAR TODO EN 1 CLIC */}
           <div className="sticky top-0 z-20 bg-[#111621]/95 backdrop-blur border-b border-slate-800 p-2 grid grid-cols-4 gap-1 text-[11px]">
             <button
