@@ -9,6 +9,10 @@ import {
 } from '../core/workbench/workbenchTypes';
 import {
   canUseWebGL,
+  createBrushedMetalTexture,
+  createHoneycombBedTexture,
+  createLaserGlowTexture,
+  createStudioEnvironment,
   createStudioRenderer,
   disposeObject3D,
 } from '../core/three/threeUtils';
@@ -42,6 +46,8 @@ export const Workbench3DViewport: React.FC<Props> = ({
   const worldGroupRef = useRef<THREE.Group | null>(null);
   const gantryRef = useRef<THREE.Group | null>(null);
   const headRef = useRef<THREE.Group | null>(null);
+  const flareRef = useRef<THREE.Sprite | null>(null);
+  const userMovedCameraRef = useRef<boolean>(false);
 
   const [cameraPreset, setCameraPreset] = useState<Workbench3DCam>('iso');
   const [webglReady, setWebglReady] = useState<boolean>(() => canUseWebGL());
@@ -49,7 +55,6 @@ export const Workbench3DViewport: React.FC<Props> = ({
   const bedW = Math.max(200, config.machineBedWidthMm || 900);
   const bedH = Math.max(200, config.machineBedHeightMm || 600);
 
-  // Posición instantánea del cabezal láser según progreso de simulación o Home top-right
   const laserPos = useMemo(() => {
     const segs = simulation.segments;
     if (showSimulation && segs.length > 0) {
@@ -65,7 +70,15 @@ export const Workbench3DViewport: React.FC<Props> = ({
       y: Math.min(bedH, Math.max(0, config.userOriginYMm ?? 0)),
       firing: false,
     };
-  }, [simulation.segments, showSimulation, simProgress, bedW, bedH, config.userOriginXMm, config.userOriginYMm]);
+  }, [
+    simulation.segments,
+    showSimulation,
+    simProgress,
+    bedW,
+    bedH,
+    config.userOriginXMm,
+    config.userOriginYMm,
+  ]);
 
   const applyPreset = (preset: Workbench3DCam) => {
     setCameraPreset(preset);
@@ -73,14 +86,19 @@ export const Workbench3DViewport: React.FC<Props> = ({
     const ctrls = controlsRef.current;
     if (!cam || !ctrls) return;
 
+    const aspectPad = Math.max(1, 1.45 / Math.max(0.7, cam.aspect));
     if (preset === 'iso') {
-      cam.position.set(-bedW * 0.42, bedH * 1.18, bedH * 1.55);
+      cam.position.set(
+        -bedW * 0.56 * aspectPad,
+        bedH * 1.32 * aspectPad,
+        bedH * 1.72 * aspectPad
+      );
       ctrls.target.set(0, 0, 0);
     } else if (preset === 'front') {
-      cam.position.set(0, bedH * 0.42, bedH * 1.65);
+      cam.position.set(0, bedH * 0.48 * aspectPad, bedH * 1.88 * aspectPad);
       ctrls.target.set(0, 0, 0);
     } else {
-      cam.position.set(0, Math.max(bedW, bedH) * 1.25, 25);
+      cam.position.set(0, Math.max(bedW, bedH) * 1.38 * aspectPad, 25);
       ctrls.target.set(0, 0, 0);
     }
     ctrls.update();
@@ -89,7 +107,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
     }
   };
 
-  // 1. Inicializar WebGLRenderer + OrbitControls
+  // 1. Inicializar WebGLRenderer + RoomEnvironment PBR + iluminación con sombras reales + OrbitControls
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !canUseWebGL()) {
@@ -105,11 +123,16 @@ export const Workbench3DViewport: React.FC<Props> = ({
       return;
     }
 
+    const studioEnv = createStudioEnvironment(renderer);
+
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#070a0f');
+    scene.background = new THREE.Color('#06090f');
+    scene.fog = new THREE.FogExp2('#06090f', 0.00022);
+    scene.environment = studioEnv.envMap;
+    scene.environmentIntensity = 0.88;
 
     const camera = new THREE.PerspectiveCamera(
-      38,
+      37,
       (el.clientWidth || 720) / Math.max(1, el.clientHeight || 420),
       1,
       5000
@@ -118,18 +141,32 @@ export const Workbench3DViewport: React.FC<Props> = ({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.minDistance = 80;
-    controls.maxDistance = 2400;
+    controls.minDistance = 90;
+    controls.maxDistance = 2600;
+    const onControlStart = () => {
+      userMovedCameraRef.current = true;
+    };
+    controls.addEventListener('start', onControlStart);
 
-    const hemi = new THREE.HemisphereLight('#e0f2fe', '#0f172a', 1.25);
+    // Rig de iluminación de taller láser CO2 (luz principal cálida con sombras + recorte cian lateral)
+    const hemi = new THREE.HemisphereLight('#e0f2fe', '#0f172a', 0.82);
     scene.add(hemi);
 
-    const key = new THREE.DirectionalLight('#ffffff', 1.75);
-    key.position.set(350, 620, 420);
+    const key = new THREE.DirectionalLight('#fffbeb', 1.95);
+    key.position.set(380, 680, 440);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.camera.near = 60;
+    key.shadow.camera.far = 2200;
+    key.shadow.camera.left = -620;
+    key.shadow.camera.right = 620;
+    key.shadow.camera.top = 520;
+    key.shadow.camera.bottom = -520;
+    key.shadow.bias = -0.0005;
     scene.add(key);
 
-    const rim = new THREE.DirectionalLight('#38bdf8', 0.75);
-    rim.position.set(-450, 260, -320);
+    const rim = new THREE.DirectionalLight('#38bdf8', 1.15);
+    rim.position.set(-480, 280, -340);
     scene.add(rim);
 
     const worldRoot = new THREE.Group();
@@ -158,6 +195,16 @@ export const Workbench3DViewport: React.FC<Props> = ({
               camera.aspect = w / h;
               camera.updateProjectionMatrix();
               renderer.setSize(w, h);
+              if (!userMovedCameraRef.current) {
+                const aspectPad = Math.max(1, 1.45 / Math.max(0.7, camera.aspect));
+                camera.position.set(
+                  -bedW * 0.56 * aspectPad,
+                  bedH * 1.32 * aspectPad,
+                  bedH * 1.72 * aspectPad
+                );
+                controls.target.set(0, 0, 0);
+                controls.update();
+              }
             }
           })
         : null;
@@ -168,7 +215,9 @@ export const Workbench3DViewport: React.FC<Props> = ({
     return () => {
       window.cancelAnimationFrame(rafId);
       ro?.disconnect();
+      controls.removeEventListener('start', onControlStart);
       disposeObject3D(worldRoot);
+      studioEnv.dispose();
       controls.dispose();
       renderer.dispose();
       rendererRef.current = null;
@@ -179,7 +228,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
     };
   }, []);
 
-  // 2. Reconstruir mesa 900x600 mm, plancha/rollo, piezas anidadas y pórtico láser
+  // 2. Reconstruir mesa 900x600 mm alveolar, rieles Y, plancha con relieve, piezas anidadas y pórtico láser
   useEffect(() => {
     const root = worldGroupRef.current;
     const renderer = rendererRef.current;
@@ -193,58 +242,85 @@ export const Workbench3DViewport: React.FC<Props> = ({
     const toWorldX = (xMm: number) => xMm - bedW / 2;
     const toWorldZ = (yMm: number) => yMm - bedH / 2;
 
-    // Estructura metálica exterior Vank 9060
+    const brushedTex = createBrushedMetalTexture();
+    const honeycombTex = createHoneycombBedTexture();
+
+    // Chasis metálico Vank 9060 con reflejos PBR
     const chassis = new THREE.Mesh(
-      new THREE.BoxGeometry(bedW + 44, 18, bedH + 44),
-      new THREE.MeshStandardMaterial({ color: '#0f172a', metalness: 0.75, roughness: 0.4 })
+      new THREE.BoxGeometry(bedW + 56, 22, bedH + 56),
+      new THREE.MeshStandardMaterial({
+        color: '#111827',
+        metalness: 0.82,
+        roughness: 0.34,
+        roughnessMap: brushedTex,
+      })
     );
-    chassis.position.set(0, -11, 0);
+    chassis.position.set(0, -13, 0);
+    chassis.receiveShadow = true;
     root.add(chassis);
 
-    // Cama alveolar 900x600 mm
+    // Marco azul/cian anodizado del gabinete superior
+    const trimFrame = new THREE.Mesh(
+      new THREE.BoxGeometry(bedW + 60, 4, bedH + 60),
+      new THREE.MeshStandardMaterial({ color: '#0284c7', metalness: 0.78, roughness: 0.28 })
+    );
+    trimFrame.position.set(0, -1.8, 0);
+    root.add(trimFrame);
+
+    // Rieles lineales laterales Y izquierdo y derecho
+    const railMat = new THREE.MeshStandardMaterial({
+      color: '#cbd5e1',
+      metalness: 0.9,
+      roughness: 0.2,
+    });
+    for (const sideSign of [-1, 1]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(10, 10, bedH + 24), railMat);
+      rail.position.set(sideSign * (bedW / 2 + 16), 8, 0);
+      rail.castShadow = true;
+      root.add(rail);
+    }
+
+    // Cama alveolar 900x600 mm con textura procedural
     const honeycomb = new THREE.Mesh(
       new THREE.BoxGeometry(bedW, 3, bedH),
-      new THREE.MeshStandardMaterial({ color: '#111827', metalness: 0.45, roughness: 0.75 })
+      new THREE.MeshStandardMaterial({
+        map: honeycombTex,
+        metalness: 0.45,
+        roughness: 0.7,
+      })
     );
-    honeycomb.position.set(0, -1.5, 0);
+    honeycomb.position.set(0, -1.2, 0);
+    honeycomb.receiveShadow = true;
     root.add(honeycomb);
 
-    const grid = new THREE.GridHelper(
-      Math.max(bedW, bedH),
-      Math.round(Math.max(bedW, bedH) / 50),
-      '#1e40af',
-      '#1e293b'
-    );
-    grid.position.set(0, 0.25, 0);
-    root.add(grid);
-
-    // Plancha / rollo de material (730x600 ecocuero, etc.)
+    // Plancha / rollo del material activo recibiendo sombras del pórtico
     const sheetW = Math.min(bedW, Math.max(20, config.sheetWidthMm || 730));
     const sheetH = Math.min(bedH, Math.max(20, config.sheetHeightMm || 600));
-    const matThickness = Math.max(1.2, Math.min(8, material.thicknessMm || 1.6));
+    const matThickness = Math.max(1.4, Math.min(8, material.thicknessMm || 1.8));
     const sheetMesh = new THREE.Mesh(
       new THREE.BoxGeometry(sheetW, matThickness, sheetH),
       new THREE.MeshStandardMaterial({
         color: material.visual.surfaceColor || '#92542b',
-        roughness: 0.72,
+        roughness: 0.68,
         metalness: 0.08,
       })
     );
     sheetMesh.position.set(
       toWorldX(sheetW / 2),
-      matThickness / 2,
+      matThickness / 2 + 0.3,
       toWorldZ(sheetH / 2)
     );
+    sheetMesh.receiveShadow = true;
+    sheetMesh.castShadow = true;
     root.add(sheetMesh);
 
-    const topSurfaceY = matThickness + 0.25;
+    const topSurfaceY = matThickness + 0.55;
 
-    // Etiquetas anidadas en la mesa (contorno de corte rojo + área grabada + selección cian)
     const cutLineMat = new THREE.LineBasicMaterial({ color: '#ef4444' });
     const holeMat = new THREE.LineBasicMaterial({ color: '#3b82f6' });
     const engraveMat = new THREE.MeshStandardMaterial({
       color: material.visual.engraveColor || '#261408',
-      roughness: 0.85,
+      roughness: 0.9,
     });
     const activeBorderMat = new THREE.LineBasicMaterial({ color: '#22d3ee' });
 
@@ -256,11 +332,11 @@ export const Workbench3DViewport: React.FC<Props> = ({
         const bx = toWorldX(job.xMm);
         const bz = toWorldZ(job.yMm);
         const selPts = [
-          new THREE.Vector3(bx - 1, topSurfaceY + 0.6, bz - 1),
-          new THREE.Vector3(bx + job.widthMm + 1, topSurfaceY + 0.6, bz - 1),
-          new THREE.Vector3(bx + job.widthMm + 1, topSurfaceY + 0.6, bz + job.heightMm + 1),
-          new THREE.Vector3(bx - 1, topSurfaceY + 0.6, bz + job.heightMm + 1),
-          new THREE.Vector3(bx - 1, topSurfaceY + 0.6, bz - 1),
+          new THREE.Vector3(bx - 1, topSurfaceY + 0.7, bz - 1),
+          new THREE.Vector3(bx + job.widthMm + 1, topSurfaceY + 0.7, bz - 1),
+          new THREE.Vector3(bx + job.widthMm + 1, topSurfaceY + 0.7, bz + job.heightMm + 1),
+          new THREE.Vector3(bx - 1, topSurfaceY + 0.7, bz + job.heightMm + 1),
+          new THREE.Vector3(bx - 1, topSurfaceY + 0.7, bz - 1),
         ];
         root.add(
           new THREE.Line(
@@ -274,7 +350,6 @@ export const Workbench3DViewport: React.FC<Props> = ({
         const absX = job.xMm + inst.localXMm;
         const absY = job.yMm + inst.localYMm;
 
-        // Contorno de corte exterior C02
         if (inst.cutContour?.points?.length > 1) {
           const pts = inst.cutContour.points.map(
             (p) =>
@@ -288,7 +363,6 @@ export const Workbench3DViewport: React.FC<Props> = ({
           root.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), cutLineMat));
         }
 
-        // Orificios C01
         for (const hole of inst.holeContours ?? []) {
           if (!hole.points || hole.points.length < 2) continue;
           const hPts = hole.points.map(
@@ -303,7 +377,6 @@ export const Workbench3DViewport: React.FC<Props> = ({
           root.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(hPts), holeMat));
         }
 
-        // Indicador visual de área grabada C00 sobre cada pieza
         if (inst.engraveItems?.length) {
           const markW = Math.max(2, inst.widthMm * 0.56);
           const markH = Math.max(2, inst.heightMm * 0.45);
@@ -314,7 +387,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
           markMesh.rotation.x = -Math.PI / 2;
           markMesh.position.set(
             toWorldX(absX + inst.widthMm / 2),
-            topSurfaceY + 0.15,
+            topSurfaceY + 0.16,
             toWorldZ(absY + inst.heightMm / 2)
           );
           root.add(markMesh);
@@ -322,47 +395,80 @@ export const Workbench3DViewport: React.FC<Props> = ({
       }
     }
 
-    // Pórtico X aluminio extruido y cabezal láser CO2
+    // Pórtico X de aluminio extruido con proyección de sombra real sobre la plancha
     const gantry = new THREE.Group();
     const beamBar = new THREE.Mesh(
-      new THREE.BoxGeometry(bedW + 24, 14, 18),
-      new THREE.MeshStandardMaterial({ color: '#334155', metalness: 0.78, roughness: 0.3 })
+      new THREE.BoxGeometry(bedW + 34, 15, 20),
+      new THREE.MeshStandardMaterial({
+        color: '#475569',
+        metalness: 0.86,
+        roughness: 0.26,
+        roughnessMap: brushedTex.clone(),
+      })
     );
-    beamBar.position.set(0, 48, 0);
+    beamBar.position.set(0, 50, 0);
+    beamBar.castShadow = true;
     gantry.add(beamBar);
+
+    const gantryGuideRail = new THREE.Mesh(new THREE.BoxGeometry(bedW + 26, 4, 4), railMat);
+    gantryGuideRail.position.set(0, 52, 11);
+    gantry.add(gantryGuideRail);
 
     const headGroup = new THREE.Group();
     const headHousing = new THREE.Mesh(
-      new THREE.BoxGeometry(26, 28, 26),
-      new THREE.MeshStandardMaterial({ color: '#0284c7', metalness: 0.65, roughness: 0.3 })
+      new THREE.BoxGeometry(28, 30, 28),
+      new THREE.MeshStandardMaterial({ color: '#0284c7', metalness: 0.78, roughness: 0.25 })
     );
-    headHousing.position.y = 40;
+    headHousing.position.y = 42;
+    headHousing.castShadow = true;
     headGroup.add(headHousing);
 
+    const brassRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(9.5, 9.5, 5, 24),
+      new THREE.MeshStandardMaterial({ color: '#eab308', metalness: 0.9, roughness: 0.22 })
+    );
+    brassRing.position.y = 25;
+    headGroup.add(brassRing);
+
     const nozzle = new THREE.Mesh(
-      new THREE.ConeGeometry(8, 22, 20),
-      new THREE.MeshStandardMaterial({ color: '#94a3b8', metalness: 0.85, roughness: 0.25 })
+      new THREE.ConeGeometry(8.5, 20, 24),
+      new THREE.MeshStandardMaterial({ color: '#e2e8f0', metalness: 0.88, roughness: 0.22 })
     );
     nozzle.rotation.x = Math.PI;
-    nozzle.position.y = 18;
+    nozzle.position.y = 14;
+    nozzle.castShadow = true;
     headGroup.add(nozzle);
 
     const laserRay = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.6, 0.9, 14, 12),
+      new THREE.CylinderGeometry(0.55, 0.95, 13, 14),
       new THREE.MeshBasicMaterial({
         color: '#ef4444',
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.88,
       })
     );
-    laserRay.position.y = 8;
+    laserRay.position.y = 7.5;
     headGroup.add(laserRay);
+
+    const flare = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: createLaserGlowTexture(),
+        color: '#fecaca',
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+    );
+    flare.scale.set(20, 20, 1);
+    flare.position.y = topSurfaceY + 1.5;
+    headGroup.add(flare);
 
     gantry.add(headGroup);
     root.add(gantry);
 
     gantryRef.current = gantry;
     headRef.current = headGroup;
+    flareRef.current = flare;
 
     if (camera.position.lengthSq() < 1) {
       applyPreset(cameraPreset);
@@ -371,11 +477,18 @@ export const Workbench3DViewport: React.FC<Props> = ({
     }
   }, [bedW, bedH, config.sheetWidthMm, config.sheetHeightMm, material, jobs, selectedJobId]);
 
-  // 3. Mover pórtico Z y cabezal X en vivo durante simulación
+  // 3. Mover pórtico y cabezal láser en vivo
   useEffect(() => {
     if (gantryRef.current && headRef.current) {
       gantryRef.current.position.z = laserPos.y - bedH / 2;
       headRef.current.position.x = laserPos.x - bedW / 2;
+    }
+    if (flareRef.current) {
+      flareRef.current.scale.set(
+        laserPos.firing ? 28 : 16,
+        laserPos.firing ? 28 : 16,
+        1
+      );
     }
     if (rendererRef.current && sceneRef.current && cameraRef.current) {
       rendererRef.current.render(sceneRef.current, cameraRef.current);
@@ -391,7 +504,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
   }
 
   return (
-    <div className="relative w-full h-full bg-[#070a0f] overflow-hidden">
+    <div className="relative w-full h-full bg-[#06090f] overflow-hidden">
       <div
         ref={containerRef}
         className="w-full h-full cursor-grab active:cursor-grabbing"
@@ -423,13 +536,13 @@ export const Workbench3DViewport: React.FC<Props> = ({
         ))}
       </div>
 
-      {/* Telemetría en vivo abajo */}
-      <div className="absolute bottom-3 left-3 right-3 z-10 pointer-events-none flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
-        <span className="bg-slate-950/85 border border-slate-800 px-2.5 py-1 rounded text-slate-300">
-          Mesa {bedW}×{bedH} mm · Plancha {config.sheetWidthMm}×{config.sheetHeightMm} mm · Cabezal X:{Math.round(laserPos.x)} Y:{Math.round(laserPos.y)} mm
+      {/* Telemetría compacta en una sola fila */}
+      <div className="absolute bottom-2.5 left-3 right-3 z-10 pointer-events-none flex items-center justify-between gap-2 text-[10px] font-mono">
+        <span className="bg-slate-950/85 border border-slate-800 px-2.5 py-1 rounded text-slate-300 truncate">
+          Mesa {bedW}×{bedH} mm · Plancha {config.sheetWidthMm}×{config.sheetHeightMm} mm · X:{Math.round(laserPos.x)} Y:{Math.round(laserPos.y)} mm
         </span>
-        <span className="bg-slate-950/85 border border-slate-800 px-2.5 py-1 rounded text-cyan-300">
-          🖱 Arrastrar: Rotar 3D · Rueda: Zoom · Click derecho: Mover
+        <span className="bg-slate-950/85 border border-slate-800 px-2.5 py-1 rounded text-cyan-300 shrink-0 hidden sm:inline">
+          🖱 Orbitar · Zoom · Pan
         </span>
       </div>
     </div>
