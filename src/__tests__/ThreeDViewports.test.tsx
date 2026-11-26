@@ -15,6 +15,7 @@ import {
   buildRotaryVesselGroup,
   buildSanouChuckModels,
   buildTailstockSupportAssembly,
+  resolveProductAppearance,
   resolveRotaryVesselShape,
 } from '../core/three/cadModels';
 import * as THREE from 'three';
@@ -31,22 +32,36 @@ describe('Visores 3D Three.js (Rotativo y Mesa Vank 9060)', () => {
     expect(() => disposeObject3D(group)).not.toThrow();
   });
 
-  it('construye modelados CAD multi-pieza (Tumbler, Termo, Mate, Botella, Sanou y soporte cónico)', () => {
+  it('construye modelados CAD multi-pieza con su textura realista según producto', () => {
     expect(resolveRotaryVesselShape('auto', 190, 82, 82)).toBe('thermos');
     expect(resolveRotaryVesselShape('auto', 120, 90, 65)).toBe('tumbler');
     expect(resolveRotaryVesselShape('auto', 85, 76, 76)).toBe('mate');
     expect(resolveRotaryVesselShape('auto', 145, 72, 72)).toBe('bottle');
 
+    expect(
+      resolveProductAppearance('auto', 'auto', 75, 85, 68, 'mate_imperial').surface
+    ).toBe('leather');
+    expect(
+      resolveProductAppearance('auto', 'auto', 150, 90, 90, 'termo_stanley').surface
+    ).toBe('hammered_green');
+    expect(
+      resolveProductAppearance('auto', 'auto', 125, 82, 62, 'pinta_cerveza').surface
+    ).toBe('glass');
+
     const dummyTex = new THREE.Texture();
     for (const shape of ['tumbler', 'thermos', 'mate', 'bottle'] as const) {
-      const vg = buildRotaryVesselGroup({
+      const appearance = resolveProductAppearance(
         shape,
+        shape === 'mate' ? 'leather' : shape === 'thermos' ? 'hammered_green' : 'powder_black',
+        120,
+        90,
+        65
+      );
+      const vg = buildRotaryVesselGroup({
+        appearance,
         r0: 45,
         r1: 32.5,
         len: 120,
-        color: '#1b2029',
-        metalness: 0.3,
-        roughness: 0.6,
         brushedTex: dummyTex,
         mouthAtLeft: false,
       });

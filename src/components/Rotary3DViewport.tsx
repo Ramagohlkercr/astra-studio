@@ -16,50 +16,12 @@ import {
   buildSanouChuckModels,
   buildTailstockSupportAssembly,
   buildVankLaserHeadMeshGroup,
-  resolveRotaryVesselShape,
+  resolveProductAppearance,
+  RotarySurfaceMaterialKind,
   RotaryVesselShape,
 } from '../core/three/cadModels';
 
 type CameraPreset = 'iso' | 'front' | 'top' | 'chuck';
-type VesselFinish = 'powder_black' | 'stainless' | 'navy_coat' | 'wood';
-
-const VESSEL_FINISHES: Record<
-  VesselFinish,
-  { label: string; color: string; metalness: number; roughness: number; markHex: string; markEmissive: string }
-> = {
-  powder_black: {
-    label: 'Negro Mate',
-    color: '#1b2029',
-    metalness: 0.28,
-    roughness: 0.62,
-    markHex: '#f1f5f9',
-    markEmissive: '#94a3b8',
-  },
-  stainless: {
-    label: 'Acero Inox',
-    color: '#94a3b8',
-    metalness: 0.88,
-    roughness: 0.24,
-    markHex: '#111827',
-    markEmissive: '#000000',
-  },
-  navy_coat: {
-    label: 'Azul Termo',
-    color: '#0f3954',
-    metalness: 0.32,
-    roughness: 0.55,
-    markHex: '#f8fafc',
-    markEmissive: '#cbd5e1',
-  },
-  wood: {
-    label: 'Madera',
-    color: '#8f5f36',
-    metalness: 0.05,
-    roughness: 0.78,
-    markHex: '#1b0d04',
-    markEmissive: '#000000',
-  },
-};
 
 const VESSEL_SHAPES: { id: RotaryVesselShape; label: string }[] = [
   { id: 'auto', label: 'Auto' },
@@ -69,6 +31,21 @@ const VESSEL_SHAPES: { id: RotaryVesselShape; label: string }[] = [
   { id: 'bottle', label: 'Botella' },
 ];
 
+const SURFACE_OPTIONS: {
+  id: RotarySurfaceMaterialKind;
+  label: string;
+  swatch: string;
+}[] = [
+  { id: 'auto', label: 'Auto', swatch: '#22d3ee' },
+  { id: 'hammered_green', label: 'Verde Stanley', swatch: '#1f4b34' },
+  { id: 'leather', label: 'Cuero', swatch: '#6e3f1d' },
+  { id: 'powder_black', label: 'Negro', swatch: '#1b2029' },
+  { id: 'navy_coat', label: 'Azul', swatch: '#113a57' },
+  { id: 'stainless', label: 'Inox', swatch: '#9ca8b8' },
+  { id: 'wood', label: 'Madera', swatch: '#8f5b32' },
+  { id: 'glass', label: 'Cristal', swatch: '#bae6fd' },
+];
+
 interface Props {
   config: RotaryConfig;
   layout: RotaryLayout;
@@ -76,6 +53,7 @@ interface Props {
   svgRaw: string | null;
   previewRotationDeg: number;
   isAutoRotating?: boolean;
+  presetId?: string;
   fallbackSvgContent?: React.ReactNode;
 }
 
@@ -86,6 +64,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
   svgRaw,
   previewRotationDeg,
   isAutoRotating = false,
+  presetId,
   fallbackSvgContent,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -109,11 +88,10 @@ export const Rotary3DViewport: React.FC<Props> = ({
   });
 
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('iso');
-  const [vesselFinish, setVesselFinish] = useState<VesselFinish>('powder_black');
+  const [vesselSurface, setVesselSurface] =
+    useState<RotarySurfaceMaterialKind>('auto');
   const [vesselShape, setVesselShape] = useState<RotaryVesselShape>('auto');
   const [webglReady, setWebglReady] = useState<boolean>(() => canUseWebGL());
-
-  const finish = VESSEL_FINISHES[vesselFinish];
 
   const dims = useMemo(() => {
     const len = Math.max(20, Math.min(900, config.usefulLengthMm || 120));
@@ -127,9 +105,17 @@ export const Rotary3DViewport: React.FC<Props> = ({
     return { len, d0, d1, r0, r1, alphaRad };
   }, [config]);
 
-  const resolvedShape = useMemo(
-    () => resolveRotaryVesselShape(vesselShape, dims.len, dims.d0, dims.d1),
-    [vesselShape, dims]
+  const appearance = useMemo(
+    () =>
+      resolveProductAppearance(
+        vesselShape,
+        vesselSurface,
+        dims.len,
+        dims.d0,
+        dims.d1,
+        presetId
+      ),
+    [vesselShape, vesselSurface, dims, presetId]
   );
 
   useEffect(() => {
@@ -171,7 +157,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
     }
   };
 
-  // 1. Inicializar WebGLRenderer + RoomEnvironment PBR + iluminación + loop físico rotacional
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !canUseWebGL()) {
@@ -193,7 +178,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
     scene.background = new THREE.Color('#070b12');
     scene.fog = new THREE.FogExp2('#070b12', 0.0005);
     scene.environment = studioEnv.envMap;
-    scene.environmentIntensity = 0.9;
+    scene.environmentIntensity = 0.92;
 
     const camera = new THREE.PerspectiveCamera(
       35,
@@ -208,7 +193,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
     controls.minDistance = 40;
     controls.maxDistance = 1200;
 
-    const hemi = new THREE.HemisphereLight('#dbeafe', '#0f172a', 0.88);
+    const hemi = new THREE.HemisphereLight('#dbeafe', '#0f172a', 0.9);
     scene.add(hemi);
 
     const keyLight = new THREE.DirectionalLight('#fffbeb', 2.1);
@@ -318,7 +303,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
     };
   }, []);
 
-  // 2. Reconstruir modelos CAD multi-pieza (LatheGeometry + Sanou CNC + Contrapunta regulable + Cabezal Vank)
   useEffect(() => {
     const root = assemblyGroupRef.current;
     const renderer = rendererRef.current;
@@ -347,7 +331,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
     grid.position.y = bedY;
     root.add(grid);
 
-    // Línea de foco láser constante
     const focusLineGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(-len * 0.78, focusY, 0),
       new THREE.Vector3(len * 0.78, focusY, 0),
@@ -359,7 +342,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
       )
     );
 
-    // Cabezal Láser CO2 Vank 9060 completo con racor neumático y tubo de lente
     const headX = Math.max(-len * 0.45, Math.min(len * 0.45, config.axisOffsetMm || 0));
     const glowTex = createLaserGlowTexture();
     const { headGroup, flareSprite } = buildVankLaserHeadMeshGroup(14, glowTex);
@@ -411,32 +393,29 @@ export const Rotary3DViewport: React.FC<Props> = ({
       }
     }
 
-    // Objeto rotativo modelado por perfiles LatheGeometry reales (Tumbler / Termo / Mate / Botella)
+    // Producto modelado 3D + textura física realista correspondiente (Cuero Mate, Verde Stanley, Cristal, Coat)
     const vesselGroup = buildRotaryVesselGroup({
-      shape: resolvedShape,
+      appearance,
       r0,
       r1,
       len,
-      color: finish.color,
-      metalness: finish.metalness,
-      roughness: finish.roughness,
       brushedTex,
       mouthAtLeft: config.chuckSide === 'left_rim',
     });
     spindle.add(vesselGroup);
 
-    // Malla envolvente con el logo real grabado en bajorrelieve sobre el barril
+    // Grabado real envuelto en bajorrelieve con contraste físico acorde al material
     const arcRad = ((Math.min(360, Math.max(1, config.arcDeg || 360))) * Math.PI) / 180;
     const engravedMaps = buildRotaryEngravedTextures(
       svgRaw,
       layout.canvasWidthMm,
       layout.canvasHeightMm,
-      finish.markHex,
+      appearance.markHex,
       () => renderer.render(scene, camera)
     );
     const wrapGeo = new THREE.CylinderGeometry(
-      r1 + 0.34,
-      r0 + 0.34,
+      r1 + 0.36,
+      r0 + 0.36,
       len,
       80,
       1,
@@ -450,10 +429,10 @@ export const Rotary3DViewport: React.FC<Props> = ({
       bumpScale: 2.2,
       transparent: true,
       alphaTest: 0.04,
-      roughness: vesselFinish === 'stainless' || vesselFinish === 'wood' ? 0.85 : 0.2,
-      metalness: vesselFinish === 'stainless' || vesselFinish === 'wood' ? 0.15 : 0.92,
-      emissive: finish.markEmissive,
-      emissiveIntensity: 0.22,
+      roughness: appearance.engraveIsAblatedMetal ? 0.2 : 0.88,
+      metalness: appearance.engraveIsAblatedMetal ? 0.92 : 0.08,
+      emissive: appearance.markEmissive,
+      emissiveIntensity: appearance.surface === 'glass' ? 0.28 : 0.18,
       side: THREE.FrontSide,
     });
     const wrapMesh = new THREE.Mesh(wrapGeo, wrapMat);
@@ -461,14 +440,12 @@ export const Rotary3DViewport: React.FC<Props> = ({
     wrapMesh.receiveShadow = true;
     spindle.add(wrapMesh);
 
-    // Línea de costura Y = 0°
     const seamGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(-len / 2, r0 + 0.72, 0),
       new THREE.Vector3(len / 2, r1 + 0.72, 0),
     ]);
     spindle.add(new THREE.Line(seamGeo, new THREE.LineBasicMaterial({ color: '#fbbf24' })));
 
-    // Soporte regulable articulado con tornillo y ruedas bajo el extremo nivelado si es cónico
     if (layout.tapered && physicalSetup.tailstockLiftMm > 0) {
       const supportX =
         physicalSetup.endToLift === 'end' ? len / 2 - 14 : -len / 2 + 14;
@@ -495,9 +472,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
     };
   }, [
     dims,
-    finish,
-    vesselFinish,
-    resolvedShape,
+    appearance,
     config.rotaryType,
     config.rollerDiameterMm,
     config.arcDeg,
@@ -527,64 +502,65 @@ export const Rotary3DViewport: React.FC<Props> = ({
 
   return (
     <div className="flex flex-col gap-1.5">
-      {/* Barra superior compacta sin superposiciones: Cámaras + Forma 3D + Acabado PBR */}
-      <div className="flex flex-wrap items-center justify-between gap-1.5 bg-slate-950/90 border border-slate-800 px-2 py-1 rounded-lg text-[10px]">
-        <div className="flex flex-wrap items-center gap-1">
-          <span className="text-cyan-300 font-bold mr-0.5">Cámara:</span>
-          {(
-            [
-              { id: 'iso', label: 'Isométrica' },
-              { id: 'front', label: 'Frontal' },
-              { id: 'top', label: 'Superior Z' },
-              { id: 'chuck', label: 'Mandril' },
-            ] as const
-          ).map((camOpt) => (
-            <button
-              key={camOpt.id}
-              type="button"
-              onClick={() => applyCameraPreset(camOpt.id)}
-              className={`px-1.5 py-0.5 rounded font-semibold transition ${
-                cameraPreset === camOpt.id
-                  ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-500/60'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              {camOpt.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1">
-          <span className="text-slate-400 font-semibold">Pieza:</span>
-          {VESSEL_SHAPES.map((s) => {
-            const active = vesselShape === s.id;
-            return (
+      {/* Barra superior compacta: Cámaras + Producto CAD + Textura Realista */}
+      <div className="flex flex-col gap-1 bg-slate-950/90 border border-slate-800 px-2 py-1 rounded-lg text-[10px]">
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-cyan-300 font-bold mr-0.5">Cámara:</span>
+            {(
+              [
+                { id: 'iso', label: 'Isométrica' },
+                { id: 'front', label: 'Frontal' },
+                { id: 'top', label: 'Superior Z' },
+                { id: 'chuck', label: 'Mandril' },
+              ] as const
+            ).map((camOpt) => (
               <button
-                key={s.id}
+                key={camOpt.id}
                 type="button"
-                onClick={() => setVesselShape(s.id)}
-                className={`px-1.5 py-0.5 rounded font-medium transition ${
-                  active
-                    ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/50'
+                onClick={() => applyCameraPreset(camOpt.id)}
+                className={`px-1.5 py-0.5 rounded font-semibold transition ${
+                  cameraPreset === camOpt.id
+                    ? 'bg-cyan-500/25 text-cyan-200 border border-cyan-500/60'
                     : 'text-slate-400 hover:text-white hover:bg-slate-800'
                 }`}
               >
-                {s.label}
+                {camOpt.label}
               </button>
-            );
-          })}
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-slate-400 font-semibold">Pieza:</span>
+            {VESSEL_SHAPES.map((s) => {
+              const active = vesselShape === s.id;
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => setVesselShape(s.id)}
+                  className={`px-1.5 py-0.5 rounded font-medium transition ${
+                    active
+                      ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/50'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  {s.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
-        <div className="flex items-center gap-1">
-          {(Object.keys(VESSEL_FINISHES) as VesselFinish[]).map((key) => {
-            const item = VESSEL_FINISHES[key];
-            const active = vesselFinish === key;
+        <div className="flex flex-wrap items-center gap-1 pt-0.5 border-t border-slate-800/80">
+          <span className="text-slate-400 font-semibold mr-0.5">Textura:</span>
+          {SURFACE_OPTIONS.map((opt) => {
+            const active = vesselSurface === opt.id;
             return (
               <button
-                key={key}
+                key={opt.id}
                 type="button"
-                onClick={() => setVesselFinish(key)}
-                title={`Acabado visual: ${item.label}`}
+                onClick={() => setVesselSurface(opt.id)}
                 className={`px-1.5 py-0.5 rounded font-medium flex items-center gap-1 transition ${
                   active
                     ? 'bg-slate-800 text-white border border-cyan-500/50'
@@ -593,9 +569,9 @@ export const Rotary3DViewport: React.FC<Props> = ({
               >
                 <span
                   className="w-2 h-2 rounded-full border border-white/30"
-                  style={{ backgroundColor: item.color }}
+                  style={{ backgroundColor: opt.swatch }}
                 />
-                <span className="hidden xl:inline">{item.label}</span>
+                <span>{opt.label}</span>
               </button>
             );
           })}
@@ -611,7 +587,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
 
         <div className="absolute bottom-2 left-2 right-2 z-10 pointer-events-none flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
           <span className="bg-slate-950/80 border border-slate-800 px-2 py-0.5 rounded text-slate-300">
-            🖱 Orbitar · Zoom · Modelo: {VESSEL_SHAPES.find((s) => s.id === resolvedShape)?.label}
+            🖱 Orbitar · Modelo: {VESSEL_SHAPES.find((s) => s.id === appearance.shape)?.label} ({SURFACE_OPTIONS.find((o) => o.id === appearance.surface)?.label})
           </span>
           {layout.tapered && (
             <span className="bg-amber-950/85 border border-amber-600/60 px-2 py-0.5 rounded text-amber-300 font-bold">

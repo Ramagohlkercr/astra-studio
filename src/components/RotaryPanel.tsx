@@ -296,6 +296,7 @@ export function RotaryPanel({
   const [rotary3DViewStyle, setRotary3DViewStyle] = useState<
     'webgl' | 'schematic'
   >('webgl');
+  const [selectedPresetId, setSelectedPresetId] = useState<string>('');
 
   // Ángulo de rotación interactivo para girar el vaso/termo 360° (215° muestra el logo frente a cámara e iluminado)
   const [previewRotationDeg, setPreviewRotationDeg] = useState<number>(215);
@@ -1631,6 +1632,7 @@ export function RotaryPanel({
                       svgRaw={previewResult.svgRaw}
                       previewRotationDeg={previewRotationDeg}
                       isAutoRotating={isAutoRotating}
+                      presetId={selectedPresetId}
                       fallbackSvgContent={schematicView}
                     />
                   ) : (
@@ -1845,6 +1847,7 @@ export function RotaryPanel({
                           (x) => x.id === e.target.value
                         );
                         if (p) {
+                          setSelectedPresetId(p.id);
                           if (
                             p.patch.rotaryType &&
                             p.patch.rotaryType !== config.rotaryType

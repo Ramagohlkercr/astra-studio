@@ -18,6 +18,10 @@ import {
   disposeObject3D,
 } from '../core/three/threeUtils';
 import { buildVankLaserHeadMeshGroup } from '../core/three/cadModels';
+import {
+  createLeatherPbrTextures,
+  createWoodPbrTextures,
+} from '../core/three/materialTextures';
 
 type Workbench3DCam = 'iso' | 'front' | 'top';
 
@@ -295,17 +299,51 @@ export const Workbench3DViewport: React.FC<Props> = ({
     honeycomb.receiveShadow = true;
     root.add(honeycomb);
 
-    // Plancha / rollo del material activo recibiendo sombras del pórtico
+    // Plancha / rollo con textura física real acorde a la categoría del material
     const sheetW = Math.min(bedW, Math.max(20, config.sheetWidthMm || 730));
     const sheetH = Math.min(bedH, Math.max(20, config.sheetHeightMm || 600));
     const matThickness = Math.max(1.4, Math.min(8, material.thicknessMm || 1.8));
+    const surfColor = material.visual.surfaceColor || '#92542b';
+    let sheetMat: THREE.MeshStandardMaterial;
+
+    if (material.category === 'synthetic_leather') {
+      const leather = createLeatherPbrTextures(surfColor, false, [8, 6]);
+      sheetMat = new THREE.MeshStandardMaterial({
+        map: leather.map,
+        bumpMap: leather.bumpMap,
+        bumpScale: 1.15,
+        roughnessMap: leather.roughnessMap,
+        roughness: 0.78,
+        metalness: 0.05,
+      });
+    } else if (material.category === 'wood') {
+      const wood = createWoodPbrTextures(surfColor, [4, 4]);
+      sheetMat = new THREE.MeshStandardMaterial({
+        map: wood.map,
+        bumpMap: wood.bumpMap,
+        bumpScale: 0.9,
+        roughnessMap: wood.roughnessMap,
+        roughness: 0.75,
+        metalness: 0.05,
+      });
+    } else if (/metal|alumin|acero/i.test(material.name)) {
+      sheetMat = new THREE.MeshStandardMaterial({
+        color: surfColor,
+        roughnessMap: brushedTex.clone(),
+        roughness: 0.28,
+        metalness: 0.88,
+      });
+    } else {
+      sheetMat = new THREE.MeshStandardMaterial({
+        color: surfColor,
+        roughness: material.category === 'acrylic' ? 0.14 : 0.65,
+        metalness: material.category === 'acrylic' ? 0.12 : 0.06,
+      });
+    }
+
     const sheetMesh = new THREE.Mesh(
       new THREE.BoxGeometry(sheetW, matThickness, sheetH),
-      new THREE.MeshStandardMaterial({
-        color: material.visual.surfaceColor || '#92542b',
-        roughness: 0.68,
-        metalness: 0.08,
-      })
+      sheetMat
     );
     sheetMesh.position.set(
       toWorldX(sheetW / 2),
