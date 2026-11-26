@@ -17,6 +17,7 @@ import {
   createStudioRenderer,
   disposeObject3D,
 } from '../core/three/threeUtils';
+import { buildVankLaserHeadMeshGroup } from '../core/three/cadModels';
 
 type Workbench3DCam = 'iso' | 'front' | 'top';
 
@@ -417,80 +418,55 @@ export const Workbench3DViewport: React.FC<Props> = ({
       }
     }
 
-    // Pórtico X de aluminio extruido con proyección de sombra real sobre la plancha
+    // Pórtico X de aluminio extruido, carros Y, espejo #2 y cabezal láser Vank 9060 completo
     const gantry = new THREE.Group();
-    const beamBar = new THREE.Mesh(
-      new THREE.BoxGeometry(bedW + 34, 15, 20),
-      new THREE.MeshStandardMaterial({
-        color: '#475569',
-        metalness: 0.86,
-        roughness: 0.26,
-        roughnessMap: brushedTex.clone(),
-      })
-    );
-    beamBar.position.set(0, 50, 0);
+    const beamMat = new THREE.MeshStandardMaterial({
+      color: '#475569',
+      metalness: 0.86,
+      roughness: 0.24,
+      roughnessMap: brushedTex.clone(),
+    });
+    const beamBar = new THREE.Mesh(new THREE.BoxGeometry(bedW + 34, 16, 22), beamMat);
+    beamBar.position.set(0, 56, 0);
     beamBar.castShadow = true;
     gantry.add(beamBar);
 
-    const gantryGuideRail = new THREE.Mesh(new THREE.BoxGeometry(bedW + 26, 4, 4), railMat);
-    gantryGuideRail.position.set(0, 52, 11);
+    const gantryGuideRail = new THREE.Mesh(new THREE.BoxGeometry(bedW + 28, 4.5, 4.5), railMat);
+    gantryGuideRail.position.set(0, 56, 12.5);
     gantry.add(gantryGuideRail);
 
-    const headGroup = new THREE.Group();
-    const headHousing = new THREE.Mesh(
-      new THREE.BoxGeometry(28, 30, 28),
-      new THREE.MeshStandardMaterial({ color: '#0284c7', metalness: 0.78, roughness: 0.25 })
-    );
-    headHousing.position.y = 42;
-    headHousing.castShadow = true;
-    headGroup.add(headHousing);
+    // Carros laterales sobre los rieles Y + espejo lateral #2
+    const carriageEndMat = new THREE.MeshStandardMaterial({
+      color: '#1e293b',
+      metalness: 0.72,
+      roughness: 0.34,
+    });
+    for (const side of [-1, 1]) {
+      const endTruck = new THREE.Mesh(new THREE.BoxGeometry(18, 28, 38), carriageEndMat);
+      endTruck.position.set(side * (bedW / 2 + 16), 34, 0);
+      endTruck.castShadow = true;
+      gantry.add(endTruck);
+    }
 
-    const brassRing = new THREE.Mesh(
-      new THREE.CylinderGeometry(9.5, 9.5, 5, 24),
-      new THREE.MeshStandardMaterial({ color: '#eab308', metalness: 0.9, roughness: 0.22 })
+    const mirror2Mount = new THREE.Mesh(
+      new THREE.BoxGeometry(16, 18, 18),
+      new THREE.MeshStandardMaterial({ color: '#0284c7', metalness: 0.82, roughness: 0.24 })
     );
-    brassRing.position.y = 25;
-    headGroup.add(brassRing);
+    mirror2Mount.position.set(-bedW / 2 - 4, 56, 12);
+    gantry.add(mirror2Mount);
 
-    const nozzle = new THREE.Mesh(
-      new THREE.ConeGeometry(8.5, 20, 24),
-      new THREE.MeshStandardMaterial({ color: '#e2e8f0', metalness: 0.88, roughness: 0.22 })
+    const { headGroup, flareSprite } = buildVankLaserHeadMeshGroup(
+      14,
+      createLaserGlowTexture()
     );
-    nozzle.rotation.x = Math.PI;
-    nozzle.position.y = 14;
-    nozzle.castShadow = true;
-    headGroup.add(nozzle);
-
-    const laserRay = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.55, 0.95, 13, 14),
-      new THREE.MeshBasicMaterial({
-        color: '#ef4444',
-        transparent: true,
-        opacity: 0.88,
-      })
-    );
-    laserRay.position.y = 7.5;
-    headGroup.add(laserRay);
-
-    const flare = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: createLaserGlowTexture(),
-        color: '#fecaca',
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      })
-    );
-    flare.scale.set(20, 20, 1);
-    flare.position.y = topSurfaceY + 1.5;
-    headGroup.add(flare);
-
+    headGroup.position.set(0, 56, 0);
+    flareSprite.position.y = -(56 - topSurfaceY - 1.5);
     gantry.add(headGroup);
     root.add(gantry);
 
     gantryRef.current = gantry;
     headRef.current = headGroup;
-    flareRef.current = flare;
+    flareRef.current = flareSprite;
 
     if (camera.position.lengthSq() < 1) {
       applyPreset(cameraPreset);

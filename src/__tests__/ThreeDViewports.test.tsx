@@ -11,6 +11,12 @@ import {
 import { createBlankLabelDesign } from '../core/projects/projectManager';
 import { INITIAL_MATERIALS_CATALOG } from '../core/materials/materialsCatalog';
 import { createDefaultWorkbenchConfig } from '../core/workbench/workbenchTypes';
+import {
+  buildRotaryVesselGroup,
+  buildSanouChuckModels,
+  buildTailstockSupportAssembly,
+  resolveRotaryVesselShape,
+} from '../core/three/cadModels';
 import * as THREE from 'three';
 
 describe('Visores 3D Three.js (Rotativo y Mesa Vank 9060)', () => {
@@ -23,6 +29,41 @@ describe('Visores 3D Three.js (Rotativo y Mesa Vank 9060)', () => {
     );
     group.add(mesh);
     expect(() => disposeObject3D(group)).not.toThrow();
+  });
+
+  it('construye modelados CAD multi-pieza (Tumbler, Termo, Mate, Botella, Sanou y soporte cónico)', () => {
+    expect(resolveRotaryVesselShape('auto', 190, 82, 82)).toBe('thermos');
+    expect(resolveRotaryVesselShape('auto', 120, 90, 65)).toBe('tumbler');
+    expect(resolveRotaryVesselShape('auto', 85, 76, 76)).toBe('mate');
+    expect(resolveRotaryVesselShape('auto', 145, 72, 72)).toBe('bottle');
+
+    const dummyTex = new THREE.Texture();
+    for (const shape of ['tumbler', 'thermos', 'mate', 'bottle'] as const) {
+      const vg = buildRotaryVesselGroup({
+        shape,
+        r0: 45,
+        r1: 32.5,
+        len: 120,
+        color: '#1b2029',
+        metalness: 0.3,
+        roughness: 0.6,
+        brushedTex: dummyTex,
+        mouthAtLeft: false,
+      });
+      expect(vg.children.length).toBeGreaterThanOrEqual(3);
+      disposeObject3D(vg);
+    }
+
+    const chuck = buildSanouChuckModels(45, -82, dummyTex);
+    expect(chuck.staticMotorGroup.children.length).toBeGreaterThan(1);
+    expect(chuck.rotatingChuckGroup.children.length).toBeGreaterThanOrEqual(5);
+    disposeObject3D(chuck.staticMotorGroup);
+    disposeObject3D(chuck.rotatingChuckGroup);
+
+    const jack = buildTailstockSupportAssembly(46, -80, 12);
+    expect(jack.children.length).toBeGreaterThanOrEqual(5);
+    disposeObject3D(jack);
+    dummyTex.dispose();
   });
 
   it('renderiza el fallback de Rotary3DViewport y Workbench3DViewport sin WebGL', () => {
