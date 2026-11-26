@@ -178,10 +178,10 @@ export function RotaryPanel({
   const setConfig = (update: (c: RotaryConfig) => RotaryConfig) =>
     onConfigChange(update(config));
 
-  // Pestaña activa del panel lateral derecho
+  // Pestaña activa del panel lateral derecho (1 vista enfocada a la vez para máxima claridad)
   const [sidebarTab, setSidebarTab] = useState<
-    'all' | 'object' | 'laser_c00' | 'calibration'
-  >('all');
+    'object' | 'laser_c00' | 'calibration'
+  >('object');
 
   // Vista del visor izquierdo: 'split' (3D Mandril arriba + 2D Desenrollado abajo), '3d_chuck', '2d_unwrapped'
   const [canvasMode, setCanvasMode] = useState<
@@ -687,88 +687,44 @@ export function RotaryPanel({
       aria-labelledby="rotary-title"
       className="fixed inset-0 z-50 bg-[#070a0e]/95 backdrop-blur-sm flex flex-col text-slate-100 select-none"
     >
-      {/* 1. CABECERA SUPERIOR DE LA ESTACIÓN ROTATIVA VANK 9060 */}
-      <header className="min-h-14 py-2 bg-[#11161f] border-b border-slate-800 px-4 flex flex-wrap items-center justify-between gap-2 shrink-0">
+      {/* 1. CABECERA SUPERIOR LIMPIA Y DESPEJADA */}
+      <header className="h-13 bg-[#11161f] border-b border-slate-800/90 px-4 flex items-center justify-between gap-3 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-cyan-500/15 border border-cyan-500/40 flex items-center justify-center text-cyan-400 shrink-0">
+          <div className="w-7 h-7 rounded-lg bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
             <RotateCw className="w-4 h-4" />
           </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3
-                id="rotary-title"
-                className="text-sm font-bold text-white truncate"
-              >
-                Accesorio Rotativo — Vank 9060 CO₂ (Mandril Sanou & Rodillos)
-              </h3>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/40">
-                Ruida RDC8445S · Eje Y
-              </span>
-              {activeProfile?.calibrationStatus === 'verified_physical' ? (
-                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/40">
-                  ✓ Verificado físicamente ({activeProfile.stepsPerRotation} pasos/vuelta)
-                </span>
-              ) : activeProfile?.calibrationStatus === 'calculated_pending' ? (
-                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/40">
-                  🟡 Corrección propuesta ({activeProfile.proposedStepsPerRotation || config.stepsPerRotation} pasos, pendiente de verificar en máquina)
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">
-                  🔴 No calibrado ({config.stepsPerRotation ?? 3200} pasos ilustrativos no verificados)
-                </span>
-              )}
-            </div>
-            <p className="text-[11px] text-slate-400 truncate hidden sm:block">
-              Simulador físico 3D de Mandril Sanou, compensación cónica Pre-Warp, nivelación de foco Z y exportación directa a LightBurn (.lbrn2 / .SVG / .DXF)
-            </p>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            disabled={!layout.valid || !hasVisibleEngraving}
-            onClick={handleSaveTestPattern}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/60 text-amber-300 text-xs font-bold disabled:opacity-40 whitespace-nowrap"
-            title="Generar cuadrado patrón 1:1 mm para medir con calibre o cinta flexible sobre el cilindro"
+          <h3
+            id="rotary-title"
+            className="text-sm font-bold text-white truncate"
           >
-            <Ruler className="w-3.5 h-3.5 shrink-0" />
-            <span>Generar Patrón SVG de Calibración</span>
-          </button>
-
-          <button
-            type="button"
-            disabled={!layout.valid || !hasVisibleEngraving || !!previewResult.error}
-            onClick={() => void handleOpenInLightBurn()}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-extrabold shadow whitespace-nowrap"
-          >
-            <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-            <span>
-              {isTauri()
-                ? '🔥 Abrir en LightBurn (.lbrn2)'
-                : '🔥 Descargar LightBurn (.lbrn2)'}
+            Accesorio Rotativo — Vank 9060
+          </h3>
+          <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold bg-slate-800/90 text-cyan-300 border border-slate-700">
+            {config.rotaryType === 'chuck' ? 'Mandril Sanou' : 'Rodillos'} · Eje Y
+          </span>
+          {activeProfile?.calibrationStatus === 'verified_physical' ? (
+            <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              ✓ {activeProfile.stepsPerRotation} pasos/vuelta
             </span>
-          </button>
-
-          <button
-            type="button"
-            disabled={!layout.valid || !hasVisibleEngraving || !!previewResult.error}
-            onClick={save}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-40 text-slate-950 text-xs font-extrabold shadow whitespace-nowrap"
-          >
-            <Save className="w-3.5 h-3.5 shrink-0" />
-            <span>Guardar archivos de producción</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 whitespace-nowrap"
-          >
-            <X className="w-3.5 h-3.5 shrink-0" />
-            <span>Cerrar</span>
-          </button>
+          ) : activeProfile?.calibrationStatus === 'calculated_pending' ? (
+            <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30">
+              Pendiente de verificar ({activeProfile.proposedStepsPerRotation || config.stepsPerRotation} pasos)
+            </span>
+          ) : (
+            <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-800/80 text-slate-400 border border-slate-700/80">
+              {config.stepsPerRotation ?? 3200} pasos/vuelta (sin calibrar)
+            </span>
+          )}
         </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors"
+        >
+          <X className="w-3.5 h-3.5 shrink-0" />
+          <span>Cerrar</span>
+        </button>
       </header>
 
       {/* 2. CUERPO PRINCIPAL DE 2 COLUMNAS: VISOR 3D + 2D DESENROLLADO (IZQUIERDA) + CONTROLES (DERECHA) */}
@@ -1248,55 +1204,46 @@ export function RotaryPanel({
         </div>
 
         {/* =====================================================================
-            COLUMNA DERECHA: CONTROLES DEL ROTADOR ORGANIZADOS EN PESTAÑAS CLARAS
+            COLUMNA DERECHA: CONTROLES DEL ROTADOR EN 3 PESTAÑAS LIMPIAS Y ENFOCADAS
            ===================================================================== */}
-        <aside className="w-[375px] lg:w-[425px] xl:w-[480px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0 divide-y divide-slate-800">
-          {/* BARRA DE NAVEGACIÓN FIJA (STICKY) */}
-          <div className="sticky top-0 z-20 bg-[#111621]/95 backdrop-blur border-b border-slate-800 p-2 grid grid-cols-4 gap-1 text-[11px]">
-            <button
-              type="button"
-              onClick={() => setSidebarTab('object')}
-              className={`py-1.5 px-2 rounded-lg font-extrabold flex items-center justify-center gap-1 border transition ${
-                sidebarTab === 'object'
-                  ? 'bg-cyan-500 text-slate-950 border-cyan-300 shadow'
-                  : 'bg-slate-900 hover:bg-slate-800 text-cyan-300 border-slate-700'
-              }`}
-            >
-              <span>🏺 1. Objeto</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSidebarTab('laser_c00')}
-              className={`py-1.5 px-2 rounded-lg font-extrabold flex items-center justify-center gap-1 border transition ${
-                sidebarTab === 'laser_c00'
-                  ? 'bg-orange-500 text-slate-950 border-orange-300 shadow'
-                  : 'bg-slate-900 hover:bg-slate-800 text-orange-300 border-orange-500/40'
-              }`}
-            >
-              <span>⚡ 2. Vel/Pot C00</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSidebarTab('calibration')}
-              className={`py-1.5 px-2 rounded-lg font-bold flex items-center justify-center gap-1 border transition ${
-                sidebarTab === 'calibration'
-                  ? 'bg-amber-500 text-slate-950 border-amber-300 shadow'
-                  : 'bg-slate-900 hover:bg-slate-800 text-amber-300 border-slate-700'
-              }`}
-            >
-              <span>🎯 3. Pasos Sanou</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSidebarTab('all')}
-              className={`py-1.5 px-2 rounded-lg font-bold flex items-center justify-center gap-1 border transition ${
-                sidebarTab === 'all'
-                  ? 'bg-emerald-500 text-slate-950 border-emerald-300 shadow'
-                  : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700'
-              }`}
-            >
-              <span>Ver Todo</span>
-            </button>
+        <aside className="w-[375px] lg:w-[420px] xl:w-[465px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0">
+          {/* BARRA DE PESTAÑAS SEGMENTADA (1 VISTA ENFOCADA A LA VEZ) */}
+          <div className="sticky top-0 z-20 bg-[#111621]/95 backdrop-blur border-b border-slate-800 p-2">
+            <div className="grid grid-cols-3 gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setSidebarTab('object')}
+                className={`py-1.5 px-2 rounded-lg font-bold transition ${
+                  sidebarTab === 'object'
+                    ? 'bg-cyan-500 text-slate-950 shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                1. Objeto y Medidas
+              </button>
+              <button
+                type="button"
+                onClick={() => setSidebarTab('laser_c00')}
+                className={`py-1.5 px-2 rounded-lg font-bold transition ${
+                  sidebarTab === 'laser_c00'
+                    ? 'bg-cyan-500 text-slate-950 shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                2. Velocidad y Potencia
+              </button>
+              <button
+                type="button"
+                onClick={() => setSidebarTab('calibration')}
+                className={`py-1.5 px-2 rounded-lg font-bold transition ${
+                  sidebarTab === 'calibration'
+                    ? 'bg-cyan-500 text-slate-950 shadow'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                3. Calibrar Mandril
+              </button>
+            </div>
           </div>
 
           {statusBanner && (
@@ -1315,92 +1262,43 @@ export function RotaryPanel({
           {/* =====================================================================
               SECCIÓN 1: HARDWARE (MANDRIL SANOU / RODILLOS) Y MEDIDAS DEL OBJETO
              ===================================================================== */}
-          {(sidebarTab === 'all' || sidebarTab === 'object') && (
-            <div className="p-3.5 space-y-3 text-xs">
-              {/* 1.1 Selección de Perfil de Accesorio Rotativo */}
-              <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-white flex items-center gap-1.5">
-                    <Cpu className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>1. Perfil de Accesorio Rotativo (Hardware)</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setIsAddingProfile((v) => !v)}
-                    className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold"
-                  >
-                    {isAddingProfile ? 'Cancelar nuevo' : '+ Guardar nuevo accesorio'}
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 gap-2">
-                  <select
-                    aria-label="Perfil de accesorio"
-                    className={field}
-                    value={selectedProfileId}
-                    onChange={(e) => handleSelectProfile(e.target.value)}
-                  >
-                    {profiles.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.type === 'roller' ? 'Rodillos' : 'Mandril'})
-                      </option>
-                    ))}
-                  </select>
-
-                  <div className="flex items-center justify-between text-xs text-slate-300 px-2.5 py-1.5 bg-slate-950 rounded-lg border border-slate-800">
-                    <span>
-                      Sujeción:{' '}
-                      <strong className="text-white">
-                        {config.rotaryType === 'roller'
-                          ? 'Rodillos'
-                          : 'Mandril Sanou 3 Mordazas'}
-                      </strong>
-                    </span>
-                    <span>
-                      Giro:{' '}
-                      <strong className="text-cyan-300">
-                        {config.rotationDirection === 'inverted'
-                          ? 'Invertido'
-                          : 'Normal (+Y)'}
-                      </strong>
-                    </span>
-                    {!activeProfile?.isBuiltIn && activeProfile && (
+          {sidebarTab === 'object' && (
+            <div className="p-4 space-y-3.5 text-xs">
+              {/* 1.1 Selección de Perfil de Accesorio y Plantilla de Objeto en una sola tarjeta prolija */}
+              <div className="bg-slate-900/75 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                <div className="grid grid-cols-1 gap-2.5">
+                  <label className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-slate-300">
+                        Accesorio conectado al Eje Y:
+                      </span>
                       <button
                         type="button"
-                        onClick={() => handleDeleteProfile(activeProfile.id)}
-                        className="text-red-400 hover:text-red-300 font-bold"
+                        onClick={() => setIsAddingProfile((v) => !v)}
+                        className="text-[11px] text-cyan-400 hover:text-cyan-300 font-medium"
                       >
-                        Borrar
+                        {isAddingProfile ? 'Cancelar' : '+ Nuevo perfil'}
                       </button>
-                    )}
-                  </div>
-                </div>
-
-                {activeProfile?.previousStepsPerRotation !== undefined && (
-                  <div className="pt-1 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={handleRevertProfileCalibration}
-                      className="text-[11px] text-amber-400 hover:text-amber-300 underline flex items-center gap-1"
+                    </div>
+                    <select
+                      aria-label="Perfil de accesorio"
+                      className={field}
+                      value={selectedProfileId}
+                      onChange={(e) => handleSelectProfile(e.target.value)}
                     >
-                      <Undo2 className="w-3 h-3" />
-                      <span>
-                        Deshacer calibración (recuperar{' '}
-                        {activeProfile.previousStepsPerRotation} pasos)
-                      </span>
-                    </button>
-                  </div>
-                )}
+                      {profiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.type === 'roller' ? 'Rodillos' : 'Mandril'})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
-                {isAddingProfile && (
-                  <div className="p-2.5 bg-slate-950 rounded-lg border border-cyan-500/40 space-y-2">
-                    <span className="text-[11px] font-semibold text-cyan-300 block">
-                      Guardar configuración actual como nuevo accesorio:
-                    </span>
-                    <div className="flex gap-2">
+                  {isAddingProfile && (
+                    <div className="p-2.5 bg-slate-950 rounded-lg border border-cyan-500/40 flex gap-2">
                       <input
                         type="text"
-                        placeholder="Ej: Mandril Sanou K11 100mm"
+                        placeholder="Nombre (ej: Mandril Sanou K11)"
                         value={newProfileName}
                         onChange={(e) => setNewProfileName(e.target.value)}
                         className="flex-1 bg-slate-900 border border-slate-700 px-2.5 py-1 rounded text-xs text-white"
@@ -1410,82 +1308,57 @@ export function RotaryPanel({
                         onClick={handleSaveProfile}
                         className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs rounded"
                       >
-                        Guardar Perfil
+                        Guardar
                       </button>
                     </div>
-                  </div>
-                )}
-              </div>
+                  )}
 
-              {/* 1.2 Plantillas de Objetos de Taller (Termos, Mates, Tumblers, Vasos, Botellas) */}
-              <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 space-y-2.5">
-                <label className="block font-bold text-white">
-                  <span>Plantillas de Objetos de Taller (Termos, Mates, Vasos):</span>
-                  <select
-                    aria-label="Preset de objeto"
-                    className={`${field} mt-1.5`}
-                    value=""
-                    onChange={(e) => {
-                      const p = ROTARY_PRESETS.find(
-                        (x) => x.id === e.target.value
-                      );
-                      if (p) {
-                        if (
-                          p.patch.rotaryType &&
-                          p.patch.rotaryType !== config.rotaryType
-                        ) {
-                          handleToggleRotaryType(p.patch.rotaryType);
-                        }
-                        setConfig((c) => ({ ...c, ...p.patch }));
-                      }
-                    }}
-                  >
-                    <option value="">
-                      Elegir termo, mate, vaso o botella de referencia…
-                    </option>
-                    {ROTARY_PRESETS.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        [{p.category}] {p.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <div className="grid grid-cols-2 gap-2.5">
                   <label className="space-y-1">
-                    <span className="text-[11px] text-slate-300 font-semibold">
-                      Tipo de sujeción:
+                    <span className="text-[11px] font-bold text-slate-300 block">
+                      Plantilla rápida de objeto (Termos, Mates, Vasos):
                     </span>
                     <select
+                      aria-label="Preset de objeto"
                       className={field}
-                      value={config.rotaryType}
-                      onChange={(e) =>
-                        handleToggleRotaryType(e.target.value as RotaryType)
-                      }
+                      value=""
+                      onChange={(e) => {
+                        const p = ROTARY_PRESETS.find(
+                          (x) => x.id === e.target.value
+                        );
+                        if (p) {
+                          if (
+                            p.patch.rotaryType &&
+                            p.patch.rotaryType !== config.rotaryType
+                          ) {
+                            handleToggleRotaryType(p.patch.rotaryType);
+                          }
+                          setConfig((c) => ({ ...c, ...p.patch }));
+                        }
+                      }}
                     >
-                      <option value="chuck">Mandril 3 Mordazas (Chuck)</option>
-                      <option value="roller">Rodillos (Roller)</option>
+                      <option value="">
+                        Elegir termo, mate, vaso o botella de referencia…
+                      </option>
+                      {ROTARY_PRESETS.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          [{p.category}] {p.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
+                </div>
+              </div>
 
-                  <label className="space-y-1">
-                    <span className="text-[11px] text-slate-300 font-semibold">
-                      Largo útil axial X (mm):
-                    </span>
-                    <input
-                      className={field}
-                      type="number"
-                      min={1}
-                      max={900}
-                      step="0.5"
-                      value={val(config.usefulLengthMm)}
-                      onChange={num('usefulLengthMm')}
-                    />
-                  </label>
+              {/* 1.2 Medidas principales del objeto (Grilla limpia 2x3) */}
+              <div className="bg-slate-900/75 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                <div className="font-bold text-white text-xs">
+                  Medidas del Objeto Cilíndrico o Cónico
+                </div>
 
+                <div className="grid grid-cols-2 gap-3">
                   <label className="space-y-1">
-                    <span className="text-[11px] text-emerald-300 font-bold">
-                      Diámetro inicial X=0 (mm):
+                    <span className="text-[11px] text-emerald-300 font-semibold">
+                      Diámetro inicial X=0 (mm)
                     </span>
                     <input
                       className={field}
@@ -1499,8 +1372,8 @@ export function RotaryPanel({
                   </label>
 
                   <label className="space-y-1">
-                    <span className="text-[11px] text-amber-300 font-bold">
-                      Diámetro final X=largo (mm):
+                    <span className="text-[11px] text-amber-300 font-semibold">
+                      Diámetro final X=largo (mm)
                     </span>
                     <input
                       className={field}
@@ -1508,7 +1381,7 @@ export function RotaryPanel({
                       min={5}
                       max={300}
                       step="0.1"
-                      placeholder="Igual al inicial = recto"
+                      placeholder="Igual = cilindro recto"
                       value={val(config.endDiameterMm)}
                       onChange={(e) =>
                         setConfig((c) => ({
@@ -1524,22 +1397,22 @@ export function RotaryPanel({
 
                   <label className="space-y-1">
                     <span className="text-[11px] text-slate-300">
-                      Arco a grabar (°):
+                      Largo útil axial X (mm)
                     </span>
                     <input
                       className={field}
                       type="number"
                       min={1}
-                      max={360}
-                      step="1"
-                      value={val(config.arcDeg)}
-                      onChange={num('arcDeg')}
+                      max={900}
+                      step="0.5"
+                      value={val(config.usefulLengthMm)}
+                      onChange={num('usefulLengthMm')}
                     />
                   </label>
 
                   <label className="space-y-1">
-                    <span className="text-[11px] text-cyan-300 font-bold">
-                      Copias alrededor (1..36):
+                    <span className="text-[11px] text-cyan-300 font-semibold">
+                      Copias alrededor (1..36)
                     </span>
                     <input
                       className={field}
@@ -1551,93 +1424,92 @@ export function RotaryPanel({
                       onChange={num('repeatCount')}
                     />
                   </label>
-
-                  <label className="space-y-1">
-                    <span className="text-[11px] text-slate-400">
-                      Desplazamiento axial X (mm):
-                    </span>
-                    <input
-                      className={field}
-                      type="number"
-                      step="0.5"
-                      value={val(config.axisOffsetMm, 0)}
-                      onChange={num('axisOffsetMm')}
-                    />
-                  </label>
-
-                  <label className="space-y-1">
-                    <span className="text-[11px] text-slate-400">
-                      Giro del diseño Y (°):
-                    </span>
-                    <input
-                      className={field}
-                      type="number"
-                      step="1"
-                      value={val(config.angularOffsetDeg, 0)}
-                      onChange={num('angularOffsetDeg')}
-                    />
-                  </label>
                 </div>
 
-                {/* Botones rápidos de distribución alrededor del cilindro */}
-                <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-slate-800">
-                  <span className="text-[10px] text-slate-400 mr-1">
-                    Distribución rápida:
-                  </span>
-                  {[
-                    { n: 1, label: '1 Copia (Frente)' },
-                    { n: 2, label: '2 Copias (Frente y Dorso 180°)' },
-                    { n: 3, label: '3 Copias (120°)' },
-                    { n: 4, label: '4 Copias (90°)' },
-                  ].map((item) => (
-                    <button
-                      key={item.n}
-                      type="button"
-                      onClick={() =>
-                        setConfig((c) => ({
-                          ...c,
-                          repeatCount: item.n,
-                          axisOffsetMm: 0,
-                          angularOffsetDeg: 0,
-                        }))
-                      }
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                        (config.repeatCount ?? 1) === item.n
-                          ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
+                {/* Ajustes secundarios de posición y arco en un desplegable limpio */}
+                <details className="group pt-1 border-t border-slate-800/80">
+                  <summary className="cursor-pointer text-[11px] text-slate-400 hover:text-slate-200 font-medium select-none">
+                    Más opciones de posición y sujeción ▾
+                  </summary>
+                  <div className="grid grid-cols-2 gap-2.5 pt-2.5">
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-slate-400">
+                        Tipo de sujeción
+                      </span>
+                      <select
+                        className={field}
+                        value={config.rotaryType}
+                        onChange={(e) =>
+                          handleToggleRotaryType(e.target.value as RotaryType)
+                        }
+                      >
+                        <option value="chuck">Mandril 3 Mordazas (Chuck)</option>
+                        <option value="roller">Rodillos (Roller)</option>
+                      </select>
+                    </label>
+
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-slate-400">
+                        Arco útil (°)
+                      </span>
+                      <input
+                        className={field}
+                        type="number"
+                        min={1}
+                        max={360}
+                        step="1"
+                        value={val(config.arcDeg)}
+                        onChange={num('arcDeg')}
+                      />
+                    </label>
+
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-slate-400">
+                        Desplazamiento axial X (mm)
+                      </span>
+                      <input
+                        className={field}
+                        type="number"
+                        step="0.5"
+                        value={val(config.axisOffsetMm, 0)}
+                        onChange={num('axisOffsetMm')}
+                      />
+                    </label>
+
+                    <label className="space-y-1">
+                      <span className="text-[11px] text-slate-400">
+                        Giro del diseño Y (°)
+                      </span>
+                      <input
+                        className={field}
+                        type="number"
+                        step="1"
+                        value={val(config.angularOffsetDeg, 0)}
+                        onChange={num('angularOffsetDeg')}
+                      />
+                    </label>
+                  </div>
+                </details>
               </div>
 
               {/* Alerta técnica y calculadora de nivelación física cuando es Objeto Cónico */}
               {layout.tapered && (
-                <div className="p-3 bg-amber-500/10 border border-amber-500/40 rounded-xl text-xs space-y-2 text-amber-200">
-                  <div className="font-extrabold flex items-center justify-between text-amber-300">
-                    <span>⚠️ OBJETO CÓNICO + MANDRIL SANOU (PRE-WARP Y FOCO Z)</span>
-                    <span className="font-mono text-[10px] bg-amber-950 px-2 py-0.5 rounded border border-amber-600">
-                      Inclinación: {physicalSetup.wallTiltAngleDeg}°
+                <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs space-y-1.5 text-amber-200">
+                  <div className="font-bold flex items-center justify-between text-amber-300">
+                    <span>📐 Nivelación de Cono para Foco Z</span>
+                    <span className="font-mono text-[10px] bg-amber-950 px-2 py-0.5 rounded border border-amber-600/60">
+                      +{physicalSetup.tailstockLiftMm} mm ({physicalSetup.wallTiltAngleDeg}°)
                     </span>
                   </div>
-                  <p className="text-[11px] leading-relaxed">
-                    <strong>1. Nivelación física del foco Z:</strong> Como el diámetro cambia de{' '}
-                    <strong>Ø {config.objectDiameterMm} mm</strong> a{' '}
-                    <strong>Ø {config.endDiameterMm} mm</strong>, suplementá/levantá el extremo más angosto unos{' '}
-                    <strong className="text-white underline">
-                      +{physicalSetup.tailstockLiftMm} mm ({physicalSetup.wallTiltAngleDeg}°)
+                  <p className="text-[11px] leading-relaxed text-slate-200">
+                    Levantá el extremo más angosto{' '}
+                    <strong className="text-amber-300">
+                      +{physicalSetup.tailstockLiftMm} mm
                     </strong>{' '}
-                    para que la pared superior quede horizontal y el láser no pierda foco.
-                  </p>
-                  <p className="text-[11px] leading-relaxed">
-                    <strong>2. En LightBurn Rotary Setup:</strong> Ingresá como{' '}
-                    <em>Object Diameter</em> exactamente{' '}
-                    <strong className="text-white">
-                      Ø {layout.referenceDiameterMm} mm
-                    </strong>{' '}
-                    (promedio). <strong>No actives Taper Warp en LightBurn</strong> porque este archivo ya exporta las curvas pre-compensadas.
+                    para que la cara superior quede horizontal al cabezal láser. En LightBurn Rotary Setup ingresá{' '}
+                    <strong className="text-cyan-300">
+                      Object Diameter = Ø {layout.referenceDiameterMm} mm
+                    </strong>.
                   </p>
                 </div>
               )}
@@ -1647,88 +1519,98 @@ export function RotaryPanel({
           {/* =====================================================================
               SECCIÓN 2: VELOCIDAD, POTENCIA E INTERVALO DE GRABADO ROTATIVO (CAPA C00)
              ===================================================================== */}
-          {(sidebarTab === 'all' || sidebarTab === 'laser_c00') && (
-            <div className="p-3.5 space-y-2.5 text-xs bg-[#0b0f16]">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <Sliders className="w-4 h-4 text-orange-400" />
-                  <h4 className="font-extrabold text-white uppercase tracking-wide">
-                    2. Calibrar Velocidad y Potencia Rotativa (Capa C00)
-                  </h4>
+          {sidebarTab === 'laser_c00' && (
+            <div className="p-4 space-y-3.5 text-xs">
+              <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white text-xs">
+                    Parámetros de Grabado Rotativo (Capa C00)
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono text-[10px] text-cyan-300">
+                    {Math.round(
+                      25.4 / Math.max(0.02, layerParams.lineIntervalMm)
+                    )}{' '}
+                    DPI
+                  </span>
                 </div>
-                <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 font-mono text-[10px] text-cyan-300">
-                  {Math.round(
-                    25.4 / Math.max(0.02, layerParams.lineIntervalMm)
-                  )}{' '}
-                  DPI
-                </span>
-              </div>
 
-              {/* Presets rápidos orientativos para objetos rotativos (Termos Powder Coat, Acero, Vidrio, Madera) */}
-              <div className="flex flex-wrap items-center gap-1">
-                <span className="text-[10px] text-slate-400">
-                  Cargar referencia:
-                </span>
-                {[
-                  {
-                    label: '⚡ Captura LightBurn Vank (600/30 · 0.073mm)',
-                    speed: 600,
-                    maxP: 30,
-                    minP: 30,
-                    intMm: 0.073,
-                    mode: 'image' as const,
-                  },
-                  {
-                    label: 'Termo Pintado / Powder Coat (350/28 · 0.073mm)',
-                    speed: 350,
-                    maxP: 28,
-                    minP: 22,
-                    intMm: 0.073,
-                    mode: 'fill' as const,
-                  },
-                  {
-                    label: 'Mate Madera / Calabaza (250/22 · 0.080mm)',
-                    speed: 250,
-                    maxP: 22,
-                    minP: 18,
-                    intMm: 0.08,
-                    mode: 'fill' as const,
-                  },
-                  {
-                    label: 'Vaso Vidrio / Cristal (200/18 · 0.080mm)',
-                    speed: 200,
-                    maxP: 18,
-                    minP: 15,
-                    intMm: 0.08,
-                    mode: 'fill' as const,
-                  },
-                ].map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() =>
-                      setLayerParams((prev) => ({
-                        ...prev,
-                        mode: preset.mode,
-                        speedMmPerSec: preset.speed,
-                        maxPowerPercent: preset.maxP,
-                        minPowerPercent: preset.minP,
-                        lineIntervalMm: preset.intMm,
-                      }))
-                    }
-                    className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-emerald-300 font-semibold"
+                {/* Selector desplegable limpio en vez de múltiples botones apilados */}
+                <label className="block space-y-1">
+                  <span className="text-[11px] text-slate-400">
+                    Cargar referencia orientativa de taller:
+                  </span>
+                  <select
+                    className={field}
+                    value=""
+                    onChange={(e) => {
+                      const presets = [
+                        {
+                          id: 'vank_lb',
+                          speed: 600,
+                          maxP: 30,
+                          minP: 30,
+                          intMm: 0.073,
+                          mode: 'image' as const,
+                        },
+                        {
+                          id: 'powder_coat',
+                          speed: 350,
+                          maxP: 28,
+                          minP: 22,
+                          intMm: 0.073,
+                          mode: 'fill' as const,
+                        },
+                        {
+                          id: 'mate_wood',
+                          speed: 250,
+                          maxP: 22,
+                          minP: 18,
+                          intMm: 0.08,
+                          mode: 'fill' as const,
+                        },
+                        {
+                          id: 'glass',
+                          speed: 200,
+                          maxP: 18,
+                          minP: 15,
+                          intMm: 0.08,
+                          mode: 'fill' as const,
+                        },
+                      ];
+                      const match = presets.find((p) => p.id === e.target.value);
+                      if (match) {
+                        setLayerParams((prev) => ({
+                          ...prev,
+                          mode: match.mode,
+                          speedMmPerSec: match.speed,
+                          maxPowerPercent: match.maxP,
+                          minPowerPercent: match.minP,
+                          lineIntervalMm: match.intMm,
+                        }));
+                      }
+                    }}
                   >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
+                    <option value="">Elegir referencia orientativa…</option>
+                    <option value="vank_lb">
+                      Preset LightBurn Vank 9060 (600 mm/s · 30% · 0.073 mm)
+                    </option>
+                    <option value="powder_coat">
+                      Termo Pintado / Powder Coat (350 mm/s · 28% · 0.073 mm)
+                    </option>
+                    <option value="mate_wood">
+                      Mate Madera / Cuero (250 mm/s · 22% · 0.080 mm)
+                    </option>
+                    <option value="glass">
+                      Vaso de Vidrio / Cristal (200 mm/s · 18% · 0.080 mm)
+                    </option>
+                  </select>
+                </label>
 
-              {/* Tarjeta C00 Grabado Rotativo estilo LightBurn Pro 2.2 */}
-              <div className="p-3 rounded-xl bg-slate-900/95 border-2 border-slate-700 space-y-2.5">
-                <div className="grid grid-cols-4 gap-2">
-                  <label>
-                    <span className="text-[10px] font-bold text-cyan-300 block mb-0.5">
-                      Modo C00
+                {/* Los 4 parámetros principales en una grilla 2x2 súper clara */}
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <label className="space-y-1">
+                    <span className="text-[11px] font-semibold text-slate-300">
+                      Modo LightBurn
                     </span>
                     <select
                       value={layerParams.mode}
@@ -1738,7 +1620,7 @@ export function RotaryPanel({
                           mode: e.target.value as 'image' | 'fill' | 'line',
                         }))
                       }
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white font-bold"
+                      className={field}
                     >
                       <option value="image">Imagen</option>
                       <option value="fill">Relleno (Fill)</option>
@@ -1746,8 +1628,8 @@ export function RotaryPanel({
                     </select>
                   </label>
 
-                  <label>
-                    <span className="text-[10px] font-bold text-emerald-300 block mb-0.5">
+                  <label className="space-y-1">
+                    <span className="text-[11px] font-semibold text-emerald-300">
                       Velocidad (mm/s)
                     </span>
                     <input
@@ -1766,13 +1648,13 @@ export function RotaryPanel({
                               : Number(e.target.value),
                         }))
                       }
-                      className="w-full bg-slate-950 border-2 border-emerald-500/60 rounded-lg px-2 py-1 text-sm font-mono font-extrabold text-white"
+                      className={field}
                     />
                   </label>
 
-                  <label>
-                    <span className="text-[10px] font-bold text-amber-300 block mb-0.5">
-                      Pot. Máx (%)
+                  <label className="space-y-1">
+                    <span className="text-[11px] font-semibold text-amber-300">
+                      Potencia Máx (%)
                     </span>
                     <input
                       type="number"
@@ -1793,38 +1675,12 @@ export function RotaryPanel({
                               : p.minPowerPercent,
                         }));
                       }}
-                      className="w-full bg-slate-950 border-2 border-amber-500/60 rounded-lg px-2 py-1 text-sm font-mono font-extrabold text-white"
+                      className={field}
                     />
                   </label>
 
-                  <label>
-                    <span className="text-[10px] font-bold text-slate-300 block mb-0.5">
-                      Pot. Mín (%)
-                    </span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={0.5}
-                      placeholder="Ej: 25"
-                      value={layerParams.minPowerPercent ?? ''}
-                      onChange={(e) =>
-                        setLayerParams((p) => ({
-                          ...p,
-                          minPowerPercent:
-                            e.target.value === ''
-                              ? null
-                              : Number(e.target.value),
-                        }))
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-sm font-mono font-bold text-white"
-                    />
-                  </label>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2 pt-1">
-                  <label>
-                    <span className="text-[10px] font-bold text-cyan-300 block">
+                  <label className="space-y-1">
+                    <span className="text-[11px] font-semibold text-cyan-300">
                       Intervalo (mm)
                     </span>
                     <input
@@ -1842,104 +1698,117 @@ export function RotaryPanel({
                           ),
                         }))
                       }
-                      className="w-full bg-slate-950 border border-cyan-500/60 rounded px-2 py-1 font-mono text-xs text-cyan-300 font-bold"
-                    />
-                  </label>
-
-                  <label>
-                    <span className="text-[10px] text-slate-300 block">
-                      Pasadas
-                    </span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={10}
-                      value={layerParams.passes}
-                      onChange={(e) =>
-                        setLayerParams((p) => ({
-                          ...p,
-                          passes: Math.max(1, Number(e.target.value) || 1),
-                        }))
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-white"
-                    />
-                  </label>
-
-                  <label>
-                    <span className="text-[10px] text-slate-300 block">
-                      Overscan (%)
-                    </span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={15}
-                      step={0.5}
-                      value={layerParams.overscanPercent}
-                      onChange={(e) =>
-                        setLayerParams((p) => ({
-                          ...p,
-                          overscanPercent: Math.max(
-                            0,
-                            Number(e.target.value) || 0
-                          ),
-                        }))
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-white"
+                      className={field}
                     />
                   </label>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-800 text-[11px]">
-                  <div className="flex items-center gap-1">
-                    {[0.073, 0.08, 0.1].map((mm) => (
-                      <button
-                        key={mm}
-                        type="button"
-                        onClick={() =>
-                          setLayerParams((p) => ({ ...p, lineIntervalMm: mm }))
-                        }
-                        className={`px-1.5 py-0.5 rounded font-mono text-[10px] border ${
-                          Math.abs(layerParams.lineIntervalMm - mm) < 0.001
-                            ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200 font-bold'
-                            : 'bg-slate-950 border-slate-800 text-slate-400'
-                        }`}
-                      >
-                        {mm}mm ({Math.round(25.4 / mm)} DPI)
-                      </button>
-                    ))}
-                  </div>
+                {/* Opciones secundarias de capa en un desplegable limpio */}
+                <details className="group pt-2 border-t border-slate-800/80">
+                  <summary className="cursor-pointer text-[11px] text-slate-400 hover:text-slate-200 font-medium select-none">
+                    Opciones avanzadas (Potencia mín, Pasadas, Overscan) ▾
+                  </summary>
+                  <div className="space-y-3 pt-2.5">
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className="space-y-1">
+                        <span className="text-[10px] text-slate-400 block">
+                          Pot. Mín (%)
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={0.5}
+                          placeholder="25"
+                          value={layerParams.minPowerPercent ?? ''}
+                          onChange={(e) =>
+                            setLayerParams((p) => ({
+                              ...p,
+                              minPowerPercent:
+                                e.target.value === ''
+                                  ? null
+                                  : Number(e.target.value),
+                            }))
+                          }
+                          className={field}
+                        />
+                      </label>
 
-                  <div className="flex items-center gap-2.5">
-                    <label className="flex items-center gap-1 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={layerParams.bidirectional}
-                        onChange={(e) =>
-                          setLayerParams((p) => ({
-                            ...p,
-                            bidirectional: e.target.checked,
-                          }))
-                        }
-                        className="accent-emerald-500"
-                      />
-                      <span>Bidireccional</span>
-                    </label>
-                    <label className="flex items-center gap-1 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={layerParams.crossHatch}
-                        onChange={(e) =>
-                          setLayerParams((p) => ({
-                            ...p,
-                            crossHatch: e.target.checked,
-                          }))
-                        }
-                        className="accent-cyan-500"
-                      />
-                      <span>Cruzado 90° (Limpiar residuo)</span>
-                    </label>
+                      <label className="space-y-1">
+                        <span className="text-[10px] text-slate-400 block">
+                          Pasadas
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={layerParams.passes}
+                          onChange={(e) =>
+                            setLayerParams((p) => ({
+                              ...p,
+                              passes: Math.max(1, Number(e.target.value) || 1),
+                            }))
+                          }
+                          className={field}
+                        />
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-[10px] text-slate-400 block">
+                          Overscan (%)
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={15}
+                          step={0.5}
+                          value={layerParams.overscanPercent}
+                          onChange={(e) =>
+                            setLayerParams((p) => ({
+                              ...p,
+                              overscanPercent: Math.max(
+                                0,
+                                Number(e.target.value) || 0
+                              ),
+                            }))
+                          }
+                          className={field}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-4 text-[11px] text-slate-300">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={layerParams.bidirectional}
+                          onChange={(e) =>
+                            setLayerParams((p) => ({
+                              ...p,
+                              bidirectional: e.target.checked,
+                            }))
+                          }
+                          className="accent-emerald-500"
+                        />
+                        <span>Bidireccional</span>
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={layerParams.crossHatch}
+                          onChange={(e) =>
+                            setLayerParams((p) => ({
+                              ...p,
+                              crossHatch: e.target.checked,
+                            }))
+                          }
+                          className="accent-cyan-500"
+                        />
+                        <span>Cruzado 90°</span>
+                      </label>
+                    </div>
                   </div>
-                </div>
+                </details>
               </div>
             </div>
           )}
@@ -1947,16 +1816,22 @@ export function RotaryPanel({
           {/* =====================================================================
               SECCIÓN 3: CALIBRACIÓN DE PASOS POR VUELTA (MANDRIL SANOU / RODILLOS)
              ===================================================================== */}
-          {(sidebarTab === 'all' || sidebarTab === 'calibration') && (
-            <div className="p-3.5 space-y-3 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="font-extrabold text-cyan-300 uppercase tracking-wide flex items-center gap-1.5">
+          {sidebarTab === 'calibration' && (
+            <div className="p-4 space-y-3.5 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-white flex items-center gap-1.5">
                   <Target className="w-4 h-4 text-cyan-400" />
-                  <span>3. Calibración de Pasos por Vuelta y Giro (+Y)</span>
+                  <span>Pasos por Vuelta (Mandril Sanou)</span>
                 </span>
-                <span className="text-[11px] font-mono text-slate-300">
-                  Pasos activos: <strong>{config.stepsPerRotation ?? 3200}</strong>
-                </span>
+                <button
+                  type="button"
+                  disabled={!layout.valid || !hasVisibleEngraving}
+                  onClick={handleSaveTestPattern}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 text-[11px] font-semibold disabled:opacity-40"
+                >
+                  <Ruler className="w-3.5 h-3.5" />
+                  <span>Descargar Patrón SVG</span>
+                </button>
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">
