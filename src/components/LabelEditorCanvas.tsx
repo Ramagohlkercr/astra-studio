@@ -247,14 +247,14 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
     : material.visual.cutStrokeColor;
   const holeStroke = LIGHTBURN_LAYERS.HOLES.hexColor;
 
-  // Handles de selección si hay un elemento activo
-  const handleRadius = 0.6;
+  // Handles de selección si hay un elemento activo (escalados según el zoom y tamaño de la etiqueta)
+  const handleRadius = roundMm(Math.max(0.45, Math.min(2.8, viewWidthMm * 0.012)), 2);
   const bounds = selectedEl ? getElementNormalizedContentBounds(selectedEl) : null;
   const left = selectedEl && bounds ? selectedEl.xMm+(bounds.minX-.5)*selectedEl.widthMm : 0;
   const right = selectedEl && bounds ? selectedEl.xMm+(bounds.maxX-.5)*selectedEl.widthMm : 0;
   const top = selectedEl && bounds ? selectedEl.yMm+(bounds.minY-.5)*selectedEl.heightMm : 0;
   const bottom = selectedEl && bounds ? selectedEl.yMm+(bounds.maxY-.5)*selectedEl.heightMm : 0;
-  const handleDistRot = 2.0;
+  const handleDistRot = roundMm(Math.max(1.8, Math.min(8, viewWidthMm * 0.045)), 2);
 
   return (
     <div
@@ -637,6 +637,20 @@ export const LabelEditorCanvas: React.FC<LabelEditorCanvasProps> = ({
             >
               <title>Arrastrar con el mouse para rotar el elemento</title>
             </circle>
+
+            {/* Etiqueta flotante con el tamaño visible actual del logo (mm) */}
+            <text
+              x={(left + right) / 2}
+              y={bottom + handleRadius * 3.1}
+              textAnchor="middle"
+              fill="#fcd34d"
+              fontSize={roundMm(Math.max(1.1, viewWidthMm * 0.024), 2)}
+              fontFamily="monospace"
+              fontWeight="bold"
+              pointerEvents="none"
+            >
+              {roundMm(right - left, 1)} × {roundMm(bottom - top, 1)} mm
+            </text>
           </g>
         )}
 

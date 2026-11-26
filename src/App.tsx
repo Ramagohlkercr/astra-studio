@@ -516,6 +516,31 @@ export function App() {
     return labelDesign.elements.find((e) => e.id === selectedElementId) || null;
   }, [labelDesign.elements, selectedElementId]);
 
+  // Estado editable local para dimensiones visibles del logo (evita saltos al borrar dígitos)
+  const [logoWidthStr, setLogoWidthStr] = useState<string>('');
+  const [logoHeightStr, setLogoHeightStr] = useState<string>('');
+  const isEditingLogoSizeRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (!selectedElement) {
+      setLogoWidthStr('');
+      setLogoHeightStr('');
+      return;
+    }
+    const norm = getElementNormalizedContentBounds(selectedElement);
+    const visW = roundMm(selectedElement.widthMm * norm.width, 2);
+    const visH = roundMm(selectedElement.heightMm * norm.height, 2);
+    if (!isEditingLogoSizeRef.current) {
+      setLogoWidthStr(String(visW));
+      setLogoHeightStr(String(visH));
+    }
+  }, [
+    selectedElement?.id,
+    selectedElement?.widthMm,
+    selectedElement?.heightMm,
+    selectedElement?.contentBoundsNormalized,
+  ]);
+
   // ==========================================
   // MANIPULACIÓN DEL LOGOTIPO / IMAGEN
   // ==========================================
@@ -1013,55 +1038,153 @@ export function App() {
   };
 
   // 6. Cambio manual de tamaño en milímetros
-  const handleUpdateElementSizeMm = (newW: number, newH?: number, xMm?: number, yMm?: number) => {
-    if (!selectedElement) return;
-    const norm = getElementNormalizedContentBounds(selectedElement);
-    const aspect =
-      selectedElement.aspectRatio > 0
-        ? selectedElement.aspectRatio
-        : selectedElement.widthMm / Math.max(0.1, selectedElement.heightMm);
+  const handleUpdateElementSizeMm = (
+    newW: number,
+    newH?: number,
+    xMm?: number,
+    yMm?: number,
+    targetElementId?: string
+  ) => {
+    const targetEl = targetElementId
+      ? labelDesign.elements.find((el) => el.id === targetElementId) || selectedElement
+      : selectedElement;
+    if (!targetEl) return;
 
-    const safeW = Math.max(1.0, roundMm(newW, 2));
+    const norm = getElementNormalizedContentBounds(targetEl);
+    const visAspect =
+      (targetEl.widthMm * norm.width) /
+      Math.max(0.1, targetEl.heightMm * norm.height);
+    const aspect =
+      targetEl.aspectRatio > 0
+        ? targetEl.aspectRatio
+        : targetEl.widthMm / Math.max(0.1, targetEl.heightMm);
+
+    const minBoxW = Math.max(0.2, roundMm(0.5 / Math.max(0.05, norm.width), 2));
+    const minBoxH = Math.max(0.2, roundMm(0.5 / Math.max(0.05, norm.height), 2));
+    const safeW = Math.max(minBoxW, roundMm(newW, 2));
     const safeH =
-      selectedElement.lockAspectRatio || newH === undefined
-        ? roundMm(safeW / aspect, 2)
-        : Math.max(1.0, roundMm(newH, 2));
+      targetEl.lockAspectRatio || newH === undefined
+        ? Math.max(minBoxH, roundMm(safeW / aspect, 2))
+        : Math.max(minBoxH, roundMm(newH, 2));
+    const nextAspect =
+      !targetEl.lockAspectRatio && newH !== undefined
+        ? roundMm(safeW / Math.max(0.1, safeH), 4)
+        : targetEl.aspectRatio || roundMm(visAspect, 4);
 
     let updatedEl: LabelElement;
-    if (selectedElement.type === 'vector_text') {
-      const scaleFactor = selectedElement.heightMm > 0 ? safeH / selectedElement.heightMm : 1;
+    if (targetEl.type === 'vector_text') {
+      const scaleFactor =
+        targetEl.heightMm > 0 ? safeH / targetEl.heightMm : 1;
       const nextFontSize = roundMm(
-        Math.max(0.8, selectedElement.fontSizeMm * scaleFactor),
+        Math.max(0.8, targetEl.fontSizeMm * scaleFactor),
         2
       );
       updatedEl = {
-        ...selectedElement,
+        ...targetEl,
         widthMm: safeW,
         heightMm: safeH,
+        aspectRatio: nextAspect,
         fontSizeMm: nextFontSize,
       };
     } else {
       updatedEl = {
-        ...selectedElement,
+        ...targetEl,
         widthMm: safeW,
         heightMm: safeH,
+        aspectRatio: nextAspect,
       };
     }
 
-    if (xMm !== undefined && yMm !== undefined) updatedEl = {...updatedEl, xMm, yMm};
-    else {
-      const before = getElementVisibleBoundingBoxMm(selectedElement);
+    if (xMm !== undefined && yMm !== undefined) {
+      updatedEl = { ...updatedEl, xMm, yMm };
+    } else {
+      const before = getElementVisibleBoundingBoxMm(targetEl);
       const after = getElementVisibleBoundingBoxMm(updatedEl);
-      updatedEl = {...updatedEl, xMm: updatedEl.xMm+(before.minX+before.maxX-after.minX-after.maxX)/2,
-        yMm: updatedEl.yMm+(before.minY+before.maxY-after.minY-after.maxY)/2};
+      updatedEl = {
+        ...updatedEl,
+        xMm: updatedEl.xMm + (before.minX + before.maxX - after.minX - after.maxX) / 2,
+        yMm: updatedEl.yMm + (before.minY + before.maxY - after.minY - after.maxY) / 2,
+      };
     }
     const updatedEls = labelDesign.elements.map((el) =>
-      el.id === selectedElement.id ? updatedEl : el
+      el.id === targetEl.id ? updatedEl : el
     );
     pushStateWithHistory({
       ...labelDesign,
       elements: updatedEls,
     });
+  };
+
+  const handleLogoVisibleWidthInput = (raw: string) => {
+    setLogoWidthStr(raw);
+    const numVal = Number(raw.replace(',', '.'));
+    if (!selectedElement || !Number.isFinite(numVal) || numVal < 0.5 || raw.trim() === '') {
+      return;
+    }
+    const norm = getElementNormalizedContentBounds(selectedElement);
+    const nextBoxW = numVal / Math.max(0.05, norm.width);
+    if (selectedElement.lockAspectRatio) {
+      handleUpdateElementSizeMm(nextBoxW);
+      const aspect =
+        selectedElement.aspectRatio > 0
+          ? selectedElement.aspectRatio
+          : selectedElement.widthMm / Math.max(0.1, selectedElement.heightMm);
+      const nextVisH = roundMm((nextBoxW / aspect) * norm.height, 2);
+      setLogoHeightStr(String(nextVisH));
+    } else {
+      handleUpdateElementSizeMm(nextBoxW, selectedElement.heightMm);
+    }
+  };
+
+  const handleLogoVisibleHeightInput = (raw: string) => {
+    setLogoHeightStr(raw);
+    const numVal = Number(raw.replace(',', '.'));
+    if (!selectedElement || !Number.isFinite(numVal) || numVal < 0.5 || raw.trim() === '') {
+      return;
+    }
+    const norm = getElementNormalizedContentBounds(selectedElement);
+    const nextBoxH = numVal / Math.max(0.05, norm.height);
+    if (selectedElement.lockAspectRatio) {
+      const aspect =
+        selectedElement.aspectRatio > 0
+          ? selectedElement.aspectRatio
+          : selectedElement.widthMm / Math.max(0.1, selectedElement.heightMm);
+      const nextBoxW = nextBoxH * aspect;
+      handleUpdateElementSizeMm(nextBoxW, nextBoxH);
+      setLogoWidthStr(String(roundMm(nextBoxW * norm.width, 2)));
+    } else {
+      handleUpdateElementSizeMm(selectedElement.widthMm, nextBoxH);
+    }
+  };
+
+  const handleLogoVisibleSizeBlur = () => {
+    isEditingLogoSizeRef.current = false;
+    if (!selectedElement) return;
+    const norm = getElementNormalizedContentBounds(selectedElement);
+    setLogoWidthStr(String(roundMm(selectedElement.widthMm * norm.width, 2)));
+    setLogoHeightStr(String(roundMm(selectedElement.heightMm * norm.height, 2)));
+  };
+
+  const handleToggleLockAspectRatio = () => {
+    if (!selectedElement) return;
+    const nextLocked = !selectedElement.lockAspectRatio;
+    const updatedEls = labelDesign.elements.map((el) =>
+      el.id === selectedElement.id
+        ? {
+            ...el,
+            lockAspectRatio: nextLocked,
+            aspectRatio: roundMm(el.widthMm / Math.max(0.1, el.heightMm), 4),
+          }
+        : el
+    );
+    pushStateWithHistory({ ...labelDesign, elements: updatedEls });
+  };
+
+  const handleScaleSelectedElement = (factor: number) => {
+    if (!selectedElement || factor <= 0) return;
+    const nextW = selectedElement.widthMm * factor;
+    const nextH = selectedElement.heightMm * factor;
+    handleUpdateElementSizeMm(nextW, nextH);
   };
 
   // ==========================================
@@ -1927,6 +2050,92 @@ export function App() {
                         {isProcessingImage && <p role="status">Procesando imagen…</p>}
                       </fieldset>
                     )}
+
+                    {/* Edición rápida del tamaño visible del logo desde el Paso 1 */}
+                    <div className="pt-2.5 border-t border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-slate-300">
+                          Tamaño del logo (mm)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleToggleLockAspectRatio}
+                          className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition ${
+                            selectedElement.lockAspectRatio
+                              ? 'bg-cyan-500/15 border-cyan-500/50 text-cyan-300'
+                              : 'bg-slate-800 border-slate-700 text-slate-400'
+                          }`}
+                          title="Alternar bloqueo de proporción al cambiar ancho o alto"
+                        >
+                          {selectedElement.lockAspectRatio
+                            ? '🔒 Proporción fija'
+                            : '🔓 Libre'}
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-slate-400 block mb-1 text-[10px]">
+                            Ancho (mm):
+                          </label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            value={logoWidthStr}
+                            onFocus={() => {
+                              isEditingLogoSizeRef.current = true;
+                            }}
+                            onChange={(e) =>
+                              handleLogoVisibleWidthInput(e.target.value)
+                            }
+                            onBlur={handleLogoVisibleSizeBlur}
+                            className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-slate-400 block mb-1 text-[10px]">
+                            Alto (mm):
+                          </label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            value={logoHeightStr}
+                            onFocus={() => {
+                              isEditingLogoSizeRef.current = true;
+                            }}
+                            onChange={(e) =>
+                              handleLogoVisibleHeightInput(e.target.value)
+                            }
+                            onBlur={handleLogoVisibleSizeBlur}
+                            className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleScaleSelectedElement(0.85)}
+                          className="py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-slate-200"
+                        >
+                          −15%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleScaleSelectedElement(1.15)}
+                          className="py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-slate-200"
+                        >
+                          +15%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleFitToAvailableSpace(0.5)}
+                          className="py-1 rounded bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-700/60 text-[10px] font-bold text-cyan-300"
+                        >
+                          Máximo
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <div className="p-3 rounded bg-slate-900/40 border border-slate-800 text-xs text-slate-500 text-center">
@@ -2328,42 +2537,73 @@ export function App() {
                   <button onClick={() => handleFitToAvailableSpace(sewingMarginMm)} className="w-full py-2 rounded bg-slate-800 border border-slate-700 text-cyan-300 text-xs font-semibold">Acomodar para costura</button>
 
                   {selectedElement && (
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      <div>
-                        <label className="text-slate-400 block mb-1 text-[11px]">Ancho visible (mm):</label>
-                        <input
-                          type="number"
-                          step="0.5"
-                          min="1"
-                          max={labelDesign.widthMm}
-                          value={roundMm(
-                            selectedElement.widthMm *
-                              getElementNormalizedContentBounds(selectedElement).width,
-                            2
-                          )}
-                          onChange={(e) => handleUpdateElementSizeMm(Number(e.target.value) / getElementNormalizedContentBounds(selectedElement).width)}
-                          className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
-                        />
+                    <div className="space-y-2 pt-1">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-slate-400 block mb-1 text-[11px]">Ancho visible (mm):</label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            aria-label="Ancho visible (mm)"
+                            value={logoWidthStr}
+                            onFocus={() => {
+                              isEditingLogoSizeRef.current = true;
+                            }}
+                            onChange={(e) =>
+                              handleLogoVisibleWidthInput(e.target.value)
+                            }
+                            onBlur={handleLogoVisibleSizeBlur}
+                            className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-slate-400 block mb-1 text-[11px]">Alto visible (mm):</label>
+                          <input
+                            type="number"
+                            step="0.5"
+                            min="0.5"
+                            aria-label="Alto visible (mm)"
+                            value={logoHeightStr}
+                            onFocus={() => {
+                              isEditingLogoSizeRef.current = true;
+                            }}
+                            onChange={(e) =>
+                              handleLogoVisibleHeightInput(e.target.value)
+                            }
+                            onBlur={handleLogoVisibleSizeBlur}
+                            className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
+                          />
+                        </div>
                       </div>
-                      <div>
-                        <label className="text-slate-400 block mb-1 text-[11px]">Alto visible (mm):</label>
-                        <input
-                          type="number"
-                          step="0.5"
-                          min="1"
-                          max={labelDesign.heightMm}
-                          value={roundMm(
-                            selectedElement.heightMm *
-                              getElementNormalizedContentBounds(selectedElement).height,
-                            2
-                          )}
-                          onChange={(e) => {
-                            const newH = Number(e.target.value) / getElementNormalizedContentBounds(selectedElement).height;
-                            const aspect = selectedElement.widthMm / selectedElement.heightMm;
-                            handleUpdateElementSizeMm(newH * aspect, newH);
-                          }}
-                          className="w-full bg-slate-950 border border-slate-700 px-2 py-1 rounded text-white font-mono text-xs focus:border-cyan-500"
-                        />
+                      <div className="grid grid-cols-4 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={handleToggleLockAspectRatio}
+                          className={`col-span-2 py-1 px-2 rounded text-[10px] font-semibold border transition ${
+                            selectedElement.lockAspectRatio
+                              ? 'bg-cyan-500/15 border-cyan-500/50 text-cyan-300'
+                              : 'bg-slate-800 border-slate-700 text-slate-400'
+                          }`}
+                        >
+                          {selectedElement.lockAspectRatio
+                            ? '🔒 Proporción fija'
+                            : '🔓 Alto/Ancho libre'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleScaleSelectedElement(0.85)}
+                          className="py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-slate-200"
+                        >
+                          −15%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleScaleSelectedElement(1.15)}
+                          className="py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[10px] font-semibold text-slate-200"
+                        >
+                          +15%
+                        </button>
                       </div>
                     </div>
                   )}
@@ -3015,7 +3255,7 @@ export function App() {
                   });
                 }}
                 onResizeElement={(id, nw, nh, x, y) => {
-                  handleUpdateElementSizeMm(nw, nh, x, y);
+                  handleUpdateElementSizeMm(nw, nh, x, y, id);
                 }}
                 onRotateElement={(id, rot, xMm, yMm) => {
                   const updatedEls = labelDesign.elements.map((el) =>
@@ -3308,7 +3548,7 @@ export function App() {
         </form>
       </dialog>}
 
-      {isRotaryOpen && <RotaryPanel design={labelDesign} config={rotaryConfig} onConfigChange={setRotaryConfig} onClose={() => setIsRotaryOpen(false)} onSave={files => { setIsRotaryOpen(false); requestLogoSave(files); }} />}
+      {isRotaryOpen && <RotaryPanel design={labelDesign} config={rotaryConfig} onConfigChange={setRotaryConfig} onDesignChange={(nextDesign) => pushStateWithHistory(nextDesign)} onClose={() => setIsRotaryOpen(false)} onSave={files => { setIsRotaryOpen(false); requestLogoSave(files); }} />}
 
       {isWorkbenchOpen && (
         <VankWorkbenchModal

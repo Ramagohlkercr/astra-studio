@@ -246,6 +246,48 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     [workbenchJobs, selectedJobId]
   );
 
+  // Estado editable para dimensiones de etiqueta/trabajo sin rebotes al borrar dígitos
+  const [jobWidthStr, setJobWidthStr] = useState<string>('');
+  const [jobHeightStr, setJobHeightStr] = useState<string>('');
+  const editingJobSizeRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (!selectedJob) {
+      setJobWidthStr('');
+      setJobHeightStr('');
+      return;
+    }
+    if (!editingJobSizeRef.current) {
+      setJobWidthStr(String(selectedJob.labelDesign.widthMm));
+      setJobHeightStr(String(selectedJob.labelDesign.heightMm));
+    }
+  }, [
+    selectedJob?.id,
+    selectedJob?.labelDesign.widthMm,
+    selectedJob?.labelDesign.heightMm,
+  ]);
+
+  const handleScaleSelectedJobArtwork = (factor: number) => {
+    if (!selectedJob) return;
+    const nextEls = selectedJob.labelDesign.elements.map((el) => {
+      const nw = roundMm(Math.max(1, el.widthMm * factor), 2);
+      const nh = roundMm(Math.max(1, el.heightMm * factor), 2);
+      return el.type === 'vector_text'
+        ? {
+            ...el,
+            widthMm: nw,
+            heightMm: nh,
+            fontSizeMm: roundMm(Math.max(1, el.fontSizeMm * factor), 2),
+          }
+        : { ...el, widthMm: nw, heightMm: nh };
+    });
+    const nextJob = {
+      ...selectedJob,
+      labelDesign: { ...selectedJob.labelDesign, elements: nextEls },
+    };
+    onUpdateJobs(workbenchJobs.map((j) => (j.id === selectedJob.id ? nextJob : j)));
+  };
+
   const validation = useMemo(
     () => validateWorkbenchState(workbenchJobs, workbenchConfig),
     [workbenchJobs, workbenchConfig]
@@ -3144,13 +3186,27 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                           max={400}
                           step={1}
                           aria-label="Ancho de etiqueta del trabajo seleccionado"
-                          value={selectedJob.labelDesign.widthMm}
-                          onChange={(e) =>
-                            handleUpdateSelectedJobDesignOrQty({
-                              widthMm: Math.max(5, Number(e.target.value) || 10),
-                              autoFitColumnsToRoll: true,
-                            })
-                          }
+                          value={jobWidthStr}
+                          onFocus={() => {
+                            editingJobSizeRef.current = true;
+                          }}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setJobWidthStr(raw);
+                            const v = Number(raw.replace(',', '.'));
+                            if (Number.isFinite(v) && v >= 5 && raw.trim() !== '') {
+                              handleUpdateSelectedJobDesignOrQty({
+                                widthMm: v,
+                                autoFitColumnsToRoll: true,
+                              });
+                            }
+                          }}
+                          onBlur={() => {
+                            editingJobSizeRef.current = false;
+                            if (selectedJob) {
+                              setJobWidthStr(String(selectedJob.labelDesign.widthMm));
+                            }
+                          }}
                           className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-white"
                         />
                       </label>
@@ -3164,13 +3220,27 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                           max={400}
                           step={1}
                           aria-label="Alto de etiqueta del trabajo seleccionado"
-                          value={selectedJob.labelDesign.heightMm}
-                          onChange={(e) =>
-                            handleUpdateSelectedJobDesignOrQty({
-                              heightMm: Math.max(5, Number(e.target.value) || 10),
-                              autoFitColumnsToRoll: true,
-                            })
-                          }
+                          value={jobHeightStr}
+                          onFocus={() => {
+                            editingJobSizeRef.current = true;
+                          }}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setJobHeightStr(raw);
+                            const v = Number(raw.replace(',', '.'));
+                            if (Number.isFinite(v) && v >= 5 && raw.trim() !== '') {
+                              handleUpdateSelectedJobDesignOrQty({
+                                heightMm: v,
+                                autoFitColumnsToRoll: true,
+                              });
+                            }
+                          }}
+                          onBlur={() => {
+                            editingJobSizeRef.current = false;
+                            if (selectedJob) {
+                              setJobHeightStr(String(selectedJob.labelDesign.heightMm));
+                            }
+                          }}
                           className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-white"
                         />
                       </label>
@@ -3200,6 +3270,42 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                           {p.widthMm}×{p.heightMm}
                         </button>
                       ))}
+                    </div>
+
+                    {/* Escala directa del logo grabado dentro de esta etiqueta */}
+                    <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-800/70">
+                      <span className="text-[10px] text-slate-400">
+                        Logo interno:
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleScaleSelectedJobArtwork(0.85)}
+                          className="px-2 py-0.5 rounded bg-slate-950 hover:bg-slate-800 border border-slate-800 text-[10px] text-slate-200 font-semibold"
+                        >
+                          −15%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleScaleSelectedJobArtwork(1.15)}
+                          className="px-2 py-0.5 rounded bg-slate-950 hover:bg-slate-800 border border-slate-800 text-[10px] text-slate-200 font-semibold"
+                        >
+                          +15%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              widthMm: selectedJob.labelDesign.widthMm,
+                              heightMm: selectedJob.labelDesign.heightMm,
+                            })
+                          }
+                          title="Recentrar y ajustar logo al 85% de la etiqueta"
+                          className="px-2 py-0.5 rounded bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-700/50 text-[10px] text-cyan-200 font-bold"
+                        >
+                          Ajustar
+                        </button>
+                      </div>
                     </div>
 
                     {/* Forma, Orificios y Posición X/Y del bloque */}

@@ -75,6 +75,7 @@ interface Props {
   design: LabelDesign;
   config: RotaryConfig;
   onConfigChange: (c: RotaryConfig) => void;
+  onDesignChange?: (d: LabelDesign) => void;
   onSave: (files: LogoOutputFile[]) => void;
   onClose: () => void;
 }
@@ -185,11 +186,102 @@ export function RotaryPanel({
   design,
   config,
   onConfigChange,
+  onDesignChange,
   onSave,
   onClose,
 }: Props) {
   const setConfig = (update: (c: RotaryConfig) => RotaryConfig) =>
     onConfigChange(update(config));
+
+  const [rotaryLogoWStr, setRotaryLogoWStr] = useState<string>(() =>
+    String(roundMm(design.widthMm, 2))
+  );
+  const [rotaryLogoHStr, setRotaryLogoHStr] = useState<string>(() =>
+    String(roundMm(design.heightMm, 2))
+  );
+  const editingRotaryLogoSizeRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (!editingRotaryLogoSizeRef.current) {
+      setRotaryLogoWStr(String(roundMm(design.widthMm, 2)));
+      setRotaryLogoHStr(String(roundMm(design.heightMm, 2)));
+    }
+  }, [design.widthMm, design.heightMm]);
+
+  const applyRotaryLogoDimensions = (targetW: number, targetH: number) => {
+    if (!onDesignChange) return;
+    const safeW = roundMm(Math.max(2, Math.min(800, targetW)), 2);
+    const safeH = roundMm(Math.max(2, Math.min(800, targetH)), 2);
+    const sx = safeW / Math.max(0.1, design.widthMm);
+    const sy = safeH / Math.max(0.1, design.heightMm);
+    const uniformScale = Math.min(sx, sy);
+
+    const nextDesign: LabelDesign = {
+      ...design,
+      widthMm: safeW,
+      heightMm: safeH,
+      cornerRadiusMm: roundMm((design.cornerRadiusMm || 0) * uniformScale, 2),
+      safetyMarginMm: roundMm((design.safetyMarginMm || 0) * uniformScale, 2),
+      elements: design.elements.map((el) => {
+        const nextW = roundMm(el.widthMm * sx, 2);
+        const nextH = roundMm(el.heightMm * sy, 2);
+        const scaledEl = {
+          ...el,
+          xMm: roundMm(el.xMm * sx, 2),
+          yMm: roundMm(el.yMm * sy, 2),
+          widthMm: nextW,
+          heightMm: nextH,
+          aspectRatio: roundMm(nextW / Math.max(0.1, nextH), 4),
+        };
+        if (el.type === 'vector_text') {
+          return {
+            ...scaledEl,
+            fontSizeMm: roundMm(Math.max(1, el.fontSizeMm * uniformScale), 2),
+          };
+        }
+        return scaledEl;
+      }),
+    };
+    onDesignChange(nextDesign);
+  };
+
+  const handleRotaryLogoWidthInput = (raw: string) => {
+    setRotaryLogoWStr(raw);
+    const numVal = Number(raw.replace(',', '.'));
+    if (!Number.isFinite(numVal) || numVal < 2 || raw.trim() === '') return;
+    const aspect = design.widthMm / Math.max(0.1, design.heightMm);
+    const nextH = roundMm(numVal / aspect, 2);
+    setRotaryLogoHStr(String(nextH));
+    applyRotaryLogoDimensions(numVal, nextH);
+  };
+
+  const handleRotaryLogoHeightInput = (raw: string) => {
+    setRotaryLogoHStr(raw);
+    const numVal = Number(raw.replace(',', '.'));
+    if (!Number.isFinite(numVal) || numVal < 2 || raw.trim() === '') return;
+    const aspect = design.widthMm / Math.max(0.1, design.heightMm);
+    const nextW = roundMm(numVal * aspect, 2);
+    setRotaryLogoWStr(String(nextW));
+    applyRotaryLogoDimensions(nextW, numVal);
+  };
+
+  const handleFitLogoToRotaryObject = () => {
+    const swaps =
+      config.designRotationDeg === 90 || config.designRotationDeg === 270;
+    const maxAxial = Math.max(5, config.usefulLengthMm * 0.78);
+    const maxCirc = Math.max(
+      5,
+      (Math.PI * layout.referenceDiameterMm * Math.min(config.arcDeg, 160)) /
+        360
+    );
+    const maxW = swaps ? maxCirc : maxAxial;
+    const maxH = swaps ? maxAxial : maxCirc;
+    const factor = Math.min(
+      maxW / Math.max(0.1, design.widthMm),
+      maxH / Math.max(0.1, design.heightMm)
+    );
+    applyRotaryLogoDimensions(design.widthMm * factor, design.heightMm * factor);
+  };
 
   // Pestaña activa del panel lateral derecho (1 vista enfocada a la vez para máxima claridad)
   const [sidebarTab, setSidebarTab] = useState<
@@ -1481,8 +1573,9 @@ export function RotaryPanel({
                                 strokeWidth="1.2"
                               />
                               <text
-                                x={xEnd + 42}
-                                y={156}
+                                x="612"
+                                y="177"
+                                textAnchor="end"
                                 fill="#fcd34d"
                                 fontSize="9"
                                 fontFamily="monospace"
@@ -1873,6 +1966,112 @@ export function RotaryPanel({
                       Mandril agarra Boca (X=0)
                     </button>
                   </div>
+
+                  {onDesignChange && (
+                    <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-slate-300 font-semibold">
+                          Tamaño del logo a grabar (mm)
+                        </span>
+                        <span className="font-mono text-[10px] text-emerald-300">
+                          Proporcional
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="space-y-0.5">
+                          <span className="text-[10px] text-slate-400 block">
+                            Ancho base (mm)
+                          </span>
+                          <input
+                            className={field}
+                            type="number"
+                            min={2}
+                            max={600}
+                            step="0.5"
+                            aria-label="Ancho del logo en rotativo (mm)"
+                            value={rotaryLogoWStr}
+                            onFocus={() => {
+                              editingRotaryLogoSizeRef.current = true;
+                            }}
+                            onChange={(e) =>
+                              handleRotaryLogoWidthInput(e.target.value)
+                            }
+                            onBlur={() => {
+                              editingRotaryLogoSizeRef.current = false;
+                              setRotaryLogoWStr(
+                                String(roundMm(design.widthMm, 2))
+                              );
+                              setRotaryLogoHStr(
+                                String(roundMm(design.heightMm, 2))
+                              );
+                            }}
+                          />
+                        </label>
+                        <label className="space-y-0.5">
+                          <span className="text-[10px] text-slate-400 block">
+                            Alto base (mm)
+                          </span>
+                          <input
+                            className={field}
+                            type="number"
+                            min={2}
+                            max={600}
+                            step="0.5"
+                            aria-label="Alto del logo en rotativo (mm)"
+                            value={rotaryLogoHStr}
+                            onFocus={() => {
+                              editingRotaryLogoSizeRef.current = true;
+                            }}
+                            onChange={(e) =>
+                              handleRotaryLogoHeightInput(e.target.value)
+                            }
+                            onBlur={() => {
+                              editingRotaryLogoSizeRef.current = false;
+                              setRotaryLogoWStr(
+                                String(roundMm(design.widthMm, 2))
+                              );
+                              setRotaryLogoHStr(
+                                String(roundMm(design.heightMm, 2))
+                              );
+                            }}
+                          />
+                        </label>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            applyRotaryLogoDimensions(
+                              design.widthMm * 0.85,
+                              design.heightMm * 0.85
+                            )
+                          }
+                          className="py-1 rounded bg-slate-950 hover:bg-slate-800 border border-slate-800 text-[10px] font-semibold text-slate-300"
+                        >
+                          −15%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            applyRotaryLogoDimensions(
+                              design.widthMm * 1.15,
+                              design.heightMm * 1.15
+                            )
+                          }
+                          className="py-1 rounded bg-slate-950 hover:bg-slate-800 border border-slate-800 text-[10px] font-semibold text-slate-300"
+                        >
+                          +15%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleFitLogoToRotaryObject}
+                          className="py-1 rounded bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-700/50 text-[10px] font-bold text-cyan-200"
+                        >
+                          Ajustar al vaso
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Ajustes secundarios de posición y arco en un desplegable limpio */}
