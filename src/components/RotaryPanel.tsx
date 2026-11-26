@@ -175,7 +175,6 @@ export function RotaryPanel({
   onSave,
   onClose,
 }: Props) {
-  const dialog = useRef<HTMLDialogElement>(null);
   const setConfig = (update: (c: RotaryConfig) => RotaryConfig) =>
     onConfigChange(update(config));
 
@@ -264,10 +263,6 @@ export function RotaryPanel({
     config.objectDiameterMm,
     config.endDiameterMm,
   ]);
-
-  useEffect(() => {
-    dialog.current?.showModal?.();
-  }, []);
 
   const hasVisibleEngraving = useMemo(() => {
     return (
@@ -686,11 +681,11 @@ export function RotaryPanel({
   }, [config]);
 
   return (
-    <dialog
-      ref={dialog}
-      className="studio-orders-dialog fixed inset-0 z-50 w-full h-full max-w-none max-h-none m-0 p-0 bg-[#070a0e]/95 backdrop-blur-sm flex flex-col text-slate-100 select-none"
+    <div
+      role="dialog"
+      aria-modal="true"
       aria-labelledby="rotary-title"
-      onCancel={onClose}
+      className="fixed inset-0 z-50 bg-[#070a0e]/95 backdrop-blur-sm flex flex-col text-slate-100 select-none"
     >
       {/* 1. CABECERA SUPERIOR DE LA ESTACIÓN ROTATIVA VANK 9060 */}
       <header className="min-h-14 py-2 bg-[#11161f] border-b border-slate-800 px-4 flex flex-wrap items-center justify-between gap-2 shrink-0">
@@ -783,47 +778,47 @@ export function RotaryPanel({
            ===================================================================== */}
         <div className="flex-1 flex flex-col bg-[#080b10] min-w-0 overflow-hidden">
           {/* Sub-barra del visor */}
-          <div className="py-1.5 px-3 bg-[#0e131b] border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
+          <div className="py-1 px-2.5 bg-[#0e131b] border-b border-slate-800 flex flex-wrap items-center justify-between gap-1.5 text-[11px] shrink-0">
             <div className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={() => setCanvasMode('split')}
-                className={`px-2.5 py-1 rounded text-[11px] font-bold border transition ${
+                className={`px-2 py-0.5 rounded font-bold border transition whitespace-nowrap ${
                   canvasMode === 'split'
                     ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
                     : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                🔀 Vista Completa (Mandril 3D + Desenrollado 2D)
+                🔀 3D + 2D
               </button>
               <button
                 type="button"
                 onClick={() => setCanvasMode('3d_chuck')}
-                className={`px-2.5 py-1 rounded text-[11px] font-bold border transition ${
+                className={`px-2 py-0.5 rounded font-bold border transition whitespace-nowrap ${
                   canvasMode === '3d_chuck'
                     ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
                     : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                🧊 Montaje en Mandril Sanou
+                🧊 Mandril 3D
               </button>
               <button
                 type="button"
                 onClick={() => setCanvasMode('2d_unwrapped')}
-                className={`px-2.5 py-1 rounded text-[11px] font-bold border transition ${
+                className={`px-2 py-0.5 rounded font-bold border transition whitespace-nowrap ${
                   canvasMode === '2d_unwrapped'
                     ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
                     : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                 }`}
               >
-                📐 Lienzo Desenrollado 1:1 mm
+                📐 Desenrollado 1:1
               </button>
             </div>
 
             {/* Control interactivo para girar el vaso/termo 360° */}
-            <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-2.5 py-1 rounded-lg">
-              <span className="text-[10px] text-slate-300 font-semibold">
-                Girar Vaso 360°:
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-lg">
+              <span className="text-[10px] text-slate-300 font-semibold whitespace-nowrap">
+                Giro 360°:
               </span>
               <input
                 type="range"
@@ -832,9 +827,9 @@ export function RotaryPanel({
                 step={5}
                 value={previewRotationDeg}
                 onChange={(e) => setPreviewRotationDeg(Number(e.target.value))}
-                className="w-24 accent-cyan-400 cursor-pointer"
+                className="w-16 accent-cyan-400 cursor-pointer"
               />
-              <span className="font-mono text-[11px] text-cyan-300 font-bold w-10 text-right">
+              <span className="font-mono text-[10px] text-cyan-300 font-bold w-8 text-right">
                 {previewRotationDeg}°
               </span>
             </div>
@@ -1255,7 +1250,7 @@ export function RotaryPanel({
         {/* =====================================================================
             COLUMNA DERECHA: CONTROLES DEL ROTADOR ORGANIZADOS EN PESTAÑAS CLARAS
            ===================================================================== */}
-        <aside className="w-[410px] lg:w-[460px] xl:w-[510px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0 divide-y divide-slate-800">
+        <aside className="w-[375px] lg:w-[425px] xl:w-[480px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0 divide-y divide-slate-800">
           {/* BARRA DE NAVEGACIÓN FIJA (STICKY) */}
           <div className="sticky top-0 z-20 bg-[#111621]/95 backdrop-blur border-b border-slate-800 p-2 grid grid-cols-4 gap-1 text-[11px]">
             <button
@@ -2408,6 +2403,6 @@ export function RotaryPanel({
           </div>
         </aside>
       </div>
-    </dialog>
+    </div>
   );
 }
