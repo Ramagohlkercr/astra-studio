@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RotaryConfig, RotaryLayout, RotaryPhysicalSetupInfo, isTapered } from '../core/rotary/rotaryEngine';
 import {
-  buildRotaryWrappedCanvasTexture,
+  buildRotaryEngravedTextures,
   canUseWebGL,
   createBrushedMetalTexture,
   createLaserGlowTexture,
@@ -32,7 +32,7 @@ const VESSEL_FINISHES: Record<
     color: '#94a3b8',
     metalness: 0.88,
     roughness: 0.24,
-    markHex: '#0f172a',
+    markHex: '#111827',
     markEmissive: '#000000',
   },
   navy_coat: {
@@ -48,7 +48,7 @@ const VESSEL_FINISHES: Record<
     color: '#8f5f36',
     metalness: 0.05,
     roughness: 0.78,
-    markHex: '#1f0f05',
+    markHex: '#1b0d04',
     markEmissive: '#000000',
   },
 };
@@ -59,6 +59,7 @@ interface Props {
   physicalSetup: RotaryPhysicalSetupInfo;
   svgRaw: string | null;
   previewRotationDeg: number;
+  isAutoRotating?: boolean;
   fallbackSvgContent?: React.ReactNode;
 }
 
@@ -68,6 +69,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
   physicalSetup,
   svgRaw,
   previewRotationDeg,
+  isAutoRotating = false,
   fallbackSvgContent,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -78,21 +80,24 @@ export const Rotary3DViewport: React.FC<Props> = ({
   const assemblyGroupRef = useRef<THREE.Group | null>(null);
   const spindleGroupRef = useRef<THREE.Group | null>(null);
   const rollersGroupRef = useRef<THREE.Mesh[]>([]);
-  const previewAngleRef = useRef<number>(previewRotationDeg);
+  const laserHeadRef = useRef<THREE.Group | null>(null);
+  const flareRef = useRef<THREE.Sprite | null>(null);
+
+  // Estado físico rotacional (inercia + amortiguación real en el loop WebGL)
+  const targetAngleRadRef = useRef<number>((previewRotationDeg * Math.PI) / 180);
+  const currentAngleRadRef = useRef<number>((previewRotationDeg * Math.PI) / 180);
+  const angularVelRef = useRef<number>(0);
+  const autoScanRef = useRef<boolean>(isAutoRotating);
+  const designScanMetaRef = useRef<{ baseX: number; halfSpanX: number }>({
+    baseX: config.axisOffsetMm || 0,
+    halfSpanX: Math.max(8, layout.effectiveDesignWidthMm * 0.42),
+  });
 
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('iso');
   const [vesselFinish, setVesselFinish] = useState<VesselFinish>('powder_black');
   const [webglReady, setWebglReady] = useState<boolean>(() => canUseWebGL());
 
   const finish = VESSEL_FINISHES[vesselFinish];
-
-  // Adaptar color del trazado SVG desenrollado al contraste real sobre el acabado seleccionado
-  const etchedSvgFor3D = useMemo(() => {
-    if (!svgRaw) return null;
-    return svgRaw
-      .replace(/#000000/gi, finish.markHex)
-      .replace(/#000\b/gi, finish.markHex);
-  }, [svgRaw, finish.markHex]);
 
   const dims = useMemo(() => {
     const len = Math.max(20, Math.min(900, config.usefulLengthMm || 120));
@@ -105,6 +110,14 @@ export const Rotary3DViewport: React.FC<Props> = ({
     const alphaRad = isTapered(config) ? Math.atan2(r0 - r1, len) : 0;
     return { len, d0, d1, r0, r1, alphaRad };
   }, [config]);
+
+  useEffect(() => {
+    autoScanRef.current = isAutoRotating;
+    designScanMetaRef.current = {
+      baseX: Math.max(-dims.len * 0.42, Math.min(dims.len * 0.42, config.axisOffsetMm || 0)),
+      halfSpanX: Math.min(dims.len * 0.36, Math.max(6, layout.effectiveDesignWidthMm * 0.45)),
+    };
+  }, [isAutoRotating, dims.len, config.axisOffsetMm, layout.effectiveDesignWidthMm]);
 
   const applyCameraPreset = (preset: CameraPreset) => {
     setCameraPreset(preset);
@@ -137,7 +150,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
     }
   };
 
-  // 1. Inicializar WebGLRenderer + RoomEnvironment PBR + iluminación de estudio 3 puntos + OrbitControls
+  // 1. Inicializar WebGLRenderer + RoomEnvironment PBR + iluminación + loop físico rotacional
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !canUseWebGL()) {
@@ -159,7 +172,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
     scene.background = new THREE.Color('#070b12');
     scene.fog = new THREE.FogExp2('#070b12', 0.00055);
     scene.environment = studioEnv.envMap;
-    scene.environmentIntensity = 0.85;
+    scene.environmentIntensity = 0.88;
 
     const camera = new THREE.PerspectiveCamera(
       35,
@@ -174,8 +187,8 @@ export const Rotary3DViewport: React.FC<Props> = ({
     controls.minDistance = 40;
     controls.maxDistance = 1200;
 
-    // Rig de iluminación cinematográfica de taller CAD/CAM
-    const hemi = new THREE.HemisphereLight('#dbeafe', '#0f172a', 0.85);
+    // Rig de iluminación de taller CAD/CAM
+    const hemi = new THREE.HemisphereLight('#dbeafe', '#0f172a', 0.88);
     scene.add(hemi);
 
     const keyLight = new THREE.DirectionalLight('#fffbeb', 2.05);
@@ -191,12 +204,10 @@ export const Rotary3DViewport: React.FC<Props> = ({
     keyLight.shadow.bias = -0.0004;
     scene.add(keyLight);
 
-    // Luz de recorte cian desde atrás para definir cilindros y mordazas
     const rimLight = new THREE.DirectionalLight('#38bdf8', 1.4);
     rimLight.position.set(-200, 95, -170);
     scene.add(rimLight);
 
-    // Luz cálida inferior sutil para lectura de mordazas y calzo Z
     const bounceLight = new THREE.PointLight('#fbbf24', 0.65, 520, 1.4);
     bounceLight.position.set(0, -110, 110);
     scene.add(bounceLight);
@@ -211,8 +222,49 @@ export const Rotary3DViewport: React.FC<Props> = ({
     assemblyGroupRef.current = assemblyRoot;
 
     let rafId = 0;
+    let scanPhase = 0;
     const animate = () => {
       rafId = window.requestAnimationFrame(animate);
+
+      // Dinámica física de resorte/inercia angular para giro real del mandril Sanou
+      let diff = targetAngleRadRef.current - currentAngleRadRef.current;
+      // Camino angular más corto (-PI..PI) para transiciones continuas en 360° -> 0°
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+
+      angularVelRef.current = angularVelRef.current * 0.72 + diff * 0.19;
+      if (Math.abs(diff) > 0.0005 || Math.abs(angularVelRef.current) > 0.0005) {
+        currentAngleRadRef.current += angularVelRef.current;
+      } else {
+        currentAngleRadRef.current = targetAngleRadRef.current;
+        angularVelRef.current = 0;
+      }
+
+      if (spindleGroupRef.current) {
+        spindleGroupRef.current.rotation.x = currentAngleRadRef.current;
+      }
+      for (const r of rollersGroupRef.current) {
+        r.rotation.x = -currentAngleRadRef.current * 2.2;
+      }
+
+      // Simulación cinemática del cabezal X barriendo la zona grabada durante la rotación continua
+      if (laserHeadRef.current) {
+        if (autoScanRef.current) {
+          scanPhase += 0.14;
+          const { baseX, halfSpanX } = designScanMetaRef.current;
+          laserHeadRef.current.position.x = baseX + Math.sin(scanPhase) * halfSpanX;
+          if (flareRef.current) {
+            const pulse = 15 + Math.abs(Math.sin(scanPhase * 3.1)) * 7;
+            flareRef.current.scale.set(pulse, pulse, 1);
+          }
+        } else {
+          laserHeadRef.current.position.x = designScanMetaRef.current.baseX;
+          if (flareRef.current) {
+            flareRef.current.scale.set(13, 13, 1);
+          }
+        }
+      }
+
       controls.update();
       renderer.render(scene, camera);
     };
@@ -249,7 +301,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
     };
   }, []);
 
-  // 2. Reconstruir geometría CAD PBR del mandril Sanou / rodillos, vaso/termo cónico y textura UV 1:1 mm
+  // 2. Reconstruir geometría CAD + texturas físicas de grabado láser (color + bumpMap)
   useEffect(() => {
     const root = assemblyGroupRef.current;
     const renderer = rendererRef.current;
@@ -264,7 +316,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
     const { len, r0, r1, alphaRad } = dims;
     const focusY = Math.max(r0, r1) + 14;
 
-    // Piso receptor de sombras + grilla sutil de la mesa Vank
     const bedY = -Math.max(r0, r1) - 36;
     const shadowFloor = new THREE.Mesh(
       new THREE.PlaneGeometry(760, 760),
@@ -279,7 +330,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
     grid.position.y = bedY;
     root.add(grid);
 
-    // Línea láser verde de generatriz nivelada a foco constante
     const focusLineGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(-len * 0.72, focusY, 0),
       new THREE.Vector3(len * 0.72, focusY, 0),
@@ -291,10 +341,11 @@ export const Rotary3DViewport: React.FC<Props> = ({
     });
     root.add(new THREE.Line(focusLineGeo, focusLineMat));
 
-    // Cabezal Láser Vank 9060 con boquilla azul anodizada, collar de bronce y flare rojo aditivo
+    // Cabezal Láser Vank 9060 móvil sobre el eje X
     const headX = Math.max(-len * 0.45, Math.min(len * 0.45, config.axisOffsetMm || 0));
     const headGroup = new THREE.Group();
     headGroup.position.set(headX, focusY + 42, 0);
+    laserHeadRef.current = headGroup;
 
     const carriageMesh = new THREE.Mesh(
       new THREE.BoxGeometry(26, 18, 24),
@@ -319,7 +370,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
     nozzleMesh.castShadow = true;
     headGroup.add(nozzleMesh);
 
-    // Haz rojo + punto focal brillante
     const beamMesh = new THREE.Mesh(
       new THREE.CylinderGeometry(0.4, 0.85, 11.5, 16),
       new THREE.MeshBasicMaterial({
@@ -341,21 +391,20 @@ export const Rotary3DViewport: React.FC<Props> = ({
         depthWrite: false,
       })
     );
-    flareSprite.scale.set(14, 14, 1);
+    flareSprite.scale.set(13, 13, 1);
     flareSprite.position.y = -42;
+    flareRef.current = flareSprite;
     headGroup.add(flareSprite);
     root.add(headGroup);
 
-    // Marco inclinado para nivelación trigonométrica de conos
     const axisFrame = new THREE.Group();
     const centerY = focusY - r0 - (len / 2) * Math.sin(alphaRad);
     axisFrame.position.set(0, centerY, 0);
     axisFrame.rotation.z = alphaRad;
     root.add(axisFrame);
 
-    // Grupo rotatorio principal
     const spindle = new THREE.Group();
-    spindle.rotation.x = (previewAngleRef.current * Math.PI) / 180;
+    spindle.rotation.x = currentAngleRadRef.current;
     spindleGroupRef.current = spindle;
     axisFrame.add(spindle);
 
@@ -372,7 +421,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
       motorBody.castShadow = true;
       axisFrame.add(motorBody);
 
-      // Plato Sanou K11 torneado metálico con reflejos reales RoomEnvironment
       const chuckPlato = new THREE.Mesh(
         new THREE.CylinderGeometry(45, 45, 24, 64),
         new THREE.MeshStandardMaterial({
@@ -395,7 +443,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
       chuckRing.position.set(chuckX + 12.2, 0, 0);
       spindle.add(chuckRing);
 
-      // 3 Mordazas escalonadas de acero mecanizado separadas 120°
       const jawRadial = Math.max(14, r0 + 4);
       const jawMat = new THREE.MeshStandardMaterial({
         color: '#e2e8f0',
@@ -440,7 +487,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
       }
     }
 
-    // Cuerpo del vaso / termo con el acabado elegido y reflejos PBR
+    // Cuerpo del vaso / termo
     const vesselGeo = new THREE.CylinderGeometry(r1, r0, len, 80, 1, false);
     const vesselMat = new THREE.MeshStandardMaterial({
       color: finish.color,
@@ -454,7 +501,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
     vesselMesh.receiveShadow = true;
     spindle.add(vesselMesh);
 
-    // Aro inoxidable en el labio superior (boca/base)
     const rimMesh = new THREE.Mesh(
       new THREE.TorusGeometry(r1, 1.4, 14, 72),
       new THREE.MeshStandardMaterial({ color: '#e2e8f0', metalness: 0.95, roughness: 0.14 })
@@ -463,17 +509,18 @@ export const Rotary3DViewport: React.FC<Props> = ({
     rimMesh.position.set(len / 2, 0, 0);
     spindle.add(rimMesh);
 
-    // Malla UV con el grabado láser 1:1 mm sobre la pared
+    // Malla envolvente con el logo real grabado físicamente (Color + Bajorrelieve BumpMap)
     const arcRad = ((Math.min(360, Math.max(1, config.arcDeg || 360))) * Math.PI) / 180;
-    const texture = buildRotaryWrappedCanvasTexture(
-      etchedSvgFor3D,
+    const engravedMaps = buildRotaryEngravedTextures(
+      svgRaw,
       layout.canvasWidthMm,
       layout.canvasHeightMm,
+      finish.markHex,
       () => renderer.render(scene, camera)
     );
     const wrapGeo = new THREE.CylinderGeometry(
-      r1 + 0.35,
-      r0 + 0.35,
+      r1 + 0.32,
+      r0 + 0.32,
       len,
       80,
       1,
@@ -482,20 +529,23 @@ export const Rotary3DViewport: React.FC<Props> = ({
       arcRad
     );
     const wrapMat = new THREE.MeshStandardMaterial({
-      map: texture,
+      map: engravedMaps.colorTexture,
+      bumpMap: engravedMaps.bumpTexture,
+      bumpScale: 2.2,
       transparent: true,
-      alphaTest: 0.02,
-      roughness: 0.25,
-      metalness: 0.85,
+      alphaTest: 0.04,
+      roughness: vesselFinish === 'stainless' || vesselFinish === 'wood' ? 0.85 : 0.2,
+      metalness: vesselFinish === 'stainless' || vesselFinish === 'wood' ? 0.15 : 0.92,
       emissive: finish.markEmissive,
-      emissiveIntensity: 0.18,
-      side: THREE.DoubleSide,
+      emissiveIntensity: 0.22,
+      side: THREE.FrontSide,
     });
     const wrapMesh = new THREE.Mesh(wrapGeo, wrapMat);
     wrapMesh.rotation.z = -Math.PI / 2;
+    wrapMesh.receiveShadow = true;
     spindle.add(wrapMesh);
 
-    // Línea de costura amarilla Y = 0°
+    // Costura amarilla de origen Y = 0°
     const seamGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(-len / 2, r0 + 0.7, 0),
       new THREE.Vector3(len / 2, r1 + 0.7, 0),
@@ -503,7 +553,6 @@ export const Rotary3DViewport: React.FC<Props> = ({
     const seamMat = new THREE.LineBasicMaterial({ color: '#fbbf24' });
     spindle.add(new THREE.Line(seamGeo, seamMat));
 
-    // Soporte de nivelación Z en conos
     if (layout.tapered && physicalSetup.tailstockLiftMm > 0) {
       const wedgeH = Math.max(6, physicalSetup.tailstockLiftMm);
       const wedgeMesh = new THREE.Mesh(
@@ -528,14 +577,19 @@ export const Rotary3DViewport: React.FC<Props> = ({
     } else {
       renderer.render(scene, camera);
     }
+
+    return () => {
+      engravedMaps.dispose();
+    };
   }, [
     dims,
     finish,
+    vesselFinish,
     config.rotaryType,
     config.rollerDiameterMm,
     config.arcDeg,
     config.axisOffsetMm,
-    etchedSvgFor3D,
+    svgRaw,
     layout.canvasWidthMm,
     layout.canvasHeightMm,
     layout.tapered,
@@ -543,19 +597,9 @@ export const Rotary3DViewport: React.FC<Props> = ({
     physicalSetup.endToLift,
   ]);
 
-  // 3. Giro en tiempo real del husillo sin reconstruir la escena
+  // 3. Actualizar ángulo objetivo (el loop físico integra inercia hacia targetAngleRadRef)
   useEffect(() => {
-    previewAngleRef.current = previewRotationDeg;
-    const rad = (previewRotationDeg * Math.PI) / 180;
-    if (spindleGroupRef.current) {
-      spindleGroupRef.current.rotation.x = rad;
-    }
-    for (const r of rollersGroupRef.current) {
-      r.rotation.x = -rad * 2.2;
-    }
-    if (rendererRef.current && sceneRef.current && cameraRef.current) {
-      rendererRef.current.render(sceneRef.current, cameraRef.current);
-    }
+    targetAngleRadRef.current = (previewRotationDeg * Math.PI) / 180;
   }, [previewRotationDeg]);
 
   useEffect(() => {

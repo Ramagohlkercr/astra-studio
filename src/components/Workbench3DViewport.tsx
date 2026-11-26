@@ -8,6 +8,7 @@ import {
   WorkbenchSimulationResult,
 } from '../core/workbench/workbenchTypes';
 import {
+  buildFlatLabelEngravedTextures,
   canUseWebGL,
   createBrushedMetalTexture,
   createHoneycombBedTexture,
@@ -318,15 +319,35 @@ export const Workbench3DViewport: React.FC<Props> = ({
 
     const cutLineMat = new THREE.LineBasicMaterial({ color: '#ef4444' });
     const holeMat = new THREE.LineBasicMaterial({ color: '#3b82f6' });
-    const engraveMat = new THREE.MeshStandardMaterial({
-      color: material.visual.engraveColor || '#261408',
-      roughness: 0.9,
-    });
     const activeBorderMat = new THREE.LineBasicMaterial({ color: '#22d3ee' });
+    const jobTextureDisposers: Array<() => void> = [];
 
     for (const job of jobs) {
       if (!job.visible) continue;
       const isSelected = job.id === selectedJobId;
+
+      // Compilar textura PBR real (color láser quemado + bajorrelieve bumpMap) 1 sola vez por trabajo
+      const labelMaps = buildFlatLabelEngravedTextures(
+        job.labelDesign,
+        material.visual.engraveColor || '#261408',
+        () => renderer.render(scene, camera)
+      );
+      jobTextureDisposers.push(labelMaps.dispose);
+
+      const jobEngraveMat = new THREE.MeshStandardMaterial({
+        map: labelMaps.colorTexture,
+        bumpMap: labelMaps.bumpTexture,
+        bumpScale: 1.8,
+        transparent: true,
+        alphaTest: 0.04,
+        roughness: 0.88,
+        metalness: 0.08,
+      });
+
+      const baseGeo = new THREE.PlaneGeometry(
+        Math.max(1, job.labelDesign.widthMm),
+        Math.max(1, job.labelDesign.heightMm)
+      );
 
       if (isSelected) {
         const bx = toWorldX(job.xMm);
@@ -377,19 +398,20 @@ export const Workbench3DViewport: React.FC<Props> = ({
           root.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(hPts), holeMat));
         }
 
+        // Proyección física del logo real grabado sobre la etiqueta
         if (inst.engraveItems?.length) {
-          const markW = Math.max(2, inst.widthMm * 0.56);
-          const markH = Math.max(2, inst.heightMm * 0.45);
-          const markMesh = new THREE.Mesh(
-            new THREE.PlaneGeometry(markW, markH),
-            engraveMat
-          );
+          const markMesh = new THREE.Mesh(baseGeo, jobEngraveMat);
+          markMesh.rotation.order = 'YXZ';
           markMesh.rotation.x = -Math.PI / 2;
+          if (inst.rotated90) {
+            markMesh.rotation.y = -Math.PI / 2;
+          }
           markMesh.position.set(
             toWorldX(absX + inst.widthMm / 2),
-            topSurfaceY + 0.16,
+            topSurfaceY + 0.18,
             toWorldZ(absY + inst.heightMm / 2)
           );
+          markMesh.receiveShadow = true;
           root.add(markMesh);
         }
       }
@@ -475,6 +497,10 @@ export const Workbench3DViewport: React.FC<Props> = ({
     } else {
       renderer.render(scene, camera);
     }
+
+    return () => {
+      jobTextureDisposers.forEach((fn) => fn());
+    };
   }, [bedW, bedH, config.sheetWidthMm, config.sheetHeightMm, material, jobs, selectedJobId]);
 
   // 3. Mover pórtico y cabezal láser en vivo

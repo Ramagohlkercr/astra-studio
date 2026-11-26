@@ -297,8 +297,8 @@ export function RotaryPanel({
     'webgl' | 'schematic'
   >('webgl');
 
-  // Ángulo de rotación interactivo para girar el vaso/termo 360° en el simulador 3D
-  const [previewRotationDeg, setPreviewRotationDeg] = useState<number>(0);
+  // Ángulo de rotación interactivo para girar el vaso/termo 360° (215° muestra el logo frente a cámara e iluminado)
+  const [previewRotationDeg, setPreviewRotationDeg] = useState<number>(215);
   const [isAutoRotating, setIsAutoRotating] = useState<boolean>(false);
 
   useEffect(() => {
@@ -1630,6 +1630,7 @@ export function RotaryPanel({
                       physicalSetup={physicalSetup}
                       svgRaw={previewResult.svgRaw}
                       previewRotationDeg={previewRotationDeg}
+                      isAutoRotating={isAutoRotating}
                       fallbackSvgContent={schematicView}
                     />
                   ) : (

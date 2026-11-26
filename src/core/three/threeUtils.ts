@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { compileLabelGeometry, rasterImageTransform } from '../geometry/geometryEngine';
+import { LabelDesign } from '../types';
 
 let cachedWebGLSupport: boolean | null = null;
 
@@ -43,15 +45,14 @@ export function createStudioRenderer(
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.22;
+  renderer.toneMappingExposure = 1.24;
   container.innerHTML = '';
   container.appendChild(renderer.domElement);
   return renderer;
 }
 
 /**
- * Crea un Environment PBR de estudio offline con RoomEnvironment para reflejos metálicos reales
- * (mandril Sanou, acero inoxidable, pórtico de aluminio Vank 9060).
+ * Crea un Environment PBR de estudio offline con RoomEnvironment para reflejos metálicos reales.
  */
 export function createStudioEnvironment(
   renderer: THREE.WebGLRenderer
@@ -80,9 +81,9 @@ export function createLaserGlowTexture(): THREE.CanvasTexture {
   const ctx = canvas.getContext('2d');
   if (ctx) {
     const grad = ctx.createRadialGradient(64, 64, 2, 64, 64, 62);
-    grad.addColorStop(0, 'rgba(255, 255, 220, 1)');
-    grad.addColorStop(0.22, 'rgba(254, 202, 202, 0.92)');
-    grad.addColorStop(0.5, 'rgba(239, 68, 68, 0.45)');
+    grad.addColorStop(0, 'rgba(255, 255, 225, 1)');
+    grad.addColorStop(0.22, 'rgba(254, 202, 202, 0.94)');
+    grad.addColorStop(0.5, 'rgba(239, 68, 68, 0.48)');
     grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 128, 128);
@@ -168,8 +169,12 @@ export function disposeObject3D(root: THREE.Object3D): void {
         ? [mesh.material]
         : [];
     for (const mat of mats) {
-      const m = mat as THREE.MeshStandardMaterial & { map?: THREE.Texture | null };
+      const m = mat as THREE.MeshStandardMaterial & {
+        map?: THREE.Texture | null;
+        bumpMap?: THREE.Texture | null;
+      };
       m.map?.dispose();
+      m.bumpMap?.dispose();
       m.normalMap?.dispose();
       m.roughnessMap?.dispose();
       m.metalnessMap?.dispose();
@@ -179,64 +184,244 @@ export function disposeObject3D(root: THREE.Object3D): void {
   });
 }
 
+function hexToRgbTuple(hex: string): [number, number, number] {
+  const clean = hex.replace('#', '');
+  const full =
+    clean.length === 3
+      ? clean
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : clean.padEnd(6, '0');
+  const num = parseInt(full, 16);
+  return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+}
+
 /**
- * Rasteriza un SVG 1:1 mm del módulo Rotativo en un CanvasTexture transparente rotado para UV cilíndrica:
- * Eje SVG X (largo axial) -> UV +V (-X a +X del cilindro)
- * Eje SVG Y (circunferencia 0..arcDeg) -> UV +U (generatriz superior hacia cara frontal)
+ * Transforma un canvas con arte láser en blanco/negro o RGBA (PNG raster, SVG o texto)
+ * en dos mapas PBR sincronizados:
+ * 1) `colorCanvas`: el grabado real con color físico de ablación / quemado sobre el material
+ * 2) `bumpCanvas`: mapa de bajorrelieve para simular la profundidad física del surco láser
  */
-export function buildRotaryWrappedCanvasTexture(
+function synthesizeLaserMapsFromCanvas(
+  colorCtx: CanvasRenderingContext2D,
+  bumpCtx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  markHex: string
+): void {
+  const [mr, mg, mb] = hexToRgbTuple(markHex);
+  const src = colorCtx.getImageData(0, 0, width, height);
+  const bump = bumpCtx.createImageData(width, height);
+  const d = src.data;
+  const b = bump.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3];
+    if (a < 18) {
+      d[i + 3] = 0;
+      b[i] = 160;
+      b[i + 1] = 160;
+      b[i + 2] = 160;
+      b[i + 3] = 255;
+      continue;
+    }
+
+    // Intensidad de tinta oscura (0 = blanco fondo, 1 = negro sólido grabado)
+    const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+    const strength = Math.max(0, Math.min(1, (1 - lum) * (a / 255)));
+
+    if (strength < 0.08) {
+      d[i + 3] = 0;
+      b[i] = 160;
+      b[i + 1] = 160;
+      b[i + 2] = 160;
+      b[i + 3] = 255;
+    } else {
+      d[i] = mr;
+      d[i + 1] = mg;
+      d[i + 2] = mb;
+      d[i + 3] = Math.round(Math.min(255, strength * 270));
+      const depthVal = Math.round(160 - strength * 140);
+      b[i] = depthVal;
+      b[i + 1] = depthVal;
+      b[i + 2] = depthVal;
+      b[i + 3] = 255;
+    }
+  }
+
+  colorCtx.putImageData(src, 0, 0);
+  bumpCtx.putImageData(bump, 0, 0);
+}
+
+export interface Engraved3DTextures {
+  colorTexture: THREE.CanvasTexture;
+  bumpTexture: THREE.CanvasTexture;
+  dispose: () => void;
+}
+
+/**
+ * Rasteriza el SVG 1:1 mm del módulo Rotativo (incluidos logos PNG raster y vectores)
+ * a texturas PBR sincronizadas de Color + Bajorrelieve Físico (`bumpMap`) sobre UV cilíndrica:
+ * Eje SVG X (largo axial) -> UV +V (-X a +X del cilindro)
+ * Eje SVG Y (circunferencia 0..arcDeg) -> UV +U (generatriz superior -> frente -> base)
+ */
+export function buildRotaryEngravedTextures(
   svgRaw: string | null,
   svgWidthMm: number,
   svgHeightMm: number,
+  markHex: string,
   onLoaded?: () => void
-): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 1024;
-  const ctx = canvas.getContext('2d');
+): Engraved3DTextures {
+  const size = 1536;
+  const colorCanvas = document.createElement('canvas');
+  colorCanvas.width = size;
+  colorCanvas.height = size;
+  const colorCtx = colorCanvas.getContext('2d', { willReadFrequently: true });
 
-  if (ctx) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = 'rgba(251, 191, 36, 0.55)';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+  const bumpCanvas = document.createElement('canvas');
+  bumpCanvas.width = size;
+  bumpCanvas.height = size;
+  const bumpCtx = bumpCanvas.getContext('2d', { willReadFrequently: true });
+
+  if (colorCtx && bumpCtx) {
+    colorCtx.clearRect(0, 0, size, size);
+    bumpCtx.fillStyle = 'rgb(160,160,160)';
+    bumpCtx.fillRect(0, 0, size, size);
   }
 
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
-  texture.needsUpdate = true;
+  const colorTexture = new THREE.CanvasTexture(colorCanvas);
+  colorTexture.colorSpace = THREE.SRGBColorSpace;
+  colorTexture.anisotropy = 8;
 
-  if (!svgRaw || typeof Image === 'undefined') {
-    return texture;
-  }
+  const bumpTexture = new THREE.CanvasTexture(bumpCanvas);
+  bumpTexture.anisotropy = 8;
 
   let cancelled = false;
-  const img = new Image();
-  img.onload = () => {
-    if (cancelled || !ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (svgRaw && typeof Image !== 'undefined') {
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled || !colorCtx || !bumpCtx) return;
+      colorCtx.clearRect(0, 0, size, size);
 
-    const w = canvas.width;
-    const h = canvas.height;
-    const srcW = Math.max(1, img.naturalWidth || svgWidthMm * 8 || 512);
-    const srcH = Math.max(1, img.naturalHeight || svgHeightMm * 8 || 512);
+      const srcW = Math.max(1, img.naturalWidth || svgWidthMm * 8 || 512);
+      const srcH = Math.max(1, img.naturalHeight || svgHeightMm * 8 || 512);
 
-    ctx.save();
-    ctx.setTransform(0, -h / srcW, w / srcH, 0, 0, h);
-    ctx.drawImage(img, 0, 0, srcW, srcH);
-    ctx.restore();
+      // Rotación -90° con determinante positivo (+v = X axial, +u = Y circunferencia)
+      colorCtx.save();
+      colorCtx.setTransform(0, -size / srcW, size / srcH, 0, 0, size);
+      colorCtx.drawImage(img, 0, 0, srcW, srcH);
+      colorCtx.restore();
 
-    texture.needsUpdate = true;
-    onLoaded?.();
+      synthesizeLaserMapsFromCanvas(colorCtx, bumpCtx, size, size, markHex);
+      colorTexture.needsUpdate = true;
+      bumpTexture.needsUpdate = true;
+      onLoaded?.();
+    };
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgRaw)}`;
+  }
+
+  return {
+    colorTexture,
+    bumpTexture,
+    dispose: () => {
+      cancelled = true;
+      colorTexture.dispose();
+      bumpTexture.dispose();
+    },
   };
-  img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgRaw)}`;
+}
 
-  const origDispose = texture.dispose.bind(texture);
-  texture.dispose = () => {
-    cancelled = true;
-    origDispose();
+function xmlAttr(v: string): string {
+  return v
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Compila la geometría real de grabado C00 de una etiqueta plana (SVG vector, texto o PNG raster)
+ * en texturas PBR de color quemado + bajorrelieve físico para visualizar tal cual queda sobre la plancha 3D.
+ */
+export function buildFlatLabelEngravedTextures(
+  design: LabelDesign,
+  markHex: string,
+  onLoaded?: () => void
+): Engraved3DTextures {
+  const w = Math.max(1, design.widthMm);
+  const h = Math.max(1, design.heightMm);
+  const compiled = compileLabelGeometry(design);
+
+  const svgNodes: string[] = [];
+  for (const eng of compiled.engravingItems) {
+    if (eng.kind === 'vector_path' && eng.svgPathD) {
+      if (eng.filled) {
+        svgNodes.push(
+          `<path d="${eng.svgPathD}" fill="#000000" fill-rule="${eng.fillRule || 'evenodd'}" stroke="#000000" stroke-width="0.06" />`
+        );
+      } else {
+        svgNodes.push(
+          `<path d="${eng.svgPathD}" fill="none" stroke="#000000" stroke-width="${eng.strokeWidthMm || 0.3}" stroke-linecap="round" stroke-linejoin="round" />`
+        );
+      }
+    } else if (eng.kind === 'raster_image' && eng.dataUrl) {
+      const rt = rasterImageTransform(eng);
+      const rot = rt ? ` transform="${rt}"` : '';
+      svgNodes.push(
+        `<image x="${eng.xMm}" y="${eng.yMm}" width="${eng.widthMm}" height="${eng.heightMm}" preserveAspectRatio="none" href="${xmlAttr(eng.dataUrl)}"${rot} />`
+      );
+    }
+  }
+
+  const labelSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w * 10}" height="${h * 10}" viewBox="0 0 ${w} ${h}">${svgNodes.join('')}</svg>`;
+
+  const pxSize = 512;
+  const colorCanvas = document.createElement('canvas');
+  colorCanvas.width = pxSize;
+  colorCanvas.height = pxSize;
+  const colorCtx = colorCanvas.getContext('2d', { willReadFrequently: true });
+
+  const bumpCanvas = document.createElement('canvas');
+  bumpCanvas.width = pxSize;
+  bumpCanvas.height = pxSize;
+  const bumpCtx = bumpCanvas.getContext('2d', { willReadFrequently: true });
+
+  if (colorCtx && bumpCtx) {
+    colorCtx.clearRect(0, 0, pxSize, pxSize);
+    bumpCtx.fillStyle = 'rgb(160,160,160)';
+    bumpCtx.fillRect(0, 0, pxSize, pxSize);
+  }
+
+  const colorTexture = new THREE.CanvasTexture(colorCanvas);
+  colorTexture.colorSpace = THREE.SRGBColorSpace;
+  colorTexture.anisotropy = 8;
+
+  const bumpTexture = new THREE.CanvasTexture(bumpCanvas);
+  bumpTexture.anisotropy = 8;
+
+  let cancelled = false;
+  if (svgNodes.length > 0 && typeof Image !== 'undefined') {
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled || !colorCtx || !bumpCtx) return;
+      colorCtx.clearRect(0, 0, pxSize, pxSize);
+      colorCtx.drawImage(img, 0, 0, pxSize, pxSize);
+      synthesizeLaserMapsFromCanvas(colorCtx, bumpCtx, pxSize, pxSize, markHex);
+      colorTexture.needsUpdate = true;
+      bumpTexture.needsUpdate = true;
+      onLoaded?.();
+    };
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(labelSvg)}`;
+  }
+
+  return {
+    colorTexture,
+    bumpTexture,
+    dispose: () => {
+      cancelled = true;
+      colorTexture.dispose();
+      bumpTexture.dispose();
+    },
   };
-
-  return texture;
 }
