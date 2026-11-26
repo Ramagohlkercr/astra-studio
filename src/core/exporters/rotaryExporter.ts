@@ -1,5 +1,13 @@
 import {compileLabelGeometry, rasterImageTransform, roundMm} from '../geometry/geometryEngine';
-import {computeRotaryLayout, isTapered, RotaryConfig, RotaryLayout, warpPointForTaper} from '../rotary/rotaryEngine';
+import {
+  computeRotaryLayout,
+  DEFAULT_ROTARY_LAYER_PARAMS,
+  isTapered,
+  RotaryConfig,
+  RotaryEngraveLayerParams,
+  RotaryLayout,
+  warpPointForTaper,
+} from '../rotary/rotaryEngine';
 import {EngravedItemGeometry, LabelDesign, LIGHTBURN_LAYERS, Point2D} from '../types';
 
 function xml(value: string): string {
@@ -451,5 +459,178 @@ export function exportRotaryTestPatternSvg(
     targetSquareMm: sq,
     widthMm: w,
     heightMm: h,
+  };
+}
+
+export interface RotaryLbrn2Artifact {
+  lbrn2Content: string;
+  filename: string;
+  widthMm: number;
+  heightMm: number;
+  shapeCount: number;
+}
+
+/**
+ * Exporta el proyecto rotativo desenrollado (y pre-compensado si es cónico)
+ * directamente en formato nativo LightBurn Pro 2.2 (.lbrn2) con su capa C00 configurada.
+ */
+export function exportRotaryToLbrn2(
+  design: LabelDesign,
+  config: RotaryConfig,
+  layerParams: RotaryEngraveLayerParams = DEFAULT_ROTARY_LAYER_PARAMS
+): RotaryLbrn2Artifact {
+  const layout = computeRotaryLayout(config, design);
+  if (!layout.valid) {
+    throw new Error(`Rotativo inválido: ${layout.errors.join(' ')}`);
+  }
+
+  const items = collectRotaryArtwork(design, config, layout);
+  if (items.length === 0) {
+    throw new Error(
+      'No hay elementos de grabado visibles para exportar a LightBurn (.lbrn2).'
+    );
+  }
+
+  const cutType =
+    layerParams.mode === 'image'
+      ? 'Image'
+      : layerParams.mode === 'line'
+        ? 'Cut'
+        : 'Scan';
+
+  const cutSettingLines: string[] = [
+    `  <CutSetting type="${cutType}">`,
+    `    <index Value="0"/>`,
+    `    <name Value="C00 GRABADO ROTATIVO"/>`,
+    `    <priority Value="0"/>`,
+    `    <doOutput Value="1"/>`,
+    `    <hide Value="0"/>`,
+    `    <runBlower Value="${layerParams.airAssist ? 1 : 0}"/>`,
+    `    <numPasses Value="${Math.max(1, layerParams.passes || 1)}"/>`,
+  ];
+
+  if (layerParams.speedMmPerSec !== null && layerParams.speedMmPerSec > 0) {
+    cutSettingLines.push(
+      `    <speed Value="${roundMm(layerParams.speedMmPerSec, 2)}"/>`
+    );
+  }
+  if (layerParams.maxPowerPercent !== null && layerParams.maxPowerPercent > 0) {
+    cutSettingLines.push(
+      `    <maxPower Value="${roundMm(layerParams.maxPowerPercent, 2)}"/>`
+    );
+  }
+  if (layerParams.minPowerPercent !== null && layerParams.minPowerPercent >= 0) {
+    cutSettingLines.push(
+      `    <minPower Value="${roundMm(layerParams.minPowerPercent, 2)}"/>`
+    );
+  } else if (
+    layerParams.maxPowerPercent !== null &&
+    layerParams.maxPowerPercent > 0
+  ) {
+    cutSettingLines.push(
+      `    <minPower Value="${roundMm(layerParams.maxPowerPercent, 2)}"/>`
+    );
+  }
+
+  if (layerParams.mode !== 'line') {
+    cutSettingLines.push(
+      `    <interval Value="${roundMm(layerParams.lineIntervalMm || 0.073, 4)}"/>`
+    );
+    cutSettingLines.push(
+      `    <bidir Value="${layerParams.bidirectional === false ? 0 : 1}"/>`
+    );
+    if (layerParams.crossHatch) {
+      cutSettingLines.push(`    <crossHatch Value="1"/>`);
+    }
+    if (layerParams.overscanPercent > 0) {
+      cutSettingLines.push(`    <overscan Value="1"/>`);
+      cutSettingLines.push(
+        `    <overscanPercent Value="${roundMm(layerParams.overscanPercent, 2)}"/>`
+      );
+    }
+  }
+  cutSettingLines.push(`  </CutSetting>`);
+
+  const shapesXml: string[] = [];
+  let shapeCount = 0;
+
+  for (const item of items) {
+    if (item.kind === 'vector_path' && item.polylines?.length) {
+      for (const pl of item.polylines) {
+        if (pl.points.length < 2) continue;
+        const vLines: string[] = [];
+        const pLines: string[] = [];
+        for (let i = 0; i < pl.points.length; i++) {
+          const vx = roundMm(pl.points[i].x, 3);
+          const vy = roundMm(pl.points[i].y, 3);
+          vLines.push(`      <V vx="${vx}" vy="${vy}"/>`);
+          if (i > 0) {
+            pLines.push(`      <P T="L" p0="${i - 1}" p1="${i}"/>`);
+          }
+        }
+        if (pl.closed && pl.points.length > 2) {
+          pLines.push(`      <P T="L" p0="${pl.points.length - 1}" p1="0"/>`);
+        }
+        shapesXml.push(
+          [
+            `  <Shape Type="Path" CutIndex="0">`,
+            `    <XForm>1 0 0 1 0 0</XForm>`,
+            ...vLines,
+            ...pLines,
+            `  </Shape>`,
+          ].join('\n')
+        );
+        shapeCount++;
+      }
+    } else if (item.kind === 'raster_image' && item.dataUrl) {
+      const base64Match = item.dataUrl.match(
+        /^data:image\/[a-zA-Z0-9+.-]+;base64,(.+)$/
+      );
+      const base64Data = base64Match ? base64Match[1] : '';
+      const w = roundMm(item.widthMm ?? 10, 3);
+      const h = roundMm(item.heightMm ?? 10, 3);
+      const cx = roundMm((item.xMm ?? 0) + w / 2, 3);
+      const cy = roundMm((item.yMm ?? 0) + h / 2, 3);
+      shapesXml.push(
+        [
+          `  <Shape Type="Bitmap" CutIndex="0" W="${w}" H="${h}" Data="${base64Data}">`,
+          `    <XForm>1 0 0 1 ${cx} ${cy}</XForm>`,
+          `  </Shape>`,
+        ].join('\n')
+      );
+      shapeCount++;
+    }
+  }
+
+  const noteSummary = [
+    `ROTATIVO VANK 9060 (${config.rotaryType === 'chuck' ? 'Mandril Sanou 3 Mordazas' : 'Rodillos'})`,
+    `Objeto: ${
+      layout.tapered
+        ? `Cónico Ø ${config.objectDiameterMm} -> Ø ${config.endDiameterMm} mm (Cargar en LightBurn Object Diameter = Ø ${layout.referenceDiameterMm} mm — NO activar Taper Warp adicional)`
+        : `Cilíndrico Ø ${config.objectDiameterMm} mm`
+    }`,
+    `Circunferencia: ${layout.circumferenceMm} mm | Lienzo desenrollado: ${layout.canvasWidthMm} x ${layout.canvasHeightMm} mm | Copias: ${layout.repeatCount}`,
+    `Pasos por vuelta configurados: ${config.stepsPerRotation ?? 'Verificar en Rotary Setup'}`,
+  ].join(' | ');
+
+  const lbrn2Content = [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<LightBurnProject AppVersion="2.2.01" FormatVersion="1" MaterialHeight="0" MirrorX="False" MirrorY="False">`,
+    `  <UIPrefs>`,
+    `    <Optimize_ByLayer Value="1"/>`,
+    `  </UIPrefs>`,
+    ...cutSettingLines,
+    ...shapesXml,
+    `  <Notes ShowOnLoad="1" Notes="${xml(noteSummary)}"/>`,
+    `</LightBurnProject>`,
+  ].join('\n');
+
+  const base = rotaryBaseName(design, config, layout);
+  return {
+    lbrn2Content,
+    filename: `${base}_LightBurn.lbrn2`,
+    widthMm: layout.canvasWidthMm,
+    heightMm: layout.canvasHeightMm,
+    shapeCount,
   };
 }

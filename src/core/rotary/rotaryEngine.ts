@@ -305,3 +305,98 @@ export function correctedRotarySteps(current:number, measuredDegrees:number):num
  const result=current*360/measuredDegrees;
  return Number.isFinite(result)?roundMm(result,3):null;
 }
+
+export interface RotaryEngraveLayerParams {
+  mode: 'image' | 'fill' | 'line';
+  speedMmPerSec: number | null;
+  maxPowerPercent: number | null;
+  minPowerPercent: number | null;
+  lineIntervalMm: number;
+  passes: number;
+  airAssist: boolean;
+  bidirectional: boolean;
+  crossHatch: boolean;
+  overscanPercent: number;
+}
+
+export const DEFAULT_ROTARY_LAYER_PARAMS: RotaryEngraveLayerParams = {
+  mode: 'fill',
+  speedMmPerSec: null,
+  maxPowerPercent: null,
+  minPowerPercent: null,
+  lineIntervalMm: 0.073,
+  passes: 1,
+  airAssist: true,
+  bidirectional: true,
+  crossHatch: false,
+  overscanPercent: 2.5,
+};
+
+export interface RotaryPhysicalSetupInfo {
+  /** Ángulo de inclinación de la pared del cono respecto al eje central (°) */
+  wallTiltAngleDeg: number;
+  /** Milímetros que debe levantarse el extremo más angosto para nivelar la generatriz superior bajo el foco láser */
+  tailstockLiftMm: number;
+  /** Extremo que debe levantarse ('end' si X=L es más angosto, 'start' si X=0 es más angosto, 'none' si es recto) */
+  endToLift: 'start' | 'end' | 'none';
+  /** Distancia real sobre la pared inclinada (generatriz) en mm */
+  slantLengthMm: number;
+  /** Tiempo estimado de grabado rotativo en segundos (0 si aún no se ingresó velocidad) */
+  estimatedDurationSec: number;
+  /** Cantidad total de líneas de barrido axial X a lo largo del giro Y */
+  estimatedScanLines: number;
+}
+
+/**
+ * Calcula los datos físicos de montaje, nivelación de foco Z en conos y tiempo estimado
+ * para el Mandril Sanou o Rodillos en la Vank 9060.
+ */
+export function computeRotaryPhysicalSetup(
+  config: RotaryConfig,
+  design: Pick<LabelDesign, 'widthMm' | 'heightMm'>,
+  layerParams: RotaryEngraveLayerParams = DEFAULT_ROTARY_LAYER_PARAMS
+): RotaryPhysicalSetupInfo {
+  const tapered = isTapered(config);
+  const dStart = config.objectDiameterMm;
+  const dEnd = tapered ? (config.endDiameterMm as number) : dStart;
+  const len = Math.max(1, config.usefulLengthMm);
+
+  const radiusDiffMm = Math.abs(dStart - dEnd) / 2;
+  const wallTiltAngleDeg = tapered
+    ? roundMm((Math.atan2(radiusDiffMm, len) * 180) / Math.PI, 2)
+    : 0;
+  const tailstockLiftMm = tapered ? roundMm(radiusDiffMm * 2, 2) : 0;
+  const endToLift: 'start' | 'end' | 'none' = !tapered
+    ? 'none'
+    : dEnd < dStart
+      ? 'end'
+      : 'start';
+  const slantLengthMm = roundMm(Math.hypot(len, radiusDiffMm), 2);
+
+  const copies = Math.max(1, Math.min(36, Math.round(config.repeatCount ?? 1)));
+  const interval = Math.max(0.02, layerParams.lineIntervalMm || 0.073);
+  const passes = Math.max(1, layerParams.passes || 1);
+  const crossFactor = layerParams.crossHatch ? 2 : 1;
+
+  const linesPerCopy = Math.ceil(Math.max(1, design.heightMm) / interval);
+  const estimatedScanLines = linesPerCopy * copies * passes * crossFactor;
+
+  let estimatedDurationSec = 0;
+  if (layerParams.speedMmPerSec && layerParams.speedMmPerSec > 0) {
+    const overscanExtraMm =
+      design.widthMm * ((layerParams.overscanPercent || 2.5) / 100) * 2;
+    const strokeMm = design.widthMm + overscanExtraMm;
+    const scanSec = (estimatedScanLines * strokeMm) / layerParams.speedMmPerSec;
+    const turnaroundSec = estimatedScanLines * 0.095;
+    estimatedDurationSec = Math.ceil(scanSec + turnaroundSec);
+  }
+
+  return {
+    wallTiltAngleDeg,
+    tailstockLiftMm,
+    endToLift,
+    slantLengthMm,
+    estimatedDurationSec,
+    estimatedScanLines,
+  };
+}

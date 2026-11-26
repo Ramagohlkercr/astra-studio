@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
   computeRotaryLayout,
+  computeRotaryPhysicalSetup,
   DEFAULT_ROTARY_CONFIG,
   RotaryConfig,
   sanitizeRotaryConfig,
@@ -25,6 +26,7 @@ import {
   exportRotarySvg,
   exportRotaryDxf,
   exportRotaryTestPatternSvg,
+  exportRotaryToLbrn2,
   buildRotaryInstructions,
 } from '../exporters/rotaryExporter';
 import { LabelDesign, LabelElement } from '../types';
@@ -295,6 +297,61 @@ describe('Módulo Rotativo — Auditoría y Correcciones Mandril Sanou (Vank 906
       expect(sanitized?.rotaryType).toBe('chuck');
       expect(sanitized?.accessoryProfileId).toBe('vank-sanou-chuck');
       expect(sanitized?.rollerDiameterMm).toBeUndefined();
+    });
+  });
+
+  describe('6. Calculadora física de nivelación de foco Z en conos y exportación directa a LightBurn (.lbrn2)', () => {
+    it('calcula ángulo de inclinación de pared, suplemento de nivelación Z y exporta proyecto nativo .lbrn2 rotativo', () => {
+      const design = createMockDesign([createTextElement('t-rot', true)]);
+      const tumblerConfig: RotaryConfig = {
+        ...DEFAULT_ROTARY_CONFIG,
+        rotaryType: 'chuck',
+        accessoryProfileId: 'vank-sanou-chuck',
+        objectDiameterMm: 90,
+        endDiameterMm: 65,
+        usefulLengthMm: 120,
+        repeatCount: 2,
+      };
+
+      const phys = computeRotaryPhysicalSetup(tumblerConfig, design, {
+        mode: 'image',
+        speedMmPerSec: 600,
+        maxPowerPercent: 30,
+        minPowerPercent: 30,
+        lineIntervalMm: 0.073,
+        passes: 1,
+        airAssist: true,
+        bidirectional: true,
+        crossHatch: false,
+        overscanPercent: 2.5,
+      });
+
+      // Diferencia de diámetro = 90 - 65 = 25 mm -> ángulo atan(12.5 / 120) = 5.95°
+      expect(phys.tailstockLiftMm).toBeCloseTo(25, 2);
+      expect(phys.wallTiltAngleDeg).toBeCloseTo(5.95, 2);
+      expect(phys.endToLift).toBe('end');
+      expect(phys.estimatedDurationSec).toBeGreaterThan(0);
+
+      const lbrn2 = exportRotaryToLbrn2(design, tumblerConfig, {
+        mode: 'image',
+        speedMmPerSec: 600,
+        maxPowerPercent: 30,
+        minPowerPercent: 30,
+        lineIntervalMm: 0.073,
+        passes: 1,
+        airAssist: true,
+        bidirectional: true,
+        crossHatch: false,
+        overscanPercent: 2.5,
+      });
+
+      expect(lbrn2.filename).toContain('_LightBurn.lbrn2');
+      expect(lbrn2.shapeCount).toBeGreaterThan(0);
+      expect(lbrn2.lbrn2Content).toContain('<CutSetting type="Image">');
+      expect(lbrn2.lbrn2Content).toContain('<speed Value="600"/>');
+      expect(lbrn2.lbrn2Content).toContain('<maxPower Value="30"/>');
+      expect(lbrn2.lbrn2Content).toContain('<interval Value="0.073"/>');
+      expect(lbrn2.lbrn2Content).toContain('Object Diameter = Ø 77.5 mm');
     });
   });
 });
