@@ -21,8 +21,13 @@ import {
   addRotaryCalibrationRecord,
   loadRotaryCalibrationHistory,
   clearRotaryCalibrationHistory,
+  loadRotaryRecipes,
+  saveRotaryRecipe,
+  deleteRotaryRecipe,
+  RotaryJobRecipe,
 } from '../rotary/rotaryProfiles';
 import {
+  compileRotaryToRuidaRd,
   exportRotarySvg,
   exportRotaryDxf,
   exportRotaryTestPatternSvg,
@@ -307,6 +312,7 @@ describe('Módulo Rotativo — Auditoría y Correcciones Mandril Sanou (Vank 906
         ...DEFAULT_ROTARY_CONFIG,
         rotaryType: 'chuck',
         accessoryProfileId: 'vank-sanou-chuck',
+        stepsPerRotation: 3200,
         objectDiameterMm: 90,
         endDiameterMm: 65,
         usefulLengthMm: 120,
@@ -326,11 +332,12 @@ describe('Módulo Rotativo — Auditoría y Correcciones Mandril Sanou (Vank 906
         overscanPercent: 2.5,
       });
 
-      // Diferencia de diámetro = 90 - 65 = 25 mm -> ángulo atan(12.5 / 120) = 5.95°
-      expect(phys.tailstockLiftMm).toBeCloseTo(25, 2);
+      // Nivelación geométrica de generatriz superior: L * sin(atan2((90-65)/2, 120)) = 12.43 mm; ángulo = 5.95°
+      expect(phys.tailstockLiftMm).toBeCloseTo(12.43, 2);
       expect(phys.wallTiltAngleDeg).toBeCloseTo(5.95, 2);
       expect(phys.endToLift).toBe('end');
       expect(phys.estimatedDurationSec).toBeGreaterThan(0);
+      expect(phys.stepResolutionUm).toBeGreaterThan(0);
 
       const lbrn2 = exportRotaryToLbrn2(design, tumblerConfig, {
         mode: 'image',
@@ -352,6 +359,93 @@ describe('Módulo Rotativo — Auditoría y Correcciones Mandril Sanou (Vank 906
       expect(lbrn2.lbrn2Content).toContain('<maxPower Value="30"/>');
       expect(lbrn2.lbrn2Content).toContain('<interval Value="0.073"/>');
       expect(lbrn2.lbrn2Content).toContain('Object Diameter = Ø 77.5 mm');
+    });
+  });
+
+  describe('7. Orientación del logo (0/90/180/270°), Recetas Rotativas y Compilador Binario .RD', () => {
+    it('intercambia ancho axial y alto circunferencial cuando designRotationDeg = 90', () => {
+      const design = createMockDesign([createTextElement('t-rot', true)]);
+      const cfg90: RotaryConfig = {
+        ...DEFAULT_ROTARY_CONFIG,
+        objectDiameterMm: 80,
+        usefulLengthMm: 150,
+        designRotationDeg: 90,
+      };
+      const layout90 = computeRotaryLayout(cfg90, design);
+      expect(layout90.appliedDesignRotationDeg).toBe(90);
+      expect(layout90.effectiveDesignWidthMm).toBe(design.heightMm);
+      expect(layout90.effectiveDesignHeightMm).toBe(design.widthMm);
+    });
+
+    it('guarda, lee y elimina recetas rotativas persistentes', () => {
+      const recipe: RotaryJobRecipe = {
+        id: 'recipe-termo-stanley',
+        name: 'Termo 1L Negro',
+        rotaryType: 'chuck',
+        objectDiameterMm: 90,
+        endDiameterMm: 65,
+        usefulLengthMm: 140,
+        repeatCount: 1,
+        designRotationDeg: 90,
+        chuckSide: 'left_base',
+        layerMode: 'fill',
+        speedMmPerSec: 350,
+        maxPowerPercent: 28,
+        minPowerPercent: 22,
+        lineIntervalMm: 0.073,
+        passes: 1,
+        airAssist: true,
+        bidirectional: true,
+        updatedAtIso: '2026-11-26T12:00:00Z',
+      };
+      const saved = saveRotaryRecipe(recipe);
+      expect(saved.some((r) => r.id === recipe.id)).toBe(true);
+      expect(loadRotaryRecipes().length).toBeGreaterThanOrEqual(1);
+      const afterDelete = deleteRotaryRecipe(recipe.id);
+      expect(afterDelete.some((r) => r.id === recipe.id)).toBe(false);
+    });
+
+    it('bloquea compilación .RD sin velocidad/potencia real y compila binario Ruida D8 00..D7 al configurarlos', () => {
+      const design = createMockDesign([createTextElement('t-rot', true)]);
+      const cfg: RotaryConfig = {
+        ...DEFAULT_ROTARY_CONFIG,
+        objectDiameterMm: 80,
+        usefulLengthMm: 120,
+      };
+
+      expect(() =>
+        compileRotaryToRuidaRd(design, cfg, {
+          mode: 'line',
+          speedMmPerSec: null,
+          maxPowerPercent: 30,
+          minPowerPercent: 25,
+          lineIntervalMm: 0.08,
+          passes: 1,
+          airAssist: true,
+          bidirectional: true,
+          crossHatch: false,
+          overscanPercent: 2.5,
+        })
+      ).toThrow(/Velocidad/i);
+
+      const compiled = compileRotaryToRuidaRd(design, cfg, {
+        mode: 'line',
+        speedMmPerSec: 300,
+        maxPowerPercent: 28,
+        minPowerPercent: 22,
+        lineIntervalMm: 0.08,
+        passes: 1,
+        airAssist: true,
+        bidirectional: true,
+        crossHatch: false,
+        overscanPercent: 2.5,
+      });
+
+      expect(compiled.filenameSuggested.endsWith('_Rotativo_Vank9060.rd')).toBe(
+        true
+      );
+      expect(compiled.rdBytes.length).toBeGreaterThan(20);
+      expect(compiled.commandCount).toBeGreaterThan(0);
     });
   });
 });

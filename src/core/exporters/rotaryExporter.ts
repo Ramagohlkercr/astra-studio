@@ -8,6 +8,13 @@ import {
   RotaryLayout,
   warpPointForTaper,
 } from '../rotary/rotaryEngine';
+import {
+  CompiledRuidaRdArtifact,
+  encodeRuidaAbsCoordMm,
+  encodeRuidaPowerPercent,
+  encodeRuidaSpeedMmPerSec,
+  scrambleRuidaByte,
+} from '../workbench/ruidaCompiler';
 import {EngravedItemGeometry, LabelDesign, LIGHTBURN_LAYERS, Point2D} from '../types';
 
 function xml(value: string): string {
@@ -48,28 +55,107 @@ function toPathD(polylines: {points: Point2D[]; closed: boolean}[]): string {
   return polylines.map(pl => pl.points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + (pl.closed ? ' Z' : '')).join(' ');
 }
 
+function rotateLocalPointForRotary(
+  x: number,
+  y: number,
+  origW: number,
+  origH: number,
+  deg: 0 | 90 | 180 | 270
+): Point2D {
+  switch (deg) {
+    case 90:
+      return { x: roundMm(origH - y), y: roundMm(x) };
+    case 180:
+      return { x: roundMm(origW - x), y: roundMm(origH - y) };
+    case 270:
+      return { x: roundMm(y), y: roundMm(origW - x) };
+    default:
+      return { x, y };
+  }
+}
+
 /**
  * Compila el grabado de todas las copias del diseño ya ubicadas sobre el lienzo desenrollado,
- * aplicando la compensación cónica cuando corresponde.
+ * aplicando orientación en el cilindro (0/90/180/270°) y compensación cónica Pre-Warp cuando corresponde.
  */
 function collectRotaryArtwork(design: LabelDesign, config: RotaryConfig, layout: RotaryLayout): EngravedItemGeometry[] {
   const items: EngravedItemGeometry[] = [];
+  const rotDeg = layout.appliedDesignRotationDeg;
+
   layout.placements.forEach((placement, k) => {
     const compiled = compileLabelGeometry(design, {
-      offsetXMm: placement.offsetXMm,
-      offsetYMm: placement.offsetYMm,
+      offsetXMm: rotDeg === 0 ? placement.offsetXMm : 0,
+      offsetYMm: rotDeg === 0 ? placement.offsetYMm : 0,
       instanceIdPrefix: layout.placements.length > 1 ? `rotativo_${k + 1}` : 'rotativo',
     });
     for (const eng of compiled.engravingItems) {
-      if (!layout.tapered) { items.push(eng); continue; }
-      if (eng.kind !== 'vector_path' || !eng.polylines?.length) {
+      if (layout.tapered && (eng.kind !== 'vector_path' || !eng.polylines?.length)) {
         throw new Error('Las imágenes raster no se pueden compensar en objetos cónicos: usá logos vectoriales, texto o imágenes vectorizadas.');
       }
-      const polylines = eng.polylines.map(pl => ({
-        closed: pl.closed,
-        points: densify(pl.points, pl.closed).map(p => warpPointForTaper(config, placement.centerYMm, p.x, p.y)),
-      }));
-      items.push({...eng, polylines, svgPathD: toPathD(polylines)});
+
+      if (eng.kind === 'vector_path' && eng.polylines?.length) {
+        if (rotDeg === 0 && !layout.tapered) {
+          items.push(eng);
+          continue;
+        }
+        const transformedPolylines = eng.polylines.map((pl) => {
+          const basePts =
+            rotDeg === 0
+              ? pl.points
+              : pl.points.map((pt) => {
+                  const rp = rotateLocalPointForRotary(
+                    pt.x,
+                    pt.y,
+                    design.widthMm,
+                    design.heightMm,
+                    rotDeg
+                  );
+                  return {
+                    x: roundMm(rp.x + placement.offsetXMm),
+                    y: roundMm(rp.y + placement.offsetYMm),
+                  };
+                });
+
+          const finalPts = layout.tapered
+            ? densify(basePts, pl.closed).map((p) =>
+                warpPointForTaper(config, placement.centerYMm, p.x, p.y)
+              )
+            : basePts;
+
+          return { closed: pl.closed, points: finalPts };
+        });
+
+        items.push({
+          ...eng,
+          polylines: transformedPolylines,
+          svgPathD: toPathD(transformedPolylines),
+        });
+      } else if (eng.kind === 'raster_image') {
+        if (rotDeg === 0) {
+          items.push(eng);
+        } else {
+          // Para raster en cilindro recto con rotación de 90/180/270°, rotar su caja y traslación en el lienzo
+          const rw = eng.widthMm ?? design.widthMm;
+          const rh = eng.heightMm ?? design.heightMm;
+          const cxLocal = (eng.xMm ?? 0) + rw / 2;
+          const cyLocal = (eng.yMm ?? 0) + rh / 2;
+          const rc = rotateLocalPointForRotary(
+            cxLocal,
+            cyLocal,
+            design.widthMm,
+            design.heightMm,
+            rotDeg
+          );
+          const nextCx = rc.x + placement.offsetXMm;
+          const nextCy = rc.y + placement.offsetYMm;
+          items.push({
+            ...eng,
+            xMm: roundMm(nextCx - rw / 2),
+            yMm: roundMm(nextCy - rh / 2),
+            rotationDeg: ((eng.rotationDeg ?? 0) + rotDeg) % 360,
+          });
+        }
+      }
     }
   });
   return items;
@@ -278,7 +364,7 @@ export function exportRotaryGuideSvg(design: LabelDesign, config: RotaryConfig):
   const st = `fill="none" stroke="${c}" stroke-width="0.1"`;
   const body = [
     `    <rect id="area" x="0" y="0" width="${w}" height="${h}" ${st} />`,
-    ...layout.placements.map((p, i) => `    <rect id="diseno-${i + 1}" x="${p.offsetXMm}" y="${p.offsetYMm}" width="${design.widthMm}" height="${design.heightMm}" ${st} />`),
+    ...layout.placements.map((p, i) => `    <rect id="diseno-${i + 1}" x="${p.offsetXMm}" y="${p.offsetYMm}" width="${layout.effectiveDesignWidthMm}" height="${layout.effectiveDesignHeightMm}" ${st} />`),
     `    <path id="cruz-centro" d="M ${roundMm(w / 2 - 5)} ${roundMm(h / 2)} L ${roundMm(w / 2 + 5)} ${roundMm(h / 2)} M ${roundMm(w / 2)} ${roundMm(h / 2 - 5)} L ${roundMm(w / 2)} ${roundMm(h / 2 + 5)}" ${st} />`,
     `    <path id="costura" d="M 0 0 L ${w} 0" ${st} stroke-dasharray="3 2" />`,
   ];
@@ -632,5 +718,175 @@ export function exportRotaryToLbrn2(
     widthMm: layout.canvasWidthMm,
     heightMm: layout.canvasHeightMm,
     shapeCount,
+  };
+}
+
+/**
+ * Compila un trabajo rotativo vectorial (incluyendo compensación cónica Pre-Warp y rotación en el eje)
+ * directamente a binario Ruida (.RD) listo para transmisión UDP a la Vank 9060 (192.168.0.195:50200)
+ * o descarga en pendrive USB.
+ */
+export function compileRotaryToRuidaRd(
+  design: LabelDesign,
+  config: RotaryConfig,
+  layerParams: RotaryEngraveLayerParams = DEFAULT_ROTARY_LAYER_PARAMS,
+  ruidaJobName = 'ROTAT01'
+): CompiledRuidaRdArtifact {
+  const layout = computeRotaryLayout(config, design);
+  if (!layout.valid) {
+    throw new Error(`Compilación .RD rotativa bloqueada: ${layout.errors.join(' ')}`);
+  }
+
+  if (
+    layerParams.speedMmPerSec === null ||
+    !Number.isFinite(layerParams.speedMmPerSec) ||
+    layerParams.speedMmPerSec <= 0 ||
+    layerParams.maxPowerPercent === null ||
+    !Number.isFinite(layerParams.maxPowerPercent) ||
+    layerParams.maxPowerPercent <= 0
+  ) {
+    throw new Error(
+      'Compilación .RD rotativa bloqueada por seguridad: configurá Velocidad (mm/s) y Potencia (%) en la pestaña "2. Velocidad y Potencia" antes de enviar a la Vank 9060.'
+    );
+  }
+
+  const items = collectRotaryArtwork(design, config, layout);
+  const vectorItems = items.filter(
+    (it) => it.kind === 'vector_path' && it.polylines && it.polylines.length > 0
+  );
+  if (vectorItems.length === 0) {
+    throw new Error(
+      'El archivo .RD directo para rotativo requiere trazos vectoriales o texto. Vectorizá tu logo en el Paso 1 o usá "Abrir en LightBurn (.lbrn2)".'
+    );
+  }
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  const polylinesToEmit: { points: Point2D[]; closed: boolean }[] = [];
+  for (const it of vectorItems) {
+    for (const pl of it.polylines!) {
+      if (pl.points.length < 2) continue;
+      polylinesToEmit.push(pl);
+      for (const pt of pl.points) {
+        minX = Math.min(minX, pt.x);
+        minY = Math.min(minY, pt.y);
+        maxX = Math.max(maxX, pt.x);
+        maxY = Math.max(maxY, pt.y);
+      }
+    }
+  }
+
+  if (!Number.isFinite(minX) || polylinesToEmit.length === 0) {
+    throw new Error('No se encontraron trayectorias válidas para compilar a .RD rotativo.');
+  }
+
+  const bounds = {
+    minX: roundMm(minX, 3),
+    minY: roundMm(minY, 3),
+    maxX: roundMm(maxX, 3),
+    maxY: roundMm(maxY, 3),
+    width: roundMm(maxX - minX, 3),
+    height: roundMm(maxY - minY, 3),
+  };
+
+  const raw: number[] = [];
+  let commandCount = 0;
+  const emit = (bytes: number[]) => {
+    for (const b of bytes) raw.push(b & 0xff);
+    commandCount++;
+  };
+
+  const cleanName =
+    ruidaJobName
+      .toUpperCase()
+      .replace(/[^A-Z0-9_-]/g, '')
+      .slice(0, 8) || 'ROTAT01';
+
+  emit([0xd8, 0x00]);
+  emit([
+    0xe7,
+    0x01,
+    ...Array.from(cleanName).map((ch) => ch.charCodeAt(0) & 0x7f),
+    0x00,
+  ]);
+  emit([
+    0xe7,
+    0x03,
+    ...encodeRuidaAbsCoordMm(bounds.minX),
+    ...encodeRuidaAbsCoordMm(bounds.minY),
+  ]);
+  emit([
+    0xe7,
+    0x07,
+    ...encodeRuidaAbsCoordMm(bounds.maxX),
+    ...encodeRuidaAbsCoordMm(bounds.maxY),
+  ]);
+
+  emit([0xca, 0x01, layerParams.airAssist ? 0x13 : 0x12]);
+
+  const speed = layerParams.speedMmPerSec;
+  const maxP = layerParams.maxPowerPercent;
+  const minP =
+    layerParams.minPowerPercent !== null && layerParams.minPowerPercent >= 0
+      ? Math.min(maxP, layerParams.minPowerPercent)
+      : maxP;
+
+  // Capa 0 (Grabado / Contorno Rotativo)
+  emit([0xc9, 0x04, 0x00, ...encodeRuidaSpeedMmPerSec(speed)]);
+  emit([0xc6, 0x31, 0x00, ...encodeRuidaPowerPercent(minP)]);
+  emit([0xc6, 0x32, 0x00, ...encodeRuidaPowerPercent(maxP)]);
+
+  emit([0xca, 0x02, 0x00]);
+  emit([0xc9, 0x02, ...encodeRuidaSpeedMmPerSec(speed)]);
+  emit([0xc6, 0x01, ...encodeRuidaPowerPercent(minP)]);
+  emit([0xc6, 0x02, ...encodeRuidaPowerPercent(maxP)]);
+
+  const passes = Math.max(1, Math.min(10, Math.round(layerParams.passes || 1)));
+  for (let pass = 0; pass < passes; pass++) {
+    for (const pl of polylinesToEmit) {
+      const start = pl.points[0];
+      emit([
+        0x88,
+        ...encodeRuidaAbsCoordMm(start.x),
+        ...encodeRuidaAbsCoordMm(start.y),
+      ]);
+      for (let i = 1; i < pl.points.length; i++) {
+        emit([
+          0xa8,
+          ...encodeRuidaAbsCoordMm(pl.points[i].x),
+          ...encodeRuidaAbsCoordMm(pl.points[i].y),
+        ]);
+      }
+      if (pl.closed) {
+        emit([
+          0xa8,
+          ...encodeRuidaAbsCoordMm(start.x),
+          ...encodeRuidaAbsCoordMm(start.y),
+        ]);
+      }
+    }
+  }
+
+  // Fin de trabajo (volver al origen / cierre)
+  emit([0xd7]);
+
+  const rawUnscrambledBytes = Uint8Array.from(raw);
+  const rdBytes = new Uint8Array(rawUnscrambledBytes.length);
+  for (let i = 0; i < rawUnscrambledBytes.length; i++) {
+    rdBytes[i] = scrambleRuidaByte(rawUnscrambledBytes[i]);
+  }
+
+  return {
+    rdBytes,
+    rawUnscrambledBytes,
+    filenameSuggested: `${cleanName}_Rotativo_Vank9060.rd`,
+    ruidaJobName: cleanName,
+    totalPieces: layout.repeatCount,
+    activeLayersCount: 1,
+    boundingBoxMm: bounds,
+    commandCount,
   };
 }

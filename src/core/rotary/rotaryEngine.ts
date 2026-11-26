@@ -65,6 +65,10 @@ export interface RotaryConfig {
   axisOffsetMm?: Millimeters;
   /** Giro del diseño alrededor del objeto respecto del centro del arco (grados, + = hacia Y creciente) */
   angularOffsetDeg?: number;
+  /** Rotación del logo sobre la superficie del cilindro/cono (0°, 90°, 180°, 270°) para orientarlo respecto a boca/base */
+  designRotationDeg?: 0 | 90 | 180 | 270;
+  /** Qué extremo del objeto queda mordido en el mandril izquierdo X=0 ('left_base' = base en mandril / boca a la derecha) */
+  chuckSide?: 'left_base' | 'left_rim';
 }
 
 export interface RotaryPlacement {
@@ -83,6 +87,8 @@ export const DEFAULT_ROTARY_CONFIG: RotaryConfig = {
   arcDeg: 360,
   rollerDiameterMm: undefined,
   machineBedWidthMm: 900,
+  designRotationDeg: 0,
+  chuckSide: 'left_base',
 };
 
 export const MIN_OBJECT_DIAMETER_MM = 5;
@@ -96,6 +102,10 @@ export interface RotaryLayout {
   arcLengthMm: Millimeters;
   canvasWidthMm: Millimeters;
   canvasHeightMm: Millimeters;
+  /** Dimensiones efectivas del diseño sobre el cilindro tras rotarlo 0/90/180/270° */
+  effectiveDesignWidthMm: Millimeters;
+  effectiveDesignHeightMm: Millimeters;
+  appliedDesignRotationDeg: 0 | 90 | 180 | 270;
   /** Traslación aplicada al diseño para centrarlo en el lienzo */
   offsetXMm: Millimeters;
   offsetYMm: Millimeters;
@@ -191,31 +201,38 @@ export function computeRotaryLayout(
   const circumferenceMm = rotaryCircumferenceMm(refD);
   const arcLengthMm = roundMm(circumferenceMm * Math.min(Math.max(config.arcDeg, 0), 360) / 360);
 
-  if (design.widthMm > config.usefulLengthMm) {
-    errors.push(`El diseño (${design.widthMm} mm a lo largo del eje) no entra en el largo útil de ${config.usefulLengthMm} mm.`);
+  const rawRot = config.designRotationDeg ?? 0;
+  const appliedDesignRotationDeg: 0 | 90 | 180 | 270 =
+    rawRot === 90 || rawRot === 180 || rawRot === 270 ? rawRot : 0;
+  const swapsAxes = appliedDesignRotationDeg === 90 || appliedDesignRotationDeg === 270;
+  const effW = swapsAxes ? design.heightMm : design.widthMm;
+  const effH = swapsAxes ? design.widthMm : design.heightMm;
+
+  if (effW > config.usefulLengthMm) {
+    errors.push(`El diseño (${effW} mm a lo largo del eje) no entra en el largo útil de ${config.usefulLengthMm} mm.`);
   }
   const repeatN = Number.isInteger(repeat) && repeat >= 1 && repeat <= 36 ? repeat : 1;
   const pitchMm = roundMm(arcLengthMm / repeatN);
-  if (design.heightMm > pitchMm) {
+  if (effH > pitchMm) {
     errors.push(repeatN > 1
-      ? `El diseño (${design.heightMm} mm alrededor) no entra ${repeatN} veces en el arco: cada copia dispone de ${pitchMm} mm.`
-      : `El diseño (${design.heightMm} mm alrededor del objeto) no entra en el arco de ${arcLengthMm} mm.`);
-  } else if (repeatN > 1 && pitchMm - design.heightMm < 2) {
-    warnings.push(`Las copias quedan a menos de 2 mm entre sí (${roundMm(pitchMm - design.heightMm, 2)} mm).`);
-  } else if (config.arcDeg >= 360 && design.heightMm > circumferenceMm * 0.98) {
+      ? `El diseño (${effH} mm alrededor) no entra ${repeatN} veces en el arco: cada copia dispone de ${pitchMm} mm.`
+      : `El diseño (${effH} mm alrededor del objeto) no entra en el arco de ${arcLengthMm} mm.`);
+  } else if (repeatN > 1 && pitchMm - effH < 2) {
+    warnings.push(`Las copias quedan a menos de 2 mm entre sí (${roundMm(pitchMm - effH, 2)} mm).`);
+  } else if (config.arcDeg >= 360 && effH > circumferenceMm * 0.98) {
     warnings.push('El diseño ocupa casi toda la circunferencia: los extremos pueden tocarse en la costura.');
   }
   let slantStretchPercent = 0;
   let minDiameterMm = refD;
   if (tapered && config.usefulLengthMm > 0) {
     const end = config.endDiameterMm as number;
-    const x0 = (config.usefulLengthMm - design.widthMm) / 2 + (finite(axisOff) ? axisOff : 0);
-    minDiameterMm = Math.min(diameterAtX(config, x0), diameterAtX(config, x0 + design.widthMm));
+    const x0 = (config.usefulLengthMm - effW) / 2 + (finite(axisOff) ? axisOff : 0);
+    minDiameterMm = Math.min(diameterAtX(config, x0), diameterAtX(config, x0 + effW));
     // El diseño real debe caber en la circunferencia más chica que atraviesa y su comando en Y en la vuelta de referencia.
     const widthSafe = Math.max(minDiameterMm, 1e-6);
-    if (design.heightMm > Math.PI * minDiameterMm * Math.min(config.arcDeg, 360) / 360) {
-      errors.push(`El diseño (${design.heightMm} mm alrededor) no entra en el extremo más angosto (Ø ${roundMm(minDiameterMm, 1)} mm).`);
-    } else if (design.heightMm * refD / widthSafe > pitchMm) {
+    if (effH > Math.PI * minDiameterMm * Math.min(config.arcDeg, 360) / 360) {
+      errors.push(`El diseño (${effH} mm alrededor) no entra en el extremo más angosto (Ø ${roundMm(minDiameterMm, 1)} mm).`);
+    } else if (effH * refD / widthSafe > pitchMm) {
       errors.push('La compensación cónica estira el diseño más allá del arco disponible; reducí el alto o ampliá el arco.');
     }
     const half = Math.abs(end - config.objectDiameterMm) / 2;
@@ -230,23 +247,23 @@ export function computeRotaryLayout(
   const canvasWidthMm = roundMm(config.usefulLengthMm);
   const canvasHeightMm = arcLengthMm;
   const angOffMm = finite(angOff) ? roundMm(circumferenceMm * angOff / 360) : 0;
-  const offsetXMm = roundMm((canvasWidthMm - design.widthMm) / 2 + (finite(axisOff) ? axisOff : 0));
-  if (offsetXMm < -1e-9 || offsetXMm + design.widthMm > canvasWidthMm + 1e-9) {
+  const offsetXMm = roundMm((canvasWidthMm - effW) / 2 + (finite(axisOff) ? axisOff : 0));
+  if (offsetXMm < -1e-9 || offsetXMm + effW > canvasWidthMm + 1e-9) {
     errors.push('El desplazamiento axial saca el diseño del largo útil.');
   }
   const stretch = tapered ? refD / Math.max(minDiameterMm, 1e-6) : 1;
-  const halfSpan = design.heightMm * stretch / 2;
+  const halfSpan = effH * stretch / 2;
   const placements: RotaryPlacement[] = [];
   for (let i = 0; i < repeatN; i++) {
     const centerYMm = roundMm(pitchMm * (i + 0.5) + angOffMm);
-    placements.push({offsetXMm, offsetYMm: roundMm(centerYMm - design.heightMm / 2), centerYMm});
+    placements.push({offsetXMm, offsetYMm: roundMm(centerYMm - effH / 2), centerYMm});
     if (centerYMm - halfSpan < -1e-6 || centerYMm + halfSpan > canvasHeightMm + 1e-6) {
       errors.push(`El giro del diseño saca la copia ${i + 1} del arco disponible.`);
       break;
     }
   }
-  const offsetYMm = placements[0].offsetYMm;
-  const designArcDeg = circumferenceMm > 0 ? roundMm((design.heightMm / circumferenceMm) * 360, 2) : 0;
+  const offsetYMm = placements[0]?.offsetYMm ?? 0;
+  const designArcDeg = circumferenceMm > 0 ? roundMm((effH / circumferenceMm) * 360, 2) : 0;
 
   return {
     valid: errors.length === 0,
@@ -256,6 +273,9 @@ export function computeRotaryLayout(
     arcLengthMm,
     canvasWidthMm,
     canvasHeightMm,
+    effectiveDesignWidthMm: roundMm(effW),
+    effectiveDesignHeightMm: roundMm(effH),
+    appliedDesignRotationDeg,
     offsetXMm,
     offsetYMm,
     placements,
@@ -293,6 +313,11 @@ export function sanitizeRotaryConfig(raw: unknown): RotaryConfig | undefined {
     repeatCount: ok(r.repeatCount) ? r.repeatCount : undefined,
     axisOffsetMm: ok(r.axisOffsetMm) ? r.axisOffsetMm : undefined,
     angularOffsetDeg: ok(r.angularOffsetDeg) ? r.angularOffsetDeg : undefined,
+    designRotationDeg:
+      r.designRotationDeg === 90 || r.designRotationDeg === 180 || r.designRotationDeg === 270
+        ? r.designRotationDeg
+        : 0,
+    chuckSide: r.chuckSide === 'left_rim' ? 'left_rim' : 'left_base',
     rollerDiameterMm: rotaryType === 'roller'
       ? (ok(r.rollerDiameterMm) ? r.rollerDiameterMm : DEFAULT_ROTARY_CONFIG.rollerDiameterMm)
       : undefined,
@@ -335,12 +360,16 @@ export const DEFAULT_ROTARY_LAYER_PARAMS: RotaryEngraveLayerParams = {
 export interface RotaryPhysicalSetupInfo {
   /** Ángulo de inclinación de la pared del cono respecto al eje central (°) */
   wallTiltAngleDeg: number;
-  /** Milímetros que debe levantarse el extremo más angosto para nivelar la generatriz superior bajo el foco láser */
+  /** Milímetros que debe levantarse el extremo más angosto (en la longitud útil L) para nivelar la generatriz superior a foco Z constante */
   tailstockLiftMm: number;
   /** Extremo que debe levantarse ('end' si X=L es más angosto, 'start' si X=0 es más angosto, 'none' si es recto) */
   endToLift: 'start' | 'end' | 'none';
   /** Distancia real sobre la pared inclinada (generatriz) en mm */
   slantLengthMm: number;
+  /** Factor de estiramiento/escala axial si el cono es pronunciado (slantLength / usefulLength) */
+  axisLengthScaleRatio: number;
+  /** Resolución lineal real por cada micropaso del rotativo (µm/paso sobre la superficie) */
+  stepResolutionUm: number | null;
   /** Tiempo estimado de grabado rotativo en segundos (0 si aún no se ingresó velocidad) */
   estimatedDurationSec: number;
   /** Cantidad total de líneas de barrido axial X a lo largo del giro Y */
@@ -348,8 +377,8 @@ export interface RotaryPhysicalSetupInfo {
 }
 
 /**
- * Calcula los datos físicos de montaje, nivelación de foco Z en conos y tiempo estimado
- * para el Mandril Sanou o Rodillos en la Vank 9060.
+ * Calcula los datos físicos de montaje, nivelación de foco Z en conos, resolución angular en µm/paso
+ * y tiempo estimado de grabado para el Mandril Sanou o Rodillos en la Vank 9060.
  */
 export function computeRotaryPhysicalSetup(
   config: RotaryConfig,
@@ -362,30 +391,46 @@ export function computeRotaryPhysicalSetup(
   const len = Math.max(1, config.usefulLengthMm);
 
   const radiusDiffMm = Math.abs(dStart - dEnd) / 2;
-  const wallTiltAngleDeg = tapered
-    ? roundMm((Math.atan2(radiusDiffMm, len) * 180) / Math.PI, 2)
-    : 0;
-  const tailstockLiftMm = tapered ? roundMm(radiusDiffMm * 2, 2) : 0;
+  const alphaRad = tapered ? Math.atan2(radiusDiffMm, len) : 0;
+  const wallTiltAngleDeg = tapered ? roundMm((alphaRad * 180) / Math.PI, 2) : 0;
+  // Para nivelar la generatriz superior (que cae ΔR = |d0 - d1|/2 a lo largo de L), la inclinación axial α levanta L * sin(α)
+  const tailstockLiftMm = tapered ? roundMm(len * Math.sin(alphaRad), 2) : 0;
   const endToLift: 'start' | 'end' | 'none' = !tapered
     ? 'none'
     : dEnd < dStart
       ? 'end'
       : 'start';
   const slantLengthMm = roundMm(Math.hypot(len, radiusDiffMm), 2);
+  const axisLengthScaleRatio = roundMm(slantLengthMm / len, 4);
+
+  const refD = referenceDiameterMm(config);
+  const effectiveMechDiameter =
+    config.rotaryType === 'roller'
+      ? (config.rollerDiameterMm ?? refD)
+      : refD;
+  const stepResolutionUm =
+    config.stepsPerRotation && config.stepsPerRotation > 0
+      ? roundMm((Math.PI * effectiveMechDiameter * 1000) / config.stepsPerRotation, 1)
+      : null;
+
+  const swapsAxes =
+    config.designRotationDeg === 90 || config.designRotationDeg === 270;
+  const effW = swapsAxes ? design.heightMm : design.widthMm;
+  const effH = swapsAxes ? design.widthMm : design.heightMm;
 
   const copies = Math.max(1, Math.min(36, Math.round(config.repeatCount ?? 1)));
   const interval = Math.max(0.02, layerParams.lineIntervalMm || 0.073);
   const passes = Math.max(1, layerParams.passes || 1);
   const crossFactor = layerParams.crossHatch ? 2 : 1;
 
-  const linesPerCopy = Math.ceil(Math.max(1, design.heightMm) / interval);
+  const linesPerCopy = Math.ceil(Math.max(1, effH) / interval);
   const estimatedScanLines = linesPerCopy * copies * passes * crossFactor;
 
   let estimatedDurationSec = 0;
   if (layerParams.speedMmPerSec && layerParams.speedMmPerSec > 0) {
     const overscanExtraMm =
-      design.widthMm * ((layerParams.overscanPercent || 2.5) / 100) * 2;
-    const strokeMm = design.widthMm + overscanExtraMm;
+      effW * ((layerParams.overscanPercent || 2.5) / 100) * 2;
+    const strokeMm = effW + overscanExtraMm;
     const scanSec = (estimatedScanLines * strokeMm) / layerParams.speedMmPerSec;
     const turnaroundSec = estimatedScanLines * 0.095;
     estimatedDurationSec = Math.ceil(scanSec + turnaroundSec);
@@ -396,6 +441,8 @@ export function computeRotaryPhysicalSetup(
     tailstockLiftMm,
     endToLift,
     slantLengthMm,
+    axisLengthScaleRatio,
+    stepResolutionUm,
     estimatedDurationSec,
     estimatedScanLines,
   };

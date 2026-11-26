@@ -3,6 +3,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import {
   AlertCircle,
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
   Compass,
   Cpu,
@@ -11,13 +12,18 @@ import {
   FileCode2,
   FlaskConical,
   Layers,
+  Pause,
+  Play,
   RotateCw,
   Ruler,
   Save,
+  Send,
   Sliders,
   Sparkles,
   Target,
+  Trash2,
   Undo2,
+  Wifi,
   X,
 } from 'lucide-react';
 import {
@@ -37,23 +43,30 @@ import {
   computeDetailedLinearCalibration,
   confirmPhysicalVerification,
   deleteRotaryAccessoryProfile,
+  deleteRotaryRecipe,
   LinearMeasurementMode,
   loadRotaryAccessoryProfiles,
   loadRotaryCalibrationHistory,
+  loadRotaryRecipes,
   recordProposedCalibration,
   revertCalibrationOnProfile,
   RotaryAccessoryProfile,
   RotaryCalibrationRecord,
   RotaryDirection,
+  RotaryJobRecipe,
   saveRotaryAccessoryProfile,
+  saveRotaryRecipe,
 } from '../core/rotary/rotaryProfiles';
 import {
+  compileRotaryToRuidaRd,
   exportRotaryDxf,
   exportRotaryGuideSvg,
   exportRotarySvg,
   exportRotaryTestPatternSvg,
   exportRotaryToLbrn2,
 } from '../core/exporters/rotaryExporter';
+import { buildRuidaUdpPackets } from '../core/workbench/ruidaCompiler';
+import { VANK_9060_DEFAULT_IP } from '../core/workbench/workbenchTypes';
 import { LogoOutputFile } from '../core/exporters/logoFolder';
 import { roundMm } from '../core/geometry/geometryEngine';
 import { LabelDesign } from '../core/types';
@@ -190,6 +203,15 @@ export function RotaryPanel({
 
   // Ángulo de rotación interactivo para girar el vaso/termo 360° en el simulador 3D
   const [previewRotationDeg, setPreviewRotationDeg] = useState<number>(0);
+  const [isAutoRotating, setIsAutoRotating] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isAutoRotating) return;
+    const timer = window.setInterval(() => {
+      setPreviewRotationDeg((deg) => (deg + 5) % 360);
+    }, 80);
+    return () => window.clearInterval(timer);
+  }, [isAutoRotating]);
 
   // Parámetros de Capa C00 (Grabado Rotativo estilo LightBurn Pro 2.2)
   const [layerParams, setLayerParams] = useState<RotaryEngraveLayerParams>(
@@ -238,6 +260,22 @@ export function RotaryPanel({
   const [withLbrn2, setWithLbrn2] = useState(true);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+
+  // Recetas rotativas persistentes (Objeto + Capa C00)
+  const [recipes, setRecipes] = useState<RotaryJobRecipe[]>(() =>
+    loadRotaryRecipes()
+  );
+  const [recipeNameInput, setRecipeNameInput] = useState<string>('');
+
+  // Conexión directa UDP con Vank 9060 (Ruida RDC8445S)
+  const [ruidaIp, setRuidaIp] = useState<string>(VANK_9060_DEFAULT_IP);
+  const [ruidaPort] = useState<number>(50200);
+  const [ruidaStatus, setRuidaStatus] = useState<{
+    probing?: boolean;
+    sending?: boolean;
+    reachable?: boolean;
+    message?: string;
+  } | null>(null);
 
   const activeProfile = profiles.find((p) => p.id === selectedProfileId);
 
@@ -667,6 +705,182 @@ export function RotaryPanel({
     }
   };
 
+  // Recetas Rotativas: guardar, aplicar y eliminar combinaciones reales Objeto + Capa C00
+  const handleSaveRecipe = () => {
+    if (
+      layerParams.speedMmPerSec === null ||
+      layerParams.maxPowerPercent === null
+    ) {
+      setSaveError(
+        'Ingresá Velocidad (mm/s) y Potencia Máx (%) reales antes de guardar la receta.'
+      );
+      return;
+    }
+    setSaveError(null);
+    const label =
+      recipeNameInput.trim() ||
+      `${design.name.trim() || 'Trabajo'} · Ø${config.objectDiameterMm}mm`;
+    const recipe: RotaryJobRecipe = {
+      id: `recipe-${Date.now()}`,
+      name: label,
+      rotaryType: config.rotaryType,
+      objectDiameterMm: config.objectDiameterMm,
+      endDiameterMm: config.endDiameterMm,
+      usefulLengthMm: config.usefulLengthMm,
+      repeatCount: config.repeatCount ?? 1,
+      designRotationDeg: config.designRotationDeg ?? 0,
+      chuckSide: config.chuckSide ?? 'left_base',
+      layerMode: layerParams.mode,
+      speedMmPerSec: layerParams.speedMmPerSec,
+      maxPowerPercent: layerParams.maxPowerPercent,
+      minPowerPercent:
+        layerParams.minPowerPercent ?? layerParams.maxPowerPercent,
+      lineIntervalMm: layerParams.lineIntervalMm,
+      passes: layerParams.passes,
+      airAssist: layerParams.airAssist,
+      bidirectional: layerParams.bidirectional,
+      updatedAtIso: new Date().toISOString(),
+    };
+    const next = saveRotaryRecipe(recipe);
+    setRecipes(next);
+    setRecipeNameInput('');
+    setStatusBanner(`Receta rotativa "${label}" guardada localmente.`);
+  };
+
+  const handleApplyRecipe = (r: RotaryJobRecipe) => {
+    if (r.rotaryType !== config.rotaryType) {
+      handleToggleRotaryType(r.rotaryType);
+    }
+    setConfig((c) => ({
+      ...c,
+      rotaryType: r.rotaryType,
+      objectDiameterMm: r.objectDiameterMm,
+      endDiameterMm: r.endDiameterMm,
+      usefulLengthMm: r.usefulLengthMm,
+      repeatCount: r.repeatCount,
+      designRotationDeg: r.designRotationDeg,
+      chuckSide: r.chuckSide ?? c.chuckSide,
+    }));
+    setLayerParams((p) => ({
+      ...p,
+      mode: r.layerMode,
+      speedMmPerSec: r.speedMmPerSec,
+      maxPowerPercent: r.maxPowerPercent,
+      minPowerPercent: r.minPowerPercent,
+      lineIntervalMm: r.lineIntervalMm,
+      passes: r.passes,
+      airAssist: r.airAssist,
+      bidirectional: r.bidirectional ?? p.bidirectional,
+    }));
+    setStatusBanner(`Receta "${r.name}" aplicada al objeto y Capa C00.`);
+  };
+
+  const handleDeleteRecipe = (id: string) => {
+    setRecipes(deleteRotaryRecipe(id));
+  };
+
+  // Prueba de red UDP/40200 hacia Ruida RDC8445S (Vank 9060)
+  const handleProbeRuidaConnection = async () => {
+    if (!isTauri()) {
+      setRuidaStatus({
+        reachable: false,
+        message:
+          'Modo navegador: para enviar UDP directo a 192.168.0.195 usá la app nativa Astra Studio (.app), o descargá el archivo .RD para pendrive.',
+      });
+      return;
+    }
+    setRuidaStatus({ probing: true, message: `Probando ${ruidaIp}:${ruidaPort}…` });
+    try {
+      const res = await invoke<{
+        reachable: boolean;
+        ip: string;
+        port: number;
+        local_port_40200_free: boolean;
+        message: string;
+      }>('probe_ruida_connection', { ip: ruidaIp.trim(), port: ruidaPort });
+      setRuidaStatus({ reachable: res.reachable, message: res.message });
+    } catch (e) {
+      setRuidaStatus({
+        reachable: false,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+
+  // Compilar trabajo rotativo vectorial/texto a binario .RD nativo (para USB o envío directo UDP)
+  const handleRotaryRdAction = async (mode: 'download' | 'send') => {
+    setSaveError(null);
+    if (!hasVisibleEngraving) {
+      setSaveError(
+        'El diseño no contiene elementos de grabado visibles para exportar.'
+      );
+      return;
+    }
+    if (
+      layerParams.speedMmPerSec === null ||
+      layerParams.maxPowerPercent === null
+    ) {
+      setSidebarTab('laser_c00');
+      setSaveError(
+        'Ingresá Velocidad (mm/s) y Potencia Máx (%) en la pestaña "2. Velocidad y Potencia" antes de compilar el .RD.'
+      );
+      return;
+    }
+    try {
+      const compiled = compileRotaryToRuidaRd(design, config, layerParams);
+      if (mode === 'download') {
+        const blob = new Blob([new Uint8Array(compiled.rdBytes)], {
+          type: 'application/octet-stream',
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = compiled.filenameSuggested;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+        setStatusBanner(
+          `✓ Archivo binario Ruida "${compiled.filenameSuggested}" generado (${compiled.rdBytes.length} bytes).`
+        );
+        return;
+      }
+
+      if (!isTauri()) {
+        setRuidaStatus({
+          reachable: false,
+          message:
+            'El envío UDP directo requiere la app nativa macOS. Podés usar "Guardar .RD (USB)" para pendrive o "Abrir en LightBurn (.lbrn2)".',
+        });
+        return;
+      }
+
+      setRuidaStatus({
+        sending: true,
+        message: `Enviando ${compiled.filenameSuggested} por UDP a ${ruidaIp}:${ruidaPort}…`,
+      });
+      const packets = buildRuidaUdpPackets(compiled.rdBytes);
+      const packetArrays = packets.map((p) => Array.from(p));
+      const res = await invoke<{
+        success: boolean;
+        packets_sent: number;
+        bytes_sent: number;
+        remote_endpoint: string;
+        message: string;
+      }>('upload_rd_to_ruida', {
+        ip: ruidaIp.trim(),
+        port: ruidaPort,
+        packets: packetArrays,
+      });
+      setRuidaStatus({ reachable: res.success, message: res.message });
+      setStatusBanner(`✓ ${res.message}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setSaveError(msg);
+      setRuidaStatus({ reachable: false, message: msg });
+    }
+  };
+
   const field =
     'w-full bg-slate-950 border border-slate-700 px-2.5 py-1.5 rounded-lg text-xs text-white font-mono focus:border-cyan-500 focus:outline-none';
 
@@ -771,23 +985,51 @@ export function RotaryPanel({
               </button>
             </div>
 
-            {/* Control interactivo para girar el vaso/termo 360° */}
+            {/* Control interactivo + Play/Pause para girar el vaso/termo 360° */}
             <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setIsAutoRotating((v) => !v)}
+                title={
+                  isAutoRotating
+                    ? 'Pausar rotación 3D'
+                    : 'Animar giro continuo 360°'
+                }
+                className="p-0.5 rounded hover:bg-slate-800 text-cyan-300 transition"
+              >
+                {isAutoRotating ? (
+                  <Pause className="w-3.5 h-3.5" />
+                ) : (
+                  <Play className="w-3.5 h-3.5" />
+                )}
+              </button>
               <span className="text-[10px] text-slate-300 font-semibold whitespace-nowrap">
                 Giro 360°:
               </span>
               <input
                 type="range"
+                aria-label="Giro 360°"
                 min={0}
                 max={360}
                 step={5}
                 value={previewRotationDeg}
-                onChange={(e) => setPreviewRotationDeg(Number(e.target.value))}
+                onChange={(e) => {
+                  setIsAutoRotating(false);
+                  setPreviewRotationDeg(Number(e.target.value));
+                }}
                 className="w-16 accent-cyan-400 cursor-pointer"
               />
-              <span className="font-mono text-[10px] text-cyan-300 font-bold w-8 text-right">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAutoRotating(false);
+                  setPreviewRotationDeg(0);
+                }}
+                title="Volver a costura Y = 0°"
+                className="font-mono text-[10px] text-cyan-300 font-bold w-8 text-right hover:text-white"
+              >
                 {previewRotationDeg}°
-              </span>
+              </button>
             </div>
           </div>
 
@@ -812,12 +1054,12 @@ export function RotaryPanel({
 
                   {layout.tapered && (
                     <span className="px-2 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-600/60 font-mono text-[10px] font-bold">
-                      📐 Nivelar Foco Z: Levantar extremo Ø{Math.min(sim3d.d0, sim3d.d1)}mm unos +{physicalSetup.tailstockLiftMm} mm ({physicalSetup.wallTiltAngleDeg}°)
+                      📐 Nivelar Foco Z: Levantar extremo Ø{Math.min(sim3d.d0, sim3d.d1)}mm +{physicalSetup.tailstockLiftMm} mm ({physicalSetup.wallTiltAngleDeg}°)
                     </span>
                   )}
                 </div>
 
-                {/* Esquema SVG Técnico de Montaje Lateral en la Vank 9060 */}
+                {/* Esquema SVG Técnico Animado de Montaje Lateral en la Vank 9060 */}
                 <div className="h-44 w-full bg-[#06090e] rounded-lg border border-slate-800/90 flex items-center justify-center p-2">
                   <svg
                     viewBox="0 0 620 185"
@@ -868,7 +1110,7 @@ export function RotaryPanel({
                       fontFamily="monospace"
                       fontWeight="bold"
                     >
-                      GENERATRIZ SUPERIOR NIVELADA A FOCO LÁSER CONSTANTE (COSTURA Y = 0°)
+                      GENERATRIZ SUPERIOR A FOCO LÁSER CONSTANTE (LÁSER ARRIBA)
                     </text>
 
                     {/* Cabezal Láser CO2 Vank 9060 arriba */}
@@ -910,10 +1152,9 @@ export function RotaryPanel({
                       </text>
                     </g>
 
-                    {/* Mandril Sanou 3 Mordazas (Chuck) a la izquierda */}
+                    {/* Mandril Sanou 3 Mordazas animado con previewRotationDeg */}
                     {config.rotaryType === 'chuck' ? (
                       <g transform="translate(55, 38)">
-                        {/* Cuerpo del motor / cabezal divisor */}
                         <rect
                           x="0"
                           y="12"
@@ -924,7 +1165,6 @@ export function RotaryPanel({
                           stroke="#475569"
                           strokeWidth="1.5"
                         />
-                        {/* Plato Sanou */}
                         <rect
                           x="56"
                           y="4"
@@ -935,19 +1175,26 @@ export function RotaryPanel({
                           stroke="#94a3b8"
                           strokeWidth="1.5"
                         />
-                        {/* Mordazas escalonadas superior e inferior */}
-                        <polygon
-                          points="84,6 108,6 108,22 96,22 96,30 84,30"
-                          fill="#cbd5e1"
-                          stroke="#334155"
-                          strokeWidth="1.2"
-                        />
-                        <polygon
-                          points="84,122 108,122 108,100 96,100 96,92 84,92"
-                          fill="#cbd5e1"
-                          stroke="#334155"
-                          strokeWidth="1.2"
-                        />
+                        {[0, 120, 240].map((jawOffset) => {
+                          const rad =
+                            ((previewRotationDeg + jawOffset) * Math.PI) / 180;
+                          const cy = 64 - 50 * Math.cos(rad);
+                          const isFront = Math.sin(rad) >= -0.1;
+                          return (
+                            <rect
+                              key={jawOffset}
+                              x="84"
+                              y={cy - 8}
+                              width={isFront ? 22 : 16}
+                              height="16"
+                              rx="2"
+                              fill={isFront ? '#e2e8f0' : '#475569'}
+                              stroke="#1e293b"
+                              strokeWidth="1.2"
+                              opacity={isFront ? 0.95 : 0.45}
+                            />
+                          );
+                        })}
                         <text
                           x="28"
                           y="68"
@@ -961,24 +1208,37 @@ export function RotaryPanel({
                         </text>
                       </g>
                     ) : (
-                      /* Rodillos motrices abajo */
+                      /* Rodillos motrices animados */
                       <g transform="translate(155, 138)">
-                        <circle
-                          cx="45"
-                          cy="16"
-                          r="16"
-                          fill="#1e293b"
-                          stroke="#38bdf8"
-                          strokeWidth="2"
-                        />
-                        <circle
-                          cx="255"
-                          cy="16"
-                          r="16"
-                          fill="#1e293b"
-                          stroke="#38bdf8"
-                          strokeWidth="2"
-                        />
+                        {[45, 255].map((cx) => (
+                          <g
+                            key={cx}
+                            transform={`translate(${cx}, 16) rotate(${previewRotationDeg})`}
+                          >
+                            <circle
+                              r="16"
+                              fill="#1e293b"
+                              stroke="#38bdf8"
+                              strokeWidth="2"
+                            />
+                            <line
+                              x1="-12"
+                              y1="0"
+                              x2="12"
+                              y2="0"
+                              stroke="#7dd3fc"
+                              strokeWidth="1.5"
+                            />
+                            <line
+                              x1="0"
+                              y1="-12"
+                              x2="0"
+                              y2="12"
+                              stroke="#7dd3fc"
+                              strokeWidth="1.5"
+                            />
+                          </g>
+                        ))}
                         <text
                           x="150"
                           y="20"
@@ -988,12 +1248,15 @@ export function RotaryPanel({
                           fontFamily="monospace"
                           fontWeight="bold"
                         >
-                          RODILLOS MOTRICES {config.rollerDiameterMm ? `(Ø ${config.rollerDiameterMm} mm)` : ''}
+                          RODILLOS MOTRICES{' '}
+                          {config.rollerDiameterMm
+                            ? `(Ø ${config.rollerDiameterMm} mm)`
+                            : ''}
                         </text>
                       </g>
                     )}
 
-                    {/* Cuerpo del Objeto Cilíndrico o Cónico (con la generatriz superior nivelada en y=44) */}
+                    {/* Cuerpo del Objeto Cilíndrico o Cónico animado con giro 360° */}
                     {(() => {
                       const maxD = Math.max(sim3d.d0, sim3d.d1, 40);
                       const h0 = Math.max(26, Math.min(106, (sim3d.d0 / maxD) * 96));
@@ -1003,14 +1266,46 @@ export function RotaryPanel({
                       const yTop = 44;
                       const yBot0 = yTop + h0;
                       const yBot1 = yTop + h1;
+                      const cy0 = yTop + h0 / 2;
+                      const cy1 = yTop + h1 / 2;
 
                       const designRatioW = Math.min(
                         1,
-                        design.widthMm / Math.max(1, config.usefulLengthMm)
+                        layout.effectiveDesignWidthMm /
+                          Math.max(1, config.usefulLengthMm)
                       );
-                      const designBoxW = (xEnd - xStart) * designRatioW;
+                      const designBoxW = Math.max(
+                        18,
+                        (xEnd - xStart) * designRatioW
+                      );
+                      const axisRatio = Math.max(
+                        -0.4,
+                        Math.min(
+                          0.4,
+                          (config.axisOffsetMm || 0) /
+                            Math.max(1, config.usefulLengthMm)
+                        )
+                      );
                       const designBoxX =
-                        xStart + ((xEnd - xStart - designBoxW) / 2);
+                        xStart +
+                        (xEnd - xStart - designBoxW) / 2 +
+                        (xEnd - xStart) * axisRatio;
+
+                      // Proyección de la costura de origen Y = 0°
+                      const seamRad = (previewRotationDeg * Math.PI) / 180;
+                      const seamCos = Math.cos(seamRad);
+                      const seamY0 = cy0 - (h0 / 2) * seamCos;
+                      const seamY1 = cy1 - (h1 / 2) * seamCos;
+                      const seamFront = Math.sin(seamRad) >= -0.05;
+
+                      // Copias proyectadas alrededor del cilindro
+                      const copies = Math.max(1, Math.round(config.repeatCount || 1));
+                      const sectorDeg = (config.arcDeg || 360) / copies;
+                      const startAng = config.angularOffsetDeg || 0;
+                      const designRot = config.designRotationDeg ?? 0;
+
+                      const chuckSideLeft =
+                        (config.chuckSide ?? 'left_base') === 'left_base';
 
                       return (
                         <g>
@@ -1023,7 +1318,7 @@ export function RotaryPanel({
                           {/* Elipse extremo izquierdo X=0 */}
                           <ellipse
                             cx={xStart}
-                            cy={yTop + h0 / 2}
+                            cy={cy0}
                             rx="7"
                             ry={h0 / 2}
                             fill="#334155"
@@ -1033,7 +1328,7 @@ export function RotaryPanel({
                           {/* Elipse extremo derecho X=L */}
                           <ellipse
                             cx={xEnd}
-                            cy={yTop + h1 / 2}
+                            cy={cy1}
                             rx="7"
                             ry={h1 / 2}
                             fill="#1e293b"
@@ -1041,29 +1336,113 @@ export function RotaryPanel({
                             strokeWidth="1.2"
                           />
 
-                          {/* Área donde se graba el logo proyectado */}
-                          <rect
-                            x={designBoxX}
-                            y={yTop + 6}
-                            width={Math.max(16, designBoxW)}
-                            height={Math.max(14, Math.min(h0, h1) * 0.55)}
-                            rx="3"
-                            fill="rgba(34, 211, 238, 0.16)"
-                            stroke="#22d3ee"
-                            strokeWidth="1.4"
-                            strokeDasharray="4 2"
+                          {/* Línea de costura Y=0° girando sobre la pared */}
+                          <line
+                            x1={xStart}
+                            y1={seamY0}
+                            x2={xEnd}
+                            y2={seamY1}
+                            stroke={seamFront ? '#fbbf24' : '#64748b'}
+                            strokeWidth={seamFront ? '1.6' : '1'}
+                            strokeDasharray="4 3"
+                            opacity={seamFront ? 0.9 : 0.35}
                           />
+
+                          {/* Etiquetas de Base vs Boca según colocación en mandril */}
                           <text
-                            x={designBoxX + Math.max(16, designBoxW) / 2}
-                            y={yTop + 18 + Math.min(h0, h1) * 0.15}
-                            textAnchor="middle"
-                            fill="#ffffff"
-                            fontSize="10"
+                            x={xStart + 6}
+                            y={yTop + 12}
+                            fill="#38bdf8"
+                            fontSize="8"
                             fontFamily="monospace"
                             fontWeight="bold"
                           >
-                            {design.name} ({design.widthMm}×{design.heightMm}mm)
+                            {chuckSideLeft ? 'BASE (X=0)' : 'BOCA (X=0)'}
                           </text>
+                          <text
+                            x={xEnd - 6}
+                            y={yTop + 12}
+                            textAnchor="end"
+                            fill="#38bdf8"
+                            fontSize="8"
+                            fontFamily="monospace"
+                            fontWeight="bold"
+                          >
+                            {chuckSideLeft ? 'BOCA' : 'BASE'}
+                          </text>
+
+                          {/* Logos/Copias proyectados girando alrededor del cilindro */}
+                          {Array.from({ length: copies }).map((_, idx) => {
+                            const phiDeg =
+                              startAng + idx * sectorDeg + previewRotationDeg;
+                            const phiRad = (phiDeg * Math.PI) / 180;
+                            const cosP = Math.cos(phiRad);
+                            const sinP = Math.sin(phiRad);
+                            const avgH = (h0 + h1) / 2;
+                            const centerY =
+                              (cy0 + cy1) / 2 - (avgH / 2) * 0.72 * cosP;
+                            const front = cosP >= 0 || sinP >= -0.15;
+                            const apparentScaleY = Math.max(
+                              0.22,
+                              Math.abs(Math.sin(phiRad)) * 0.3 +
+                                Math.max(0.25, Math.abs(cosP)) * 0.7
+                            );
+                            const rawBoxH = Math.min(h0, h1) * 0.42;
+                            const boxH = Math.max(11, rawBoxH * apparentScaleY);
+                            const activeLaser = cosP > 0.85;
+                            const cxLogo = designBoxX + designBoxW / 2;
+                            const cyLogo = Math.max(
+                              yTop + boxH / 2 + 2,
+                              Math.min(
+                                Math.min(yBot0, yBot1) - boxH / 2 - 2,
+                                centerY
+                              )
+                            );
+
+                            return (
+                              <g
+                                key={idx}
+                                opacity={front ? 0.95 : 0.22}
+                              >
+                                <rect
+                                  x={designBoxX}
+                                  y={cyLogo - boxH / 2}
+                                  width={designBoxW}
+                                  height={boxH}
+                                  rx="3"
+                                  fill={
+                                    activeLaser
+                                      ? 'rgba(34, 211, 238, 0.28)'
+                                      : 'rgba(148, 163, 184, 0.14)'
+                                  }
+                                  stroke={
+                                    activeLaser ? '#22d3ee' : '#64748b'
+                                  }
+                                  strokeWidth={activeLaser ? '1.6' : '1'}
+                                  strokeDasharray="3 2"
+                                />
+                                {front && (
+                                  <g
+                                    transform={`translate(${cxLogo}, ${cyLogo}) rotate(${designRot})`}
+                                  >
+                                    <text
+                                      x="0"
+                                      y="3.5"
+                                      textAnchor="middle"
+                                      fill="#ffffff"
+                                      fontSize="9.5"
+                                      fontFamily="monospace"
+                                      fontWeight="bold"
+                                    >
+                                      {copies > 1
+                                        ? `#${idx + 1} ${design.name.slice(0, 10)} ↑`
+                                        : `${design.name.slice(0, 14)} ↑`}
+                                    </text>
+                                  </g>
+                                )}
+                              </g>
+                            );
+                          })}
 
                           {/* Cotas de Diámetro Izquierdo, Derecho y Largo Axial */}
                           <text
@@ -1424,6 +1803,76 @@ export function RotaryPanel({
                       onChange={num('repeatCount')}
                     />
                   </label>
+                </div>
+
+                {/* Orientación rápida del logo y lado agarrado por el mandril */}
+                <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-slate-300 font-semibold">
+                      Orientación del logo sobre la pieza
+                    </span>
+                    <span className="font-mono text-[10px] text-cyan-300">
+                      {layout.effectiveDesignWidthMm} × {layout.effectiveDesignHeightMm} mm
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {([
+                      { deg: 0, label: '0° Horiz.' },
+                      { deg: 90, label: '90° Vert.' },
+                      { deg: 180, label: '180° Inv.' },
+                      { deg: 270, label: '270° Vert.' },
+                    ] as const).map((opt) => {
+                      const active = (config.designRotationDeg ?? 0) === opt.deg;
+                      return (
+                        <button
+                          key={opt.deg}
+                          type="button"
+                          onClick={() =>
+                            setConfig((c) => ({
+                              ...c,
+                              designRotationDeg: opt.deg,
+                            }))
+                          }
+                          className={`py-1.5 px-1.5 rounded-lg text-[10px] font-bold border transition ${
+                            active
+                              ? 'bg-cyan-500/20 text-cyan-200 border-cyan-500/60'
+                              : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfig((c) => ({ ...c, chuckSide: 'left_base' }))
+                      }
+                      className={`py-1.5 px-2 rounded-lg text-[10px] font-semibold border transition ${
+                        (config.chuckSide ?? 'left_base') === 'left_base'
+                          ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/50'
+                          : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+                      }`}
+                    >
+                      Mandril agarra Base (X=0)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfig((c) => ({ ...c, chuckSide: 'left_rim' }))
+                      }
+                      className={`py-1.5 px-2 rounded-lg text-[10px] font-semibold border transition ${
+                        config.chuckSide === 'left_rim'
+                          ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/50'
+                          : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+                      }`}
+                    >
+                      Mandril agarra Boca (X=0)
+                    </button>
+                  </div>
                 </div>
 
                 {/* Ajustes secundarios de posición y arco en un desplegable limpio */}
@@ -1810,6 +2259,76 @@ export function RotaryPanel({
                   </div>
                 </details>
               </div>
+
+              {/* Recetas rotativas guardadas (Objeto + Parámetros C00) */}
+              <div className="bg-slate-900/75 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-white text-xs flex items-center gap-1.5">
+                    <BookOpen className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Recetas Rotativas Guardadas ({recipes.length})</span>
+                  </span>
+                </div>
+
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    placeholder="Nombre (ej: Termo 1L Negro mate)"
+                    value={recipeNameInput}
+                    onChange={(e) => setRecipeNameInput(e.target.value)}
+                    className="flex-1 bg-slate-950 border border-slate-700 px-2.5 py-1.5 rounded-lg text-xs text-white focus:border-cyan-500 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSaveRecipe}
+                    className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-200 font-bold text-xs rounded-lg whitespace-nowrap"
+                  >
+                    + Guardar
+                  </button>
+                </div>
+
+                {recipes.length > 0 ? (
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-0.5">
+                    {recipes.map((r) => (
+                      <div
+                        key={r.id}
+                        className="flex items-center justify-between gap-2 bg-slate-950/90 border border-slate-800 px-2.5 py-1.5 rounded-lg"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-bold text-white truncate">
+                            {r.name}
+                          </div>
+                          <div className="text-[10px] font-mono text-slate-400">
+                            Ø{r.objectDiameterMm}
+                            {r.endDiameterMm ? `→${r.endDiameterMm}` : ''}mm ·{' '}
+                            {r.speedMmPerSec ?? '—'}mm/s · {r.maxPowerPercent ?? '—'}%
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleApplyRecipe(r)}
+                            className="px-2 py-1 rounded bg-cyan-600/20 hover:bg-cyan-600/35 border border-cyan-500/40 text-cyan-200 text-[10px] font-bold"
+                          >
+                            Aplicar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteRecipe(r.id)}
+                            title="Eliminar receta"
+                            className="p-1 rounded hover:bg-red-950/70 text-slate-400 hover:text-red-300"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-400">
+                    Guardá combinaciones probadas en tu taller (medidas + velocidad + potencia C00) para reutilizarlas con 1 clic.
+                  </p>
+                )}
+              </div>
             </div>
           )}
 
@@ -1907,6 +2426,17 @@ export function RotaryPanel({
                   </select>
                 </label>
               </div>
+
+              {physicalSetup.stepResolutionUm !== null && (
+                <div className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-slate-900/90 border border-slate-800 text-[11px] font-mono">
+                  <span className="text-slate-400">
+                    Resolución superficial Eje Y (Ø {layout.referenceDiameterMm} mm):
+                  </span>
+                  <span className="text-cyan-300 font-bold">
+                    {physicalSetup.stepResolutionUm} µm/paso
+                  </span>
+                </div>
+              )}
 
               {/* Pestañas de método de calibración */}
               <div className="border-t border-slate-800 pt-2.5 space-y-2.5">
@@ -2211,8 +2741,80 @@ export function RotaryPanel({
             ))}
           </div>
 
-          {/* DOCK FIJO INFERIOR DE EXPORTACIÓN Y CONEXIÓN CON LIGHTBURN PRO 2.2 */}
+          {/* DOCK FIJO INFERIOR DE EXPORTACIÓN Y CONEXIÓN DIRECTA CON VANK 9060 / LIGHTBURN */}
           <div className="sticky bottom-0 z-20 mt-auto bg-[#0f1520]/95 backdrop-blur border-t border-slate-700 p-3 space-y-2 text-xs shadow-2xl">
+            {/* Conexión directa UDP con Ruida RDC8445S + Descarga USB .RD */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2 space-y-1.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                  Vank IP:
+                </span>
+                <input
+                  type="text"
+                  aria-label="IP Vank 9060"
+                  value={ruidaIp}
+                  onChange={(e) => setRuidaIp(e.target.value)}
+                  className="flex-1 bg-slate-900 border border-slate-700 px-2 py-1 rounded text-[11px] font-mono text-cyan-200 focus:border-cyan-500 focus:outline-none min-w-0"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleProbeRuidaConnection()}
+                  disabled={!!ruidaStatus?.probing}
+                  className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-[10px] font-semibold flex items-center gap-1 shrink-0"
+                >
+                  <Wifi className="w-3 h-3 text-cyan-400" />
+                  <span>{ruidaStatus?.probing ? 'Probando…' : 'Probar Red'}</span>
+                </button>
+              </div>
+
+              {ruidaStatus?.message && (
+                <p
+                  className={`text-[10px] leading-snug px-2 py-1 rounded border ${
+                    ruidaStatus.reachable
+                      ? 'bg-emerald-950/40 border-emerald-700/60 text-emerald-200'
+                      : 'bg-amber-950/40 border-amber-700/60 text-amber-200'
+                  }`}
+                >
+                  {ruidaStatus.message}
+                </p>
+              )}
+
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  disabled={
+                    !layout.valid ||
+                    !hasVisibleEngraving ||
+                    !!previewResult.error ||
+                    !!ruidaStatus?.sending
+                  }
+                  onClick={() => void handleRotaryRdAction('send')}
+                  className="py-2 px-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-extrabold text-[11px] flex items-center justify-center gap-1.5 shadow transition"
+                >
+                  <Send className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {ruidaStatus?.sending
+                      ? 'Enviando…'
+                      : 'Enviar a Vank (.RD)'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={
+                    !layout.valid ||
+                    !hasVisibleEngraving ||
+                    !!previewResult.error
+                  }
+                  onClick={() => void handleRotaryRdAction('download')}
+                  className="py-2 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-amber-200 border border-amber-500/40 font-bold text-[11px] flex items-center justify-center gap-1.5 transition"
+                >
+                  <Download className="w-3.5 h-3.5 shrink-0" />
+                  <span>Guardar .RD (USB)</span>
+                </button>
+              </div>
+            </div>
+
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
               <label className="flex items-center gap-1.5 cursor-pointer text-cyan-200 font-semibold">
                 <input

@@ -599,3 +599,71 @@ export function clearRotaryCalibrationHistory(): void {
     console.error('Error al limpiar historial de calibración:', err);
   }
 }
+
+// ============================================================================
+// RECETAS GUARDADAS DE OBJETOS ROTATIVOS (TERMOS, MATES, VASOS + VEL/POT)
+// ============================================================================
+
+export const STORAGE_KEY_ROTARY_RECIPES = 'ASTRA_ROTARY_RECIPES_V1';
+
+export interface RotaryJobRecipe {
+  id: string;
+  name: string;
+  materialNote?: string;
+  rotaryType: RotaryAccessoryType;
+  objectDiameterMm: Millimeters;
+  endDiameterMm?: Millimeters;
+  usefulLengthMm: Millimeters;
+  repeatCount: number;
+  designRotationDeg: 0 | 90 | 180 | 270;
+  chuckSide?: 'left_base' | 'left_rim';
+  layerMode: 'image' | 'fill' | 'line';
+  speedMmPerSec: number;
+  maxPowerPercent: number;
+  minPowerPercent: number;
+  lineIntervalMm: number;
+  passes: number;
+  airAssist: boolean;
+  bidirectional?: boolean;
+  updatedAtIso: string;
+}
+
+export function loadRotaryRecipes(): RotaryJobRecipe[] {
+  const storage = getStorage();
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(STORAGE_KEY_ROTARY_RECIPES);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveRotaryRecipe(recipe: RotaryJobRecipe): RotaryJobRecipe[] {
+  const current = loadRotaryRecipes().filter((r) => r.id !== recipe.id);
+  const next = [recipe, ...current].slice(0, 40);
+  const storage = getStorage();
+  if (storage) {
+    try {
+      storage.setItem(STORAGE_KEY_ROTARY_RECIPES, JSON.stringify(next));
+    } catch (err) {
+      console.error('Error al guardar receta rotativa:', err);
+    }
+  }
+  return next;
+}
+
+export function deleteRotaryRecipe(id: string): RotaryJobRecipe[] {
+  const next = loadRotaryRecipes().filter((r) => r.id !== id);
+  const storage = getStorage();
+  if (storage) {
+    try {
+      storage.setItem(STORAGE_KEY_ROTARY_RECIPES, JSON.stringify(next));
+    } catch (err) {
+      console.error('Error al borrar receta rotativa:', err);
+    }
+  }
+  return next;
+}
