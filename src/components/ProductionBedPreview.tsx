@@ -330,7 +330,7 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
               </g>
             ))}
 
-          {/* Envolvente del bloque ocupado con cotas */}
+          {/* Envolvente del bloque ocupado con cotas y alerta de desperdicio si quedan huecos */}
           {batch && batch.placedInstances.length > 0 && (
             <g pointerEvents="none">
               <rect
@@ -353,8 +353,48 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
               >
                 Tanda {batch.batchNumber} · {batch.occupiedBounds.width} ×{' '}
                 {batch.occupiedBounds.height} mm ({batch.count} u. | {batch.columnsUsed} col ×{' '}
-                {batch.rowsUsed} filas | Sep: {nesting.config.gapXMm}×{nesting.config.gapYMm} mm)
+                {batch.rowsUsed} filas | Aprovechamiento bloque: {batch.boundingBoxEfficiencyPercent}%)
               </text>
+
+              {(() => {
+                const freeSlots = Math.max(
+                  0,
+                  batch.columnsUsed * batch.rowsUsed - batch.count
+                );
+                if (freeSlots === 0) return null;
+                const lastInst =
+                  batch.placedInstances[batch.placedInstances.length - 1];
+                const freeStartX = roundMm(
+                  lastInst.boundingBox.maxX + nesting.config.gapXMm
+                );
+                const freeW = roundMm(batch.occupiedBounds.maxX - freeStartX);
+                if (freeW < 4) return null;
+                return (
+                  <g>
+                    <rect
+                      x={freeStartX}
+                      y={lastInst.boundingBox.minY}
+                      width={freeW}
+                      height={lastInst.heightMm}
+                      fill="rgba(245, 158, 11, 0.14)"
+                      stroke="#f59e0b"
+                      strokeWidth="0.28"
+                      strokeDasharray="1.4 0.9"
+                    />
+                    <text
+                      x={freeStartX + freeW / 2}
+                      y={lastInst.boundingBox.minY + lastInst.heightMm / 2 + 0.9}
+                      textAnchor="middle"
+                      fill="#fcd34d"
+                      fontSize={Math.min(3.0, Math.max(1.8, lastInst.heightMm * 0.3))}
+                      fontFamily="monospace"
+                      fontWeight="bold"
+                    >
+                      {freeSlots} u. vacíos ({roundMm(freeW / 10, 1)} cm)
+                    </text>
+                  </g>
+                );
+              })()}
             </g>
           )}
         </svg>
@@ -379,11 +419,20 @@ export const ProductionBedPreview: React.FC<ProductionBedPreviewProps> = ({
             Piezas en tanda: <strong className="text-amber-300">{batch?.count || 0}</strong> / Total pedido:{' '}
             <strong className="text-slate-200">{nesting.totalRequestedQuantity}</strong>
           </span>
-          <span className="text-slate-400 font-mono">
-            Cortes: <strong className="text-red-400">{validation.totalProductiveCutContours}</strong> | Agujeros:{' '}
-            <strong className="text-blue-400">{validation.totalProductiveHoleContours}</strong> | Líneas duplicadas:{' '}
-            <strong className="text-emerald-400">{validation.duplicateCutSegmentsCount}</strong>
-          </span>
+          {batch && (
+            <span className="text-slate-400 font-mono">
+              Eficiencia bloque:{' '}
+              <strong
+                className={
+                  batch.boundingBoxEfficiencyPercent >= 95
+                    ? 'text-emerald-400'
+                    : 'text-amber-300'
+                }
+              >
+                {batch.boundingBoxEfficiencyPercent}%
+              </strong>
+            </span>
+          )}
         </div>
 
         <div className="font-mono text-slate-300">

@@ -102,18 +102,31 @@ export function compileJobInstancesGrid(
 
     let cursorX = roundMm(firstRowIndentMm);
     let cursorY = 0;
+    let inPocket = true;
     let currentRow = 0;
     let colsInCurrentRow = 0;
 
     for (let idx = 1; idx <= limit; idx++) {
-      // Si la pieza no entra en el resto de la fila actual, saltar a la siguiente fila en X = 0
+      // Si la pieza no entra en el resto de la fila actual, intentar otra fila dentro del bolsillo 2D lateral
+      // antes de saltar a todo lo ancho en X = 0
       if (cursorX > 0 && cursorX + pieceW > usableSheetWidthMm + 0.01) {
-        const stepH =
-          currentRow === 0
-            ? Math.max(firstRowShelfHeightMm, pieceH)
-            : pieceH;
-        cursorX = 0;
-        cursorY = roundMm(cursorY + stepH + safeGapY);
+        const nextPocketY = roundMm(cursorY + pieceH + safeGapY);
+        const fitsAnotherPocketRow =
+          inPocket &&
+          firstRowShelfHeightMm > 0 &&
+          nextPocketY + pieceH <= firstRowShelfHeightMm + 0.01;
+
+        if (fitsAnotherPocketRow) {
+          cursorX = roundMm(firstRowIndentMm);
+          cursorY = nextPocketY;
+        } else {
+          const baseBottomY = inPocket
+            ? Math.max(firstRowShelfHeightMm, cursorY + pieceH)
+            : cursorY + pieceH;
+          inPocket = false;
+          cursorX = 0;
+          cursorY = roundMm(baseBottomY + safeGapY);
+        }
         currentRow++;
         colsInCurrentRow = 0;
       }
@@ -233,12 +246,17 @@ export function chooseOptimalRotationForMinRollAdvance(
   const cols0 = Math.max(1, Math.floor((usableWidth + safeGapX) / (w0 + safeGapX)));
   const rows0 = Math.ceil(safeQty / cols0);
   const advance0 = rows0 * h0 + Math.max(0, rows0 - 1) * safeGapY;
+  const empty0 = cols0 * rows0 - safeQty;
 
   const cols90 = Math.max(1, Math.floor((usableWidth + safeGapX) / (h0 + safeGapX)));
   const rows90 = Math.ceil(safeQty / cols90);
   const advance90 = rows90 * w0 + Math.max(0, rows90 - 1) * safeGapY;
+  const empty90 = cols90 * rows90 - safeQty;
 
   if (advance90 < advance0 - 0.1) {
+    return 90;
+  }
+  if (Math.abs(advance90 - advance0) <= 0.5 && empty90 < empty0) {
     return 90;
   }
   return 0;
@@ -484,11 +502,22 @@ export function createWorkbenchJobFromUploadedLogo(params: {
   );
   baseDesign.elements = centeredElements;
 
+  const bestRot = config.autoRotateForMinRoll
+    ? chooseOptimalRotationForMinRollAdvance(
+        baseDesign,
+        quantity,
+        gapXMm,
+        gapYMm,
+        config
+      )
+    : 0;
+  const rotated90 = bestRot === 90;
+
   const opt = computeOptimalColumnsForSheetWidth(
     baseDesign,
     quantity,
     gapXMm,
-    false,
+    rotated90,
     config
   );
 
@@ -498,7 +527,7 @@ export function createWorkbenchJobFromUploadedLogo(params: {
     opt.rows,
     gapXMm,
     gapYMm,
-    false,
+    rotated90,
     quantity
   );
 
@@ -535,7 +564,7 @@ export function createWorkbenchJobFromUploadedLogo(params: {
     yMm: targetY,
     widthMm: compiledGrid.widthMm,
     heightMm: compiledGrid.heightMm,
-    blockRotationDeg: 0,
+    blockRotationDeg: bestRot,
     pieceCount: compiledGrid.pieceCount,
     columns: compiledGrid.columnsUsed,
     rows: compiledGrid.rowsUsed,
@@ -798,8 +827,18 @@ export function autoArrangeWorkbenchJobs(
 
       const lastRowLocalY = rebuilt.lastRowLocalYMm ?? 0;
       const lastRowEndX = rebuilt.lastRowEndXMm ?? rebuilt.widthMm;
+      const stayedInsidePocket =
+        currentIndentMm > 0 &&
+        lastRowLocalY + pieceH <= currentShelfMaxHeight + 0.01;
 
-      if (lastRowLocalY > 0) {
+      if (stayedInsidePocket) {
+        // Sigue dentro del mismo bolsillo lateral compartido (una o más mini-filas dentro de currentShelfMaxHeight)
+        currentShelfMaxHeight = Math.max(
+          pieceH,
+          roundMm(currentShelfMaxHeight - lastRowLocalY)
+        );
+        currentShelfY = roundMm(currentShelfY + lastRowLocalY);
+      } else if (lastRowLocalY > 0) {
         // El trabajo envolvió hacia una o más filas nuevas debajo de currentShelfY
         currentShelfY = roundMm(currentShelfY + lastRowLocalY);
         currentShelfMaxHeight = pieceH;
@@ -868,11 +907,12 @@ export function autoArrangeWorkbenchJobs(
 }
 
 /**
- * Aplica en 1 clic la configuración de Ahorro Extremo de Material (Cero Desperdicio) a toda la mesa/rollo:
+ * Aplica la configuración óptima de Aprovechamiento Máximo de Plancha/Rollo:
  * - Margen perimetral compacto (2 mm)
- * - Separación ultra-compacta entre piezas (0.5 mm)
+ * - Separación ultra-compacta entre piezas (0.5 mm, o 0 mm si admite corte compartido)
  * - Evaluación automática de rotación 0° vs 90° por trabajo para menor avance de rollo
- * - Intercalado continuo de filas pieza por pieza sin huecos vacíos entre logos.
+ * - Comparación multi-ordenamiento (trabajos más altos primero vs orden original)
+ * - Intercalado continuo 2D de bolsillos sin huecos vacíos entre logos.
  */
 export function applyExtremeMaterialSavingToWorkbench(
   jobs: WorkbenchJobItem[],
@@ -908,7 +948,47 @@ export function applyExtremeMaterialSavingToWorkbench(
     );
   });
 
-  const arranged = autoArrangeWorkbenchJobs(compactJobs, nextConfig, 1.5, true);
+  // Si hay múltiples trabajos distintos desbloqueados, probar ordenamiento por altura de pieza (FFD)
+  // frente al orden original y quedarse con el que consume menos rollo/plancha.
+  const unlockedVisibleCount = compactJobs.filter(
+    (j) => j.visible && !j.locked
+  ).length;
+  const arrangedOriginal = autoArrangeWorkbenchJobs(
+    compactJobs,
+    nextConfig,
+    1.5,
+    true
+  );
+
+  if (unlockedVisibleCount <= 1) {
+    return { config: nextConfig, jobs: arrangedOriginal };
+  }
+
+  const tallestFirst = [...compactJobs].sort((a, b) => {
+    if (!a.visible || a.locked || !b.visible || b.locked) return 0;
+    const ah = a.blockRotationDeg === 90 ? a.labelDesign.widthMm : a.labelDesign.heightMm;
+    const bh = b.blockRotationDeg === 90 ? b.labelDesign.widthMm : b.labelDesign.heightMm;
+    return bh - ah;
+  });
+
+  const arrangedTallest = autoArrangeWorkbenchJobs(
+    tallestFirst,
+    nextConfig,
+    1.5,
+    true
+  );
+
+  const origMetrics = computeEcocueroRollMetrics(arrangedOriginal, nextConfig);
+  const tallMetrics = computeEcocueroRollMetrics(arrangedTallest, nextConfig);
+
+  const arranged =
+    tallMetrics.usedLengthMm < origMetrics.usedLengthMm - 0.5 ||
+    (Math.abs(tallMetrics.usedLengthMm - origMetrics.usedLengthMm) <= 0.5 &&
+      tallMetrics.stripAreaEfficiencyPercent >
+        origMetrics.stripAreaEfficiencyPercent + 0.5)
+      ? arrangedTallest
+      : arrangedOriginal;
+
   return { config: nextConfig, jobs: arranged };
 }
 
@@ -1074,6 +1154,27 @@ export function computeEcocueroRollMetrics(
     usedLengthMm > 0 ? Math.floor(totalRollLengthMm / usedLengthMm) : 0;
   const exceedsSingleBedPass = usedLengthMm > config.machineBedHeightMm + 0.01;
 
+  const wastePercent = roundMm(Math.max(0, 100 - stripAreaEfficiencyPercent), 1);
+  const usedPiecesAreaCm2 = roundMm(totalPiecesAreaMm2 / 100, 1);
+  const consumedStripWithMarginsMm2 = Math.max(
+    totalPiecesAreaMm2,
+    rollWidthMm * usedLengthMm
+  );
+  const wasteAreaCm2 = roundMm(
+    Math.max(0, consumedStripWithMarginsMm2 - totalPiecesAreaMm2) / 100,
+    1
+  );
+
+  // Retazo rectangular limpio al costado derecho si la tira no ocupó todo el ancho de la plancha/rollo
+  const sideRemnantWidthMm = roundMm(
+    Math.max(0, config.sheetOffsetXMm + rollWidthMm - bounds.maxX - config.sheetSafetyMarginMm),
+    1
+  );
+  const reusableSideRemnantMm =
+    sideRemnantWidthMm >= 25 && bounds.height >= 20
+      ? { widthMm: sideRemnantWidthMm, heightMm: roundMm(bounds.height, 1) }
+      : null;
+
   return {
     rollWidthMm,
     rollWidthCm,
@@ -1093,6 +1194,10 @@ export function computeEcocueroRollMetrics(
     savedRollLengthCm,
     estimatedRunsPerRoll,
     exceedsSingleBedPass,
+    wastePercent,
+    wasteAreaCm2,
+    usedPiecesAreaCm2,
+    reusableSideRemnantMm,
   };
 }
 

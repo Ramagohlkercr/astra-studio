@@ -408,17 +408,21 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         }
       }
 
-      // Acomodar todos los trabajos automáticamente aprovechando el ancho (73 cm si es rollo)
+      // Acomodar todos los trabajos automáticamente aprovechando al máximo el ancho útil
+      const useZeroWaste =
+        workbenchConfig.packingMode === 'continuous_zero_waste' ||
+        workbenchConfig.isRollMaterial ||
+        isEco;
       const arranged = autoArrangeWorkbenchJobs(
         currentList,
         workbenchConfig,
-        4,
-        workbenchConfig.isRollMaterial || isEco
+        workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+        useZeroWaste
       );
       onUpdateJobs(arranged);
       if (lastCreatedId) setSelectedJobId(lastCreatedId);
       onNotify(
-        `${addedCount} trabajo(s) con logos distintos cargados y acomodados en la misma tirada.`
+        `${addedCount} trabajo(s) con logos distintos cargados y acomodados aprovechando la plancha.`
       );
     } catch (err) {
       onNotify(
@@ -433,11 +437,15 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
   // Acciones de agregar trabajos a la plancha
   const handleAddActiveBatch = () => {
+    const useZeroWaste =
+      workbenchConfig.packingMode === 'continuous_zero_waste' ||
+      workbenchConfig.isRollMaterial ||
+      isEco;
     const newJob = createWorkbenchJobFromOrder({
       design,
       nesting,
       batchIndex: activeBatchIndex,
-      mode: workbenchConfig.isRollMaterial || isEco ? 'roll_strip' : 'active_batch',
+      mode: useZeroWaste ? 'roll_strip' : 'active_batch',
       projectName,
       clientName,
       orderId: activeOrderId,
@@ -447,8 +455,8 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const next = autoArrangeWorkbenchJobs(
       [...workbenchJobs, newJob],
       workbenchConfig,
-      4,
-      workbenchConfig.isRollMaterial || isEco
+      workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+      useZeroWaste
     );
     onUpdateJobs(next);
     setSelectedJobId(newJob.id);
@@ -476,6 +484,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   const handleAddFromCatalogOrder = (ordId: string) => {
     const targetOrder = ordersCatalog.find((o) => o.id === ordId);
     if (!targetOrder) return;
+    const useZeroWaste =
+      workbenchConfig.packingMode === 'continuous_zero_waste' ||
+      workbenchConfig.isRollMaterial ||
+      isEco;
     const newJob = createWorkbenchJobFromOrder({
       design: targetOrder.labelDesign,
       nesting,
@@ -490,8 +502,8 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const next = autoArrangeWorkbenchJobs(
       [...workbenchJobs, newJob],
       workbenchConfig,
-      4,
-      workbenchConfig.isRollMaterial || isEco
+      workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+      useZeroWaste
     );
     onUpdateJobs(next);
     setSelectedJobId(newJob.id);
@@ -505,7 +517,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const arranged = autoArrangeWorkbenchJobs(
       workbenchJobs,
       workbenchConfig,
-      workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 4,
+      workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
       optimizeForRollWidth
     );
     onUpdateJobs(arranged);
@@ -521,8 +533,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       applyExtremeMaterialSavingToWorkbench(workbenchJobs, workbenchConfig);
     onUpdateConfig(nextConfig);
     onUpdateJobs(nextJobs);
+    const nextMetrics = computeEcocueroRollMetrics(nextJobs, nextConfig);
     onNotify(
-      '🔥 Ahorro Extremo activado: Flujo continuo pieza a pieza sin huecos entre logos, margen 2 mm, separación 0.5 mm y rotación óptima.'
+      `✨ Aprovechamiento optimizado: ${nextMetrics.stripAreaEfficiencyPercent}% eficiencia (${nextMetrics.usedLengthCm} cm de avance · ${nextMetrics.savedRollLengthCm} cm ahorrados).`
     );
   };
 
@@ -541,6 +554,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
   const handleDuplicateSelectedJob = () => {
     if (!selectedJob) return;
+    const useZeroWaste =
+      workbenchConfig.packingMode === 'continuous_zero_waste' ||
+      workbenchConfig.isRollMaterial ||
+      isEco;
     const copy: WorkbenchJobItem = {
       ...structuredClone(selectedJob),
       id: `wb-job-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -549,8 +566,8 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const next = autoArrangeWorkbenchJobs(
       [...workbenchJobs, copy],
       workbenchConfig,
-      4,
-      false
+      workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+      useZeroWaste
     );
     onUpdateJobs(next);
     setSelectedJobId(copy.id);
@@ -597,14 +614,25 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const updatedList = workbenchJobs.map((j) =>
       j.id === selectedJob.id ? rebuilt : j
     );
-    // Si cambió la cantidad o las medidas de etiqueta, reacomodar automáticamente la tirada para que no colisionen
+    // Mantener el flujo continuo y sin desperdicio al cambiar medidas o cantidad
     if (
       updates.pieceCount !== undefined ||
       updates.widthMm !== undefined ||
       updates.heightMm !== undefined ||
       updates.autoFitColumnsToRoll
     ) {
-      onUpdateJobs(autoArrangeWorkbenchJobs(updatedList, workbenchConfig, 4, false));
+      const useZeroWaste =
+        workbenchConfig.packingMode === 'continuous_zero_waste' ||
+        workbenchConfig.isRollMaterial ||
+        isEco;
+      onUpdateJobs(
+        autoArrangeWorkbenchJobs(
+          updatedList,
+          workbenchConfig,
+          workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+          useZeroWaste
+        )
+      );
     } else {
       onUpdateJobs(updatedList);
     }
@@ -2000,6 +2028,58 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   >
                     📐 ENCUADRE LÁSER (FRAME): {validation.occupiedBoundsMm.width} × {validation.occupiedBoundsMm.height} mm ({roundMm(validation.occupiedBoundsMm.width / 10, 1)} × {roundMm(validation.occupiedBoundsMm.height / 10, 1)} cm)
                   </text>
+
+                  {/* Zonas libres aprovechables detectadas en tiempo real */}
+                  {rollMetrics.freeSlotsInLastRow > 0 &&
+                    (() => {
+                      const visJobs = workbenchJobs.filter(
+                        (j) => j.visible && j.instances.length > 0
+                      );
+                      const lastJ = visJobs[visJobs.length - 1];
+                      const lastI = lastJ?.instances[lastJ.instances.length - 1];
+                      if (!lastJ || !lastI) return null;
+                      const freeStartX = roundMm(
+                        lastJ.xMm +
+                          (lastJ.lastRowEndXMm ??
+                            lastI.localXMm + lastI.widthMm) +
+                          Math.max(0.5, lastJ.gapXMm)
+                      );
+                      const freeY = roundMm(
+                        lastJ.yMm + (lastJ.lastRowLocalYMm ?? lastI.localYMm)
+                      );
+                      const freeMaxX = roundMm(
+                        workbenchConfig.sheetOffsetXMm +
+                          workbenchConfig.sheetWidthMm -
+                          workbenchConfig.sheetSafetyMarginMm
+                      );
+                      const freeW = roundMm(freeMaxX - freeStartX);
+                      if (freeW < 10) return null;
+                      return (
+                        <g>
+                          <rect
+                            x={freeStartX}
+                            y={freeY}
+                            width={freeW}
+                            height={lastI.heightMm}
+                            fill="rgba(16, 185, 129, 0.12)"
+                            stroke="#10b981"
+                            strokeWidth="0.45"
+                            strokeDasharray="2.2 1.4"
+                          />
+                          <text
+                            x={freeStartX + freeW / 2}
+                            y={freeY + lastI.heightMm / 2 + 1.4}
+                            textAnchor="middle"
+                            fill="#6ee7b7"
+                            fontSize={Math.min(4.2, Math.max(2.6, lastI.heightMm * 0.35))}
+                            fontFamily="monospace"
+                            fontWeight="bold"
+                          >
+                            +{rollMetrics.freeSlotsInLastRow} u. entran gratis aquí ({roundMm(freeW / 10, 1)} cm)
+                          </text>
+                        </g>
+                      );
+                    })()}
                 </g>
               )}
 
@@ -2798,111 +2878,140 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </button>
             </div>
 
-            {/* Tarjeta de Consumo Real del Rollo de Ecocuero (73 cm x 5 m) */}
-            <div className="p-2.5 rounded-lg bg-gradient-to-br from-amber-950/30 to-slate-900 border border-amber-700/40 space-y-2 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-amber-300">
-                  Rollo Ecocuero: {rollMetrics.rollWidthCm} cm ancho × 5 m (500 cm)
+            {/* Tarjeta de Aprovechamiento Real de la Plancha / Rollo (Cero Desperdicio) */}
+            <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 space-y-2.5 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-white">
+                  Aprovechamiento: {rollMetrics.stripAreaEfficiencyPercent}%
                 </span>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1.5">
                   {rollMetrics.savedRollLengthCm > 0 && (
-                    <span className="text-[10px] font-mono bg-emerald-950 px-1.5 py-0.5 rounded text-emerald-300 border border-emerald-700 font-bold">
+                    <span className="text-[10px] font-mono bg-emerald-500/15 px-2 py-0.5 rounded-md text-emerald-300 border border-emerald-500/30 font-semibold">
                       Ahorro: -{rollMetrics.savedRollLengthCm} cm
                     </span>
                   )}
-                  <span className="text-[10px] font-mono bg-slate-950/80 px-1.5 py-0.5 rounded text-cyan-300 border border-slate-800">
-                    Ancho: {rollMetrics.widthUtilizationPercent}%
+                  <span className="text-[10px] font-mono text-slate-400">
+                    Desperdicio: {rollMetrics.wastePercent ?? roundMm(100 - rollMetrics.stripAreaEfficiencyPercent, 1)}%
                   </span>
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2 text-center bg-slate-950/70 p-2 rounded border border-slate-800/80">
+              {/* Barra visual de material aprovechado vs desperdiciado */}
+              <div className="w-full h-2 rounded-full bg-slate-950 border border-slate-800 overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-300 ${
+                    rollMetrics.stripAreaEfficiencyPercent >= 85
+                      ? 'bg-emerald-500'
+                      : rollMetrics.stripAreaEfficiencyPercent >= 65
+                        ? 'bg-cyan-500'
+                        : 'bg-amber-500'
+                  }`}
+                  style={{
+                    width: `${Math.min(100, Math.max(4, rollMetrics.stripAreaEfficiencyPercent))}%`,
+                  }}
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 text-center bg-slate-950/75 p-2 rounded-lg border border-slate-800/80">
                 <div>
                   <span className="text-[10px] text-slate-400 block">
-                    Avance en Tirada
+                    Consumo
                   </span>
                   <span className="font-mono font-bold text-emerald-400 text-xs">
                     {rollMetrics.usedLengthCm} cm
                   </span>
-                  <span className="text-[9px] text-slate-400 font-mono block">
-                    ({rollMetrics.usedLengthMm} mm)
+                  <span className="text-[9px] text-slate-500 font-mono block">
+                    de {rollMetrics.totalRollLengthCm} cm
                   </span>
                 </div>
                 <div>
                   <span className="text-[10px] text-slate-400 block">
-                    Restante de 5 m
-                  </span>
-                  <span className="font-mono font-bold text-cyan-300 text-xs">
-                    {rollMetrics.remainingRollLengthCm} cm
-                  </span>
-                  <span className="text-[9px] text-slate-400 font-mono block">
-                    ({rollMetrics.remainingRollLengthMeters} m)
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[10px] text-slate-400 block">
-                    Rinde el Rollo 5m
+                    Área Libre
                   </span>
                   <span className="font-mono font-bold text-amber-300 text-xs">
+                    {rollMetrics.wasteAreaCm2 ?? 0} cm²
+                  </span>
+                  <span className="text-[9px] text-slate-500 font-mono block">
+                    sin ocupar
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block">
+                    Rinde Rollo 5m
+                  </span>
+                  <span className="font-mono font-bold text-cyan-300 text-xs">
                     {rollMetrics.estimatedRunsPerRoll > 0
                       ? `~${rollMetrics.estimatedRunsPerRoll} tiradas`
                       : '—'}
                   </span>
-                  <span className="text-[9px] text-slate-400 font-mono block">
-                    ({rollMetrics.rollConsumptionPercent}% del rollo)
+                  <span className="text-[9px] text-slate-500 font-mono block">
+                    ({rollMetrics.widthUtilizationPercent}% ancho)
                   </span>
                 </div>
               </div>
 
-              {/* Aviso de Hueco Libre en la Última Fila (Etiquetas gratis sin gastar más rollo) */}
-              {rollMetrics.freeSlotsInLastRow > 0 ? (
-                <div className="p-2 rounded-lg bg-emerald-950/40 border border-emerald-600/60 flex items-center justify-between gap-2">
+              {/* Aviso contextual de hueco recuperable en última fila */}
+              {rollMetrics.freeSlotsInLastRow > 0 && (
+                <div className="p-2 rounded-lg bg-emerald-950/40 border border-emerald-500/40 flex items-center justify-between gap-2">
                   <div className="text-[11px] text-emerald-200 leading-tight">
                     <span className="font-bold text-emerald-300 block">
-                      💡 Quedan {rollMetrics.freeSlotsInLastRow} lugares libres en la última fila
+                      Entran +{rollMetrics.freeSlotsInLastRow} etiquetas gratis aquí
                     </span>
                     <span className="text-[10px] text-slate-300">
-                      ({rollMetrics.freeWidthInLastRowCm} cm libres que ya entran en el corte del rollo)
+                      Quedan {rollMetrics.freeWidthInLastRowCm} cm libres en la última fila
                     </span>
                   </div>
                   <button
                     type="button"
                     onClick={handleFillLastRowFreeSlots}
-                    className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] shrink-0 shadow"
+                    className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] shrink-0"
                   >
-                    + Completar (+{rollMetrics.freeSlotsInLastRow} u. gratis)
+                    + Completar
                   </button>
                 </div>
-              ) : (
-                workbenchJobs.length > 0 && (
-                  <div className="px-2 py-1 rounded bg-emerald-950/30 border border-emerald-800/50 text-[10px] text-emerald-300 flex items-center justify-between">
-                    <span>✓ Última fila 100% completa de punta a punta (0 lugares vacíos)</span>
-                    <span className="font-mono font-bold">
-                      Eficiencia: {rollMetrics.stripAreaEfficiencyPercent}%
-                    </span>
-                  </div>
-                )
               )}
 
-              {/* Botones para subir varios trabajos y activar Ahorro Extremo Cero Desperdicio */}
-              <div className="grid grid-cols-2 gap-1.5 pt-1">
-                <button
-                  type="button"
-                  disabled={isUploadingLogos}
-                  onClick={() => multiLogoInputRef.current?.click()}
-                  className="py-1.5 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] flex items-center justify-center gap-1.5 shadow"
+              {/* Selector de estrategia + Botón principal único de optimización */}
+              <div className="flex items-center gap-2 pt-0.5">
+                <select
+                  aria-label="Modo de aprovechamiento de plancha"
+                  value={workbenchConfig.packingMode}
+                  onChange={(e) => {
+                    const nextMode = e.target.value as
+                      | 'continuous_zero_waste'
+                      | 'rectangular_blocks';
+                    const nextCfg: WorkbenchConfig = {
+                      ...workbenchConfig,
+                      packingMode: nextMode,
+                    };
+                    onUpdateConfig(nextCfg);
+                    onUpdateJobs(
+                      autoArrangeWorkbenchJobs(
+                        workbenchJobs,
+                        nextCfg,
+                        nextCfg.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+                        nextMode === 'continuous_zero_waste'
+                      )
+                    );
+                  }}
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-200"
                 >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>+ Subir Varios Logos</span>
-                </button>
+                  <option value="continuous_zero_waste">
+                    Flujo 2D Continuo (Sin huecos)
+                  </option>
+                  <option value="rectangular_blocks">
+                    Bloques Rectangulares Cerrados
+                  </option>
+                </select>
+
                 <button
                   type="button"
                   onClick={handleApplyExtremeSaving}
                   disabled={workbenchJobs.length === 0}
-                  className="py-1.5 px-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-[11px] flex items-center justify-center gap-1.5 shadow"
+                  className="py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] flex items-center justify-center gap-1.5 disabled:opacity-40 shrink-0"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>🔥 Ahorro Extremo 73 cm</span>
+                  <span>Optimizar 73 cm</span>
                 </button>
               </div>
 
@@ -2912,10 +3021,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   aria-label="Combinar otro pedido en la plancha"
                   value={orderToAppendId}
                   onChange={(e) => handleAddFromCatalogOrder(e.target.value)}
-                  className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px] text-cyan-300"
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-cyan-300"
                 >
                   <option value="">
-                    + Sumar pedido guardado de la biblioteca (se intercala sin huecos)...
+                    + Sumar otro pedido de la biblioteca para llenar huecos…
                   </option>
                   {ordersCatalog.map((ord) => (
                     <option key={ord.id} value={ord.id}>

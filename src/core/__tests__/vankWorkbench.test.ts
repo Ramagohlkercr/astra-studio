@@ -745,4 +745,47 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     const afterDelete = deleteMaterialLibraryEntry(entry.id);
     expect(afterDelete.some((e) => e.id === entry.id)).toBe(false);
   });
+
+  it('16. Relleno 2D de bolsillos laterales: acomoda múltiples mini-filas de etiquetas chicas dentro del hueco lateral de un trabajo más alto sin gastar rollo extra', () => {
+    const ecocueroMat = INITIAL_MATERIALS_CATALOG[0];
+    const baseCfg = createDefaultWorkbenchConfig(730, 600, ecocueroMat);
+    const sampleElement = sampleOrder.labelDesign.elements[0];
+
+    // Trabajo grande alto: 8 etiquetas de 60x30 mm (en 73cm ocupan sólo ~490 mm de los 726 mm, dejando un bolsillo de ~230x30 mm libre a la derecha)
+    const tallJob = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Parche_Grande_60x30',
+      element: sampleElement,
+      widthMm: 60,
+      heightMm: 30,
+      quantity: 8,
+      existingJobs: [],
+      config: baseCfg,
+    });
+
+    // Trabajo chico: 18 etiquetas de 20x10 mm (caben 2 mini-filas horizontales de altura 10mm dentro de los 30mm del bolsillo lateral!)
+    const smallJob = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Etiqueta_Chica_20x10',
+      element: sampleElement,
+      widthMm: 20,
+      heightMm: 10,
+      quantity: 18,
+      existingJobs: [tallJob],
+      config: baseCfg,
+    });
+
+    const { config: optCfg, jobs: optJobs } =
+      applyExtremeMaterialSavingToWorkbench([smallJob, tallJob], baseCfg);
+
+    const val = validateWorkbenchState(optJobs, optCfg);
+    expect(val.isValidForExport).toBe(true);
+    expect(val.overlappingJobsCount).toBe(0);
+    expect(val.totalPieces).toBe(26);
+
+    const metrics = computeEcocueroRollMetrics(optJobs, optCfg);
+    // Todo entra en los 30 mm de altura del parche grande + márgenes (<= 36 mm total de avance de rollo!)
+    expect(metrics.usedLengthMm).toBeLessThanOrEqual(42);
+    expect(metrics.stripAreaEfficiencyPercent).toBeGreaterThan(75);
+    expect(metrics.wastePercent).toBeDefined();
+    expect(metrics.wasteAreaCm2).toBeDefined();
+  });
 });

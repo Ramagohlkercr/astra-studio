@@ -348,6 +348,14 @@ export interface EcocueroRollMetrics {
   estimatedRunsPerRoll: number;
   /** Indica si el avance requerido supera los 600 mm de una tirada de mesa Vank 9060 */
   exceedsSingleBedPass: boolean;
+  /** Porcentaje estimado de material desperdiciado en la franja consumida (%) */
+  wastePercent?: number;
+  /** Área desperdiciada estimada dentro de la franja consumida (cm²) */
+  wasteAreaCm2?: number;
+  /** Área real aprovechada por etiquetas (cm²) */
+  usedPiecesAreaCm2?: number;
+  /** Retazo rectangular limpio al costado derecho si hay espacio reutilizable */
+  reusableSideRemnantMm?: { widthMm: Millimeters; heightMm: Millimeters } | null;
 }
 
 export interface WorkbenchValidationIssue {

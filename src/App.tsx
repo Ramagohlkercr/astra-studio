@@ -1293,6 +1293,8 @@ export function App() {
           : workbenchConfig.ruidaIpAddress,
       sheetWidthMm: targetSheetW,
       sheetHeightMm: targetSheetH,
+      sheetSafetyMarginMm:
+        workbenchConfig.savingPreset === 'extreme_zero_waste' ? 2 : workbenchConfig.sheetSafetyMarginMm,
       isRollMaterial: isEco || targetSheetW === ECOCUERO_ROLL_WIDTH_MM,
       rollTotalLengthMm: ECOCUERO_ROLL_TOTAL_LENGTH_MM,
       layers: syncLayersWithMaterialProfile(workbenchConfig.layers, activeMaterial),
@@ -1300,6 +1302,8 @@ export function App() {
     setWorkbenchConfig(updatedCfg);
 
     if (mode !== 'open_only' || workbenchJobs.length === 0) {
+      const useZeroWaste =
+        updatedCfg.packingMode === 'continuous_zero_waste' || updatedCfg.isRollMaterial;
       const nextJob = createWorkbenchJobFromOrder({
         design: labelDesign,
         nesting: nestingResult,
@@ -1307,7 +1311,7 @@ export function App() {
         mode:
           mode === 'single_piece'
             ? 'single_piece'
-            : updatedCfg.isRollMaterial
+            : useZeroWaste
               ? 'roll_strip'
               : 'active_batch',
         projectName,
@@ -1319,7 +1323,12 @@ export function App() {
       setWorkbenchJobs((prev) => {
         const list =
           mode === 'open_only' && prev.length === 0 ? [nextJob] : [...prev, nextJob];
-        return autoArrangeWorkbenchJobs(list, updatedCfg, 4, updatedCfg.isRollMaterial);
+        return autoArrangeWorkbenchJobs(
+          list,
+          updatedCfg,
+          updatedCfg.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+          useZeroWaste
+        );
       });
     }
     setIsWorkbenchOpen(true);
