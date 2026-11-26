@@ -54,6 +54,7 @@ import {
   SvgLogoElement,
 } from '../core/types';
 import { LogoOutputFile } from '../core/exporters/logoFolder';
+import { Workbench3DViewport } from './Workbench3DViewport';
 import {
   exportWorkbenchToLbrn2,
   exportWorkbenchToSvg,
@@ -182,7 +183,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     () => workbenchJobs[0]?.id ?? null
   );
   const [cameraView, setCameraView] = useState<
-    'tirada_roll' | 'occupied' | 'sheet' | 'machine'
+    'tirada_roll' | 'occupied' | 'sheet' | 'machine' | '3d_machine'
   >('tirada_roll');
   const [canvasVisualMode, setCanvasVisualMode] = useState<
     'technical_lightburn' | 'realistic_material'
@@ -1508,6 +1509,20 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               >
                 Mesa 900×600
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCameraView('3d_machine');
+                }}
+                className={`px-2 py-0.5 rounded font-bold transition whitespace-nowrap ${
+                  cameraView === '3d_machine'
+                    ? 'bg-indigo-500/25 text-indigo-200 border border-indigo-400/60'
+                    : 'bg-slate-900 text-indigo-300 hover:text-white border border-slate-800'
+                }`}
+                title="Vista 3D WebGL interactiva de la mesa Vank 9060 con cabezal láser y piezas"
+              >
+                🧊 3D Vank
+              </button>
 
               {/* Controles de Zoom Interactivo */}
               <div className="flex items-center bg-slate-900 border border-slate-800 rounded px-1 py-0.5 gap-0.5">
@@ -1638,8 +1653,19 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             </div>
           </div>
 
-          {/* LIENZO INTERACTIVO SVG 100% DESPEJADO (SIN VENTANAS QUE LO TAPEN) */}
+          {/* LIENZO INTERACTIVO 2D SVG O 3D WEBGL DE LA MESA VANK 9060 */}
           <div className="flex-1 relative overflow-hidden flex items-center justify-center p-2">
+            {cameraView === '3d_machine' ? (
+              <Workbench3DViewport
+                config={workbenchConfig}
+                jobs={workbenchJobs}
+                selectedJobId={selectedJob?.id ?? null}
+                material={material}
+                simulation={simulation}
+                simProgress={simProgress}
+                showSimulation={showSimulation}
+              />
+            ) : (
             <svg
               ref={svgRef}
               viewBox={`${vbMinX} ${vbMinY} ${vbWidth} ${vbHeight}`}
@@ -2236,6 +2262,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 />
               </g>
             </svg>
+            )}
           </div>
 
           {/* PANEL INFERIOR DEDICADO (FUERA DEL LIENZO PARA NO TAPAR EL ROLLO): LUPA 1:1 DE ETIQUETA + DATOS DE ENCUADRE VANK 9060 */}

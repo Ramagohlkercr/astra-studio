@@ -70,6 +70,7 @@ import { VANK_9060_DEFAULT_IP } from '../core/workbench/workbenchTypes';
 import { LogoOutputFile } from '../core/exporters/logoFolder';
 import { roundMm } from '../core/geometry/geometryEngine';
 import { LabelDesign } from '../core/types';
+import { Rotary3DViewport } from './Rotary3DViewport';
 
 interface Props {
   design: LabelDesign;
@@ -292,6 +293,9 @@ export function RotaryPanel({
   const [canvasMode, setCanvasMode] = useState<
     'split' | '3d_chuck' | '2d_unwrapped'
   >('split');
+  const [rotary3DViewStyle, setRotary3DViewStyle] = useState<
+    'webgl' | 'schematic'
+  >('webgl');
 
   // Ángulo de rotación interactivo para girar el vaso/termo 360° en el simulador 3D
   const [previewRotationDeg, setPreviewRotationDeg] = useState<number>(0);
@@ -1144,19 +1148,47 @@ export function RotaryPanel({
                     </span>
                   </div>
 
-                  {layout.tapered && (
-                    <span className="px-2 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-600/60 font-mono text-[10px] font-bold">
-                      📐 Nivelar Foco Z: Levantar extremo Ø{Math.min(sim3d.d0, sim3d.d1)}mm +{physicalSetup.tailstockLiftMm} mm ({physicalSetup.wallTiltAngleDeg}°)
-                    </span>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {layout.tapered && (
+                      <span className="px-2 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-600/60 font-mono text-[10px] font-bold">
+                        📐 Nivelar Foco Z: +{physicalSetup.tailstockLiftMm} mm ({physicalSetup.wallTiltAngleDeg}°)
+                      </span>
+                    )}
+                    <div className="flex bg-slate-900 border border-slate-800 rounded-md p-0.5 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => setRotary3DViewStyle('webgl')}
+                        className={`px-2 py-0.5 rounded font-bold transition ${
+                          rotary3DViewStyle === 'webgl'
+                            ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-500/50'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        🧊 WebGL 3D
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRotary3DViewStyle('schematic')}
+                        className={`px-2 py-0.5 rounded font-semibold transition ${
+                          rotary3DViewStyle === 'schematic'
+                            ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-500/50'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        📐 Esquema
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Esquema SVG Técnico Animado de Montaje Lateral en la Vank 9060 */}
-                <div className="h-44 w-full bg-[#06090e] rounded-lg border border-slate-800/90 flex items-center justify-center p-2">
-                  <svg
-                    viewBox="0 0 620 185"
-                    className="w-full h-full max-h-full select-none"
-                  >
+                {/* Simulador Real Three.js 3D WebGL con fallback / vista lateral SVG */}
+                {(() => {
+                  const schematicView = (
+                    <div className="h-44 w-full bg-[#06090e] rounded-lg border border-slate-800/90 flex items-center justify-center p-2">
+                      <svg
+                        viewBox="0 0 620 185"
+                        className="w-full h-full max-h-full select-none"
+                      >
                     <defs>
                       <linearGradient
                         id="rot-cylinder-grad"
@@ -1590,6 +1622,20 @@ export function RotaryPanel({
                     })()}
                   </svg>
                 </div>
+                  );
+                  return rotary3DViewStyle === 'webgl' ? (
+                    <Rotary3DViewport
+                      config={config}
+                      layout={layout}
+                      physicalSetup={physicalSetup}
+                      svgRaw={previewResult.svgRaw}
+                      previewRotationDeg={previewRotationDeg}
+                      fallbackSvgContent={schematicView}
+                    />
+                  ) : (
+                    schematicView
+                  );
+                })()}
               </div>
             )}
 
