@@ -314,6 +314,20 @@ export function RotaryPanel({
   const [vesselSurface, setVesselSurface] =
     useState<RotarySurfaceMaterialKind>('auto');
   const [productionBatchQty, setProductionBatchQty] = useState<number>(1);
+  const [isConicalMode, setIsConicalMode] = useState<boolean>(() => isTapered(config));
+  const [endDiameterStr, setEndDiameterStr] = useState<string>(() =>
+    config.endDiameterMm !== undefined ? String(config.endDiameterMm) : ''
+  );
+  const lastEndDiameterRef = useRef<number | undefined>(config.endDiameterMm);
+
+  useEffect(() => {
+    const tapered = isTapered(config);
+    setIsConicalMode(tapered);
+    if (config.endDiameterMm !== undefined) {
+      lastEndDiameterRef.current = config.endDiameterMm;
+      setEndDiameterStr(String(config.endDiameterMm));
+    }
+  }, [config.endDiameterMm]);
 
   // Ángulo de rotación interactivo para girar el vaso/termo 360° (215° muestra el logo frente a cámara e iluminado)
   const [previewRotationDeg, setPreviewRotationDeg] = useState<number>(215);
@@ -1987,11 +2001,12 @@ export function RotaryPanel({
                   <div className="grid grid-cols-2 gap-1 bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[10px]">
                     <button
                       type="button"
-                      onClick={() =>
-                        setConfig((c) => ({ ...c, endDiameterMm: undefined }))
-                      }
+                      onClick={() => {
+                        setIsConicalMode(false);
+                        setConfig((c) => ({ ...c, endDiameterMm: undefined }));
+                      }}
                       className={`px-2 py-0.5 rounded font-bold transition ${
-                        !isTapered(config)
+                        !isConicalMode
                           ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-500/50'
                           : 'text-slate-400 hover:text-white'
                       }`}
@@ -2000,16 +2015,20 @@ export function RotaryPanel({
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
+                      onClick={() => {
+                        setIsConicalMode(true);
+                        const nextEnd =
+                          config.endDiameterMm ??
+                          lastEndDiameterRef.current ??
+                          Math.max(15, roundMm((config.objectDiameterMm || 80) * 0.78, 1));
+                        setEndDiameterStr(String(nextEnd));
                         setConfig((c) => ({
                           ...c,
-                          endDiameterMm:
-                            c.endDiameterMm ??
-                            Math.max(15, roundMm((c.objectDiameterMm || 80) * 0.78, 1)),
-                        }))
-                      }
+                          endDiameterMm: nextEnd,
+                        }));
+                      }}
                       className={`px-2 py-0.5 rounded font-bold transition ${
-                        isTapered(config)
+                        isConicalMode
                           ? 'bg-amber-500/20 text-amber-200 border border-amber-500/50'
                           : 'text-slate-400 hover:text-white'
                       }`}
@@ -2055,7 +2074,7 @@ export function RotaryPanel({
                     />
                   </div>
 
-                  {isTapered(config) && (
+                  {isConicalMode && (
                     <div className="space-y-1">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] text-amber-300 font-semibold">
@@ -2068,16 +2087,25 @@ export function RotaryPanel({
                           min={5}
                           max={300}
                           step="0.5"
-                          value={val(config.endDiameterMm)}
-                          onChange={(e) =>
-                            setConfig((c) => ({
-                              ...c,
-                              endDiameterMm:
-                                e.target.value === ''
-                                  ? undefined
-                                  : Number(e.target.value),
-                            }))
-                          }
+                          value={endDiameterStr}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setEndDiameterStr(raw);
+                            const v = Number(raw.replace(',', '.'));
+                            if (raw.trim() !== '' && Number.isFinite(v) && v >= 5) {
+                              lastEndDiameterRef.current = v;
+                              setConfig((c) => ({ ...c, endDiameterMm: v }));
+                            }
+                          }}
+                          onBlur={() => {
+                            if (endDiameterStr.trim() === '') {
+                              const fallback =
+                                lastEndDiameterRef.current ??
+                                Math.max(15, roundMm((config.objectDiameterMm || 80) * 0.78, 1));
+                              setEndDiameterStr(String(fallback));
+                              setConfig((c) => ({ ...c, endDiameterMm: fallback }));
+                            }
+                          }}
                         />
                       </div>
                       <input
@@ -2087,12 +2115,15 @@ export function RotaryPanel({
                         max={160}
                         step={1}
                         value={Math.max(20, Math.min(160, config.endDiameterMm || 65))}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          lastEndDiameterRef.current = v;
+                          setEndDiameterStr(String(v));
                           setConfig((c) => ({
                             ...c,
-                            endDiameterMm: Number(e.target.value),
-                          }))
-                        }
+                            endDiameterMm: v,
+                          }));
+                        }}
                         className="w-full accent-amber-400 cursor-pointer h-1.5"
                       />
                     </div>
