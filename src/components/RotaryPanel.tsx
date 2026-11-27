@@ -989,7 +989,7 @@ export function RotaryPanel({
       setRuidaStatus({
         sending: true,
         progress: null,
-        message: `Enviando ${compiled.filenameSuggested} por UDP a ${ruidaIp}:${ruidaPort}…`,
+        message: `Enviando ${compiled.filenameSuggested} a ${ruidaIp}:${ruidaPort}…`,
       });
       const res = await uploadRdBytesToVankRuida({
         ip: ruidaIp,
@@ -3361,7 +3361,7 @@ export function RotaryPanel({
               {ruidaStatus?.message && (
                 <p
                   className={`text-[10px] leading-snug px-2 py-1 rounded border ${
-                    ruidaStatus.reachable
+                    ruidaStatus.udpHandshakeOk || (ruidaStatus.reachable && !ruidaStatus.probing && ruidaStatus.message.startsWith('✓'))
                       ? 'bg-emerald-950/40 border-emerald-700/60 text-emerald-200'
                       : 'bg-amber-950/40 border-amber-700/60 text-amber-200'
                   }`}

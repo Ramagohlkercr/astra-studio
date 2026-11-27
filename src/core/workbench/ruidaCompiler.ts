@@ -43,6 +43,7 @@ export interface RuidaUploadResponse {
   retries?: number;
   elapsed_ms?: number;
   used_local_port_40200?: boolean;
+  transport_mode?: string;
   remote_endpoint: string;
   message: string;
 }
@@ -51,6 +52,7 @@ export interface RuidaProbeResponse {
   reachable: boolean;
   ping_ok?: boolean;
   udp_handshake_ok?: boolean;
+  transport_mode?: string | null;
   controller_reply_hex?: string | null;
   latency_ms?: number | null;
   ip: string;

@@ -52,7 +52,7 @@ export async function probeVankRuidaConnection(params: {
       ip: cleanIp,
       port: params.port,
       local_port_40200_free: false,
-      message: `Configuración válida para Vank 9060 (${cleanIp}:${params.port}).${suffix} Para prueba real UDP 50200↔40200 y envío directo usá la app nativa Astra Studio (.app).`,
+      message: `Configuración válida para Vank 9060 (${cleanIp}:${params.port}).${suffix} Para prueba real TCP/UDP y envío directo a la controladora Ruida usá la app nativa Astra Studio (.app).`,
     };
   }
 

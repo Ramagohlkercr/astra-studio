@@ -204,6 +204,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     reachable: boolean;
     localPortFree: boolean;
     udpHandshakeOk?: boolean;
+    transportMode?: string | null;
     pingOk?: boolean;
     latencyMs?: number | null;
     message: string;
@@ -1266,12 +1267,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         reachable: res.reachable,
         localPortFree: res.local_port_40200_free,
         udpHandshakeOk: res.udp_handshake_ok,
+        transportMode: res.transport_mode ?? null,
         pingOk: res.ping_ok,
         latencyMs: res.latency_ms,
         message: res.message,
       });
       setRuidaStatusMsg({
-        type: res.reachable ? 'success' : !isTauri() && res.ip ? 'info' : 'error',
+        type: res.udp_handshake_ok
+          ? 'success'
+          : res.reachable || (!isTauri() && res.ip)
+            ? 'info'
+            : 'error',
         text: res.message,
       });
       onNotify(res.message);
@@ -4134,8 +4140,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   </span>
                   {ruidaProbeResult?.latencyMs !== undefined &&
                     ruidaProbeResult?.latencyMs !== null && (
-                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-950/70 text-emerald-300 border border-emerald-700/60">
-                        UDP {ruidaProbeResult.latencyMs}ms
+                      <span
+                        className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                          ruidaProbeResult.udpHandshakeOk
+                            ? 'bg-emerald-950/70 text-emerald-300 border-emerald-700/60'
+                            : 'bg-amber-950/70 text-amber-300 border-amber-700/60'
+                        }`}
+                      >
+                        {ruidaProbeResult.transportMode?.startsWith('TCP')
+                          ? 'TCP'
+                          : 'UDP'}{' '}
+                        {ruidaProbeResult.latencyMs}ms
                       </span>
                     )}
                 </div>

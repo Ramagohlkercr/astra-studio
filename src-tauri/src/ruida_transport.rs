@@ -1,6 +1,7 @@
 use std::{
     fs,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
+    io::{self, ErrorKind, Read, Write},
+    net::{Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpStream, UdpSocket},
     process::Command,
     thread,
     time::{Duration, Instant},
@@ -15,8 +16,10 @@ const RUIDA_NAK_ALT: u8 = 0x46;
 const RUIDA_MAGIC: u8 = 0x88;
 const RUIDA_MAGIC_ALT: u8 = 0x11;
 const MAX_RETRIES_PER_PACKET: usize = 4;
-const PACKET_READ_TIMEOUT_MS: u64 = 950;
-const PROBE_UDP_TIMEOUT_MS: u64 = 320;
+const PACKET_READ_TIMEOUT_MS: u64 = 1500;
+const PROBE_UDP_TIMEOUT_MS: u64 = 750;
+const TCP_CONNECT_TIMEOUT_MS: u64 = 1500;
+const PROBE_TCP_READ_TIMEOUT_MS: u64 = 1200;
 
 #[derive(Serialize, Clone)]
 pub struct RuidaUploadProgress {
@@ -36,6 +39,7 @@ pub struct RuidaUploadResponse {
     pub retries: usize,
     pub elapsed_ms: u64,
     pub used_local_port_40200: bool,
+    pub transport_mode: String,
     pub remote_endpoint: String,
     pub message: String,
 }
@@ -52,6 +56,7 @@ pub struct RuidaProbeResponse {
     pub reachable: bool,
     pub ping_ok: bool,
     pub udp_handshake_ok: bool,
+    pub transport_mode: Option<String>,
     pub controller_reply_hex: Option<String>,
     pub latency_ms: Option<u64>,
     pub ip: String,
@@ -139,6 +144,221 @@ fn recv_from_expected_ip(
             Err(e) => return Err(format!("{e}")),
         }
     }
+}
+
+fn extract_verified_payload(pkt: &[u8], idx: usize) -> Result<&[u8], String> {
+    if pkt.len() < 3 {
+        return Err(format!("Paquete #{} demasiado corto.", idx + 1));
+    }
+    let expected_checksum = u16::from_be_bytes([pkt[0], pkt[1]]);
+    let payload = &pkt[2..];
+    let actual_checksum: u16 = payload
+        .iter()
+        .fold(0u16, |acc, &b| acc.wrapping_add(b as u16));
+    if expected_checksum != actual_checksum {
+        return Err(format!(
+            "Checksum Ruida inválido en paquete #{} (esperado 0x{expected_checksum:04X}, real 0x{actual_checksum:04X}).",
+            idx + 1
+        ));
+    }
+    Ok(payload)
+}
+
+fn try_connect_ruida_tcp(
+    target_ip: Ipv4Addr,
+    port: u16,
+    timeout_ms: u64,
+) -> Result<TcpStream, io::Error> {
+    let addr = SocketAddr::V4(SocketAddrV4::new(target_ip, port));
+    let stream = TcpStream::connect_timeout(&addr, Duration::from_millis(timeout_ms))?;
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(2000)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(PACKET_READ_TIMEOUT_MS)));
+    Ok(stream)
+}
+
+fn is_ruida_ack(b: u8) -> bool {
+    b == RUIDA_ACK_OK || b == RUIDA_ACK_ALT
+}
+
+fn is_ruida_nak(b: u8) -> bool {
+    b == RUIDA_NAK_CHECKSUM || b == RUIDA_NAK_ALT
+}
+
+fn is_macos_permission_error(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("permitted")
+        || lower.contains("eperm")
+        || lower.contains("eacces")
+        || lower.contains("os error 1")
+}
+
+fn format_hex_preview(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .take(12)
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn build_safe_tcp_probe_payload(raw_query: &[u8], magic: u8) -> Vec<u8> {
+    raw_query
+        .iter()
+        .map(|&b| scramble_ruida_byte(b, magic))
+        .collect()
+}
+
+/// Envía paquetes Ruida sobre TCP (`RDC8445S / LightBurn TCP_PK`, puerto 50200):
+/// valida el checksum de entrada, quita los 2 bytes UDP del encabezado checksum
+/// y transmite la carga ofuscada pura por TCP esperando ACK 0xC6/0xCC por chunk.
+fn upload_packets_tcp_internal<F>(
+    target_ip: Ipv4Addr,
+    port: u16,
+    packets: &[Vec<u8>],
+    stream: &mut TcpStream,
+    mut on_progress: F,
+) -> Result<RuidaUploadResponse, String>
+where
+    F: FnMut(RuidaUploadProgress),
+{
+    if port == 0 {
+        return Err("El puerto TCP/UDP de la Ruida debe ser mayor a 0 (estándar: 50200).".into());
+    }
+    if packets.is_empty() {
+        return Err("No hay paquetes Ruida para enviar.".into());
+    }
+
+    let remote_addr = SocketAddr::V4(SocketAddrV4::new(target_ip, port));
+    let _ = stream.set_nodelay(true);
+    stream
+        .set_write_timeout(Some(Duration::from_millis(2000)))
+        .map_err(|e| format!("Error al configurar timeout de escritura TCP: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(PACKET_READ_TIMEOUT_MS)))
+        .map_err(|e| format!("Error al configurar timeout de lectura TCP: {e}"))?;
+
+    let total_packets = packets.len();
+    let payloads: Vec<&[u8]> = packets
+        .iter()
+        .enumerate()
+        .map(|(i, p)| extract_verified_payload(p, i))
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_bytes: usize = payloads.iter().map(|p| p.len()).sum();
+
+    let mut packets_sent = 0usize;
+    let mut bytes_sent = 0usize;
+    let mut retries = 0usize;
+    let mut ack_buf = [0u8; 32];
+    let started = Instant::now();
+
+    for (idx, payload) in payloads.iter().enumerate() {
+        let mut packet_accepted = false;
+        let mut last_err = String::new();
+
+        for attempt in 0..MAX_RETRIES_PER_PACKET {
+            if attempt > 0 {
+                retries += 1;
+                thread::sleep(Duration::from_millis(30));
+            }
+
+            if let Err(e) = stream.write_all(payload).and_then(|_| stream.flush()) {
+                last_err = format!(
+                    "Error de red TCP al enviar paquete #{} a {}: {e}",
+                    idx + 1,
+                    remote_addr
+                );
+                if matches!(
+                    e.kind(),
+                    ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+                ) {
+                    if let Ok(new_stream) = try_connect_ruida_tcp(target_ip, port, TCP_CONNECT_TIMEOUT_MS) {
+                        *stream = new_stream;
+                    }
+                }
+                continue;
+            }
+
+            match stream.read(&mut ack_buf) {
+                Ok(n) if n > 0 => {
+                    let ack = ack_buf[0];
+                    if is_ruida_ack(ack) {
+                        packet_accepted = true;
+                        break;
+                    }
+                    if is_ruida_nak(ack) {
+                        last_err = format!(
+                            "La controladora Ruida devolvió NAK 0x{:02X} en el paquete #{} (error de trama o memoria llena).",
+                            ack,
+                            idx + 1
+                        );
+                        continue;
+                    }
+                    last_err = format!(
+                        "Respuesta TCP inesperada 0x{:02X} de Ruida en paquete #{}.",
+                        ack,
+                        idx + 1
+                    );
+                }
+                Ok(_) => {
+                    last_err = format!(
+                        "La Vank 9060 cerró el socket TCP sin confirmar paquete #{}.",
+                        idx + 1
+                    );
+                }
+                Err(e) => {
+                    last_err = format!(
+                        "Sin respuesta TCP de la Vank 9060 en {} (paquete #{}, intento {}/{}): {}",
+                        remote_addr,
+                        idx + 1,
+                        attempt + 1,
+                        MAX_RETRIES_PER_PACKET,
+                        e
+                    );
+                }
+            }
+        }
+
+        if !packet_accepted {
+            return Err(format!(
+                "{last_err} Verificá que la máquina esté encendida, con permiso 'Red local' activo en macOS y LightBurn cerrado."
+            ));
+        }
+
+        packets_sent += 1;
+        bytes_sent += payload.len();
+        let percent = ((packets_sent * 100) / total_packets).min(100) as u8;
+        on_progress(RuidaUploadProgress {
+            current_packet: packets_sent,
+            total_packets,
+            percent,
+            bytes_sent,
+            total_bytes,
+            retries,
+        });
+    }
+
+    let _ = stream.shutdown(Shutdown::Both);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let retry_note = if retries > 0 {
+        format!(" · {retries} reintento(s) recuperado(s)")
+    } else {
+        String::new()
+    };
+
+    Ok(RuidaUploadResponse {
+        success: true,
+        packets_sent,
+        bytes_sent,
+        retries,
+        elapsed_ms,
+        used_local_port_40200: false,
+        transport_mode: "TCP (RDC8445S)".into(),
+        remote_endpoint: remote_addr.to_string(),
+        message: format!(
+            "✓ Trabajo cargado en la Vank 9060 por TCP RDC8445S ({packets_sent} paquetes, {bytes_sent} bytes en {elapsed_ms} ms{retry_note}). Verificá el encuadre (FRAME) antes de darle Start."
+        ),
+    })
 }
 
 fn upload_packets_internal<F>(
@@ -273,11 +493,116 @@ where
         retries,
         elapsed_ms,
         used_local_port_40200,
+        transport_mode: "UDP (50200↔40200)".into(),
         remote_endpoint: remote_addr.to_string(),
         message: format!(
             "✓ Trabajo cargado en memoria de la Vank 9060 ({packets_sent} paquetes, {bytes_sent} bytes en {elapsed_ms} ms{retry_note}). Verificá el encuadre (FRAME) antes de darle Start."
         ),
     })
+}
+
+struct TcpProbeOutcome {
+    tcp_connected: bool,
+    handshake_ok: bool,
+    reply_hex: Option<String>,
+    latency_ms: Option<u64>,
+    os_error: Option<String>,
+}
+
+fn probe_tcp_handshake_internal(target_ip: Ipv4Addr, port: u16) -> TcpProbeOutcome {
+    let connect_started = Instant::now();
+    let mut stream = match try_connect_ruida_tcp(target_ip, port, TCP_CONNECT_TIMEOUT_MS) {
+        Ok(s) => s,
+        Err(e) => {
+            return TcpProbeOutcome {
+                tcp_connected: false,
+                handshake_ok: false,
+                reply_hex: None,
+                latency_ms: None,
+                os_error: Some(format!("{e}")),
+            };
+        }
+    };
+
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(PROBE_TCP_READ_TIMEOUT_MS)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(1000)));
+
+    let queries: [(&[u8], u8); 5] = [
+        (&[0xDA, 0x00, 0x05, 0x7E], RUIDA_MAGIC),
+        (&[0xDA, 0x00, 0x04, 0x01], RUIDA_MAGIC),
+        (&[0xDA, 0x00, 0x04, 0x05], RUIDA_MAGIC),
+        (&[0xCE], RUIDA_MAGIC),
+        (&[0xDA, 0x00, 0x05, 0x7E], RUIDA_MAGIC_ALT),
+    ];
+
+    let mut buf = [0u8; 64];
+    let mut last_error: Option<String> = None;
+
+    for (raw_query, magic) in queries {
+        let payload = build_safe_tcp_probe_payload(raw_query, magic);
+        let started = Instant::now();
+        if let Err(e) = stream.write_all(&payload).and_then(|_| stream.flush()) {
+            last_error = Some(format!("{e}"));
+            if matches!(
+                e.kind(),
+                ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+            ) {
+                if let Ok(reconnected) = try_connect_ruida_tcp(target_ip, port, TCP_CONNECT_TIMEOUT_MS) {
+                    stream = reconnected;
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(PROBE_TCP_READ_TIMEOUT_MS)));
+                }
+            }
+            continue;
+        }
+
+        match stream.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                let latency_ms = started
+                    .elapsed()
+                    .as_millis()
+                    .max(connect_started.elapsed().as_millis().min(1)) as u64;
+                // Si llegó solo el ACK 0xC6, damos una breve ventana para capturar los bytes DA 01 siguientes si vinieron aparte
+                let mut total_n = n;
+                if total_n == 1 && total_n < buf.len() {
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(60)));
+                    if let Ok(extra) = stream.read(&mut buf[total_n..]) {
+                        total_n += extra;
+                    }
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(PROBE_TCP_READ_TIMEOUT_MS)));
+                }
+
+                // Ignorar NAK puro si no hubo ACK, probar siguiente consulta
+                if total_n == 1 && is_ruida_nak(buf[0]) {
+                    last_error = Some(format!("Controladora devolvió NAK 0x{:02X}", buf[0]));
+                    continue;
+                }
+
+                let _ = stream.shutdown(Shutdown::Both);
+                return TcpProbeOutcome {
+                    tcp_connected: true,
+                    handshake_ok: true,
+                    reply_hex: Some(format_hex_preview(&buf[..total_n])),
+                    latency_ms: Some(latency_ms),
+                    os_error: None,
+                };
+            }
+            Ok(_) => {
+                last_error = Some("Socket TCP cerrado por la controladora sin respuesta.".into());
+            }
+            Err(e) => {
+                last_error = Some(format!("{e}"));
+            }
+        }
+    }
+
+    let _ = stream.shutdown(Shutdown::Both);
+    TcpProbeOutcome {
+        tcp_connected: true,
+        handshake_ok: false,
+        reply_hex: None,
+        latency_ms: Some(connect_started.elapsed().as_millis() as u64),
+        os_error: last_error,
+    }
 }
 
 fn probe_udp_handshake_internal(
@@ -290,8 +615,8 @@ fn probe_udp_handshake_internal(
 
     // Consultas seguras de solo lectura (DA 00 ...): estado IO, ID de placa, archivos guardados y magic alterno
     let queries: [([u8; 4], u8); 4] = [
-        ([0xDA, 0x00, 0x04, 0x00], RUIDA_MAGIC),
         ([0xDA, 0x00, 0x05, 0x7E], RUIDA_MAGIC),
+        ([0xDA, 0x00, 0x04, 0x01], RUIDA_MAGIC),
         ([0xDA, 0x00, 0x04, 0x05], RUIDA_MAGIC),
         ([0xDA, 0x00, 0x05, 0x7E], RUIDA_MAGIC_ALT),
     ];
@@ -316,12 +641,7 @@ fn probe_udp_handshake_internal(
         ) {
             Ok((n, _)) if n > 0 => {
                 let latency_ms = started.elapsed().as_millis() as u64;
-                let hex = buf[..n.min(12)]
-                    .iter()
-                    .map(|b| format!("{b:02X}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                return (true, Some(hex), Some(latency_ms), None);
+                return (true, Some(format_hex_preview(&buf[..n])), Some(latency_ms), None);
             }
             Ok(_) => {}
             Err(e) => {
@@ -333,8 +653,9 @@ fn probe_udp_handshake_internal(
     (false, None, None, last_os_error)
 }
 
-/// Envía paquetes UDP Ruida pre-compilados y con checksum a la controladora Ruida RDC8445S (puerto 50200).
-/// Verifica ACK real (0xCC / 0xC6), reintenta automáticamente ante NAK (0xCF / 0x46) o pérdida UDP y emite progreso en vivo.
+/// Envía paquetes Ruida pre-compilados y auditados a la controladora Vank 9060 (`192.168.0.195:50200`).
+/// Autodetecta TCP Packet (`RDC8445S` / LightBurn `TCP_PK`, quitando los 2 bytes de checksum UDP)
+/// o UDP clásico (`50200↔40200`), verificando ACK real (0xC6 / 0xCC) por paquete con reintentos.
 #[tauri::command]
 pub async fn upload_rd_to_ruida(
     app: tauri::AppHandle,
@@ -344,10 +665,28 @@ pub async fn upload_rd_to_ruida(
 ) -> Result<RuidaUploadResponse, String> {
     let target_ip = parse_ipv4(&ip)?;
     if port == 0 {
-        return Err("El puerto UDP de la Ruida debe ser mayor a 0 (estándar: 50200).".into());
+        return Err("El puerto de la Ruida debe ser mayor a 0 (estándar: 50200).".into());
     }
 
     tauri::async_runtime::spawn_blocking(move || {
+        // 1. Intentar primero TCP Packet (RDC8445S / Vank 9060 escucha TCP en puerto 50200)
+        match try_connect_ruida_tcp(target_ip, port, TCP_CONNECT_TIMEOUT_MS) {
+            Ok(mut stream) => {
+                return upload_packets_tcp_internal(target_ip, port, &packets, &mut stream, |prog| {
+                    let _ = app.emit("ruida_upload_progress", &prog);
+                });
+            }
+            Err(e) => {
+                let err_str = format!("{e}");
+                if is_macos_permission_error(&err_str) {
+                    return Err(format!(
+                        "macOS bloqueó el acceso de red local hacia {target_ip}:{port}. Habilitá 'Astra Studio' en Ajustes del Sistema → Privacidad y seguridad → Red local."
+                    ));
+                }
+            }
+        }
+
+        // 2. Fallback automático a Ruida UDP clásico (RDC6445G/S: 50200↔40200)
         let (socket, used_40200) = bind_ruida_socket()?;
         upload_packets_internal(target_ip, port, &packets, &socket, used_40200, |prog| {
             let _ = app.emit("ruida_upload_progress", &prog);
@@ -421,20 +760,54 @@ pub fn open_lbrn2_in_lightburn(
     })
 }
 
-/// Verifica conectividad real hacia la Vank 9060 (ping ICMP + disponibilidad UDP 40200 + handshake de solo lectura Ruida 50200)
-/// sin mover motores ni encender el láser.
+/// Verifica conectividad real hacia la Vank 9060:
+/// 1) Prueba handshake TCP Packet (`RDC8445S` puerto 50200),
+/// 2) Si TCP no está abierto, prueba UDP clásico (`50200↔40200`),
+/// 3) Ejecuta ping ICMP diagnóstico sin mover motores ni disparar láser.
 #[tauri::command]
 pub async fn probe_ruida_connection(ip: String, port: u16) -> Result<RuidaProbeResponse, String> {
     let target_ip = parse_ipv4(&ip)?;
     if port == 0 {
-        return Err("El puerto UDP de la Ruida debe ser mayor a 0 (estándar: 50200).".into());
+        return Err("El puerto de la Ruida debe ser mayor a 0 (estándar: 50200).".into());
     }
 
     tauri::async_runtime::spawn_blocking(move || {
         let ip_str = target_ip.to_string();
+
+        // 1. Probar TCP Packet (RDC8445S / LightBurn TCP_PK)
+        let tcp_res = probe_tcp_handshake_internal(target_ip, port);
+
+        if tcp_res.handshake_ok {
+            let local_port_40200_free = UdpSocket::bind("0.0.0.0:40200").is_ok();
+            let reply_note = tcp_res
+                .reply_hex
+                .as_deref()
+                .map(|h| format!(" (resp: {h})"))
+                .unwrap_or_default();
+            return Ok(RuidaProbeResponse {
+                reachable: true,
+                ping_ok: true,
+                udp_handshake_ok: true,
+                transport_mode: Some("TCP (RDC8445S)".into()),
+                controller_reply_hex: tcp_res.reply_hex,
+                latency_ms: tcp_res.latency_ms,
+                ip: ip_str.clone(),
+                port,
+                local_port_40200_free,
+                message: format!(
+                    "✓ Vank 9060 online ({ip_str}:{port} · TCP RDC8445S) · Handshake Ruida OK en {} ms{reply_note}.",
+                    tcp_res.latency_ms.unwrap_or(0)
+                ),
+            });
+        }
+
+        // 2. Fallback UDP clásico (50200↔40200) para controladoras RDC6445G/S
         let (socket, local_port_40200_free) = bind_ruida_socket()?;
-        let (udp_handshake_ok, controller_reply_hex, latency_ms, udp_error) =
-            probe_udp_handshake_internal(target_ip, port, &socket);
+        let (udp_handshake_ok, controller_reply_hex, latency_ms, udp_error) = if tcp_res.tcp_connected {
+            (false, None, tcp_res.latency_ms, tcp_res.os_error.clone())
+        } else {
+            probe_udp_handshake_internal(target_ip, port, &socket)
+        };
         drop(socket);
 
         let ping_ok = Command::new("ping")
@@ -443,21 +816,31 @@ pub async fn probe_ruida_connection(ip: String, port: u16) -> Result<RuidaProbeR
             .map(|s| s.success())
             .unwrap_or(false);
 
-        let reachable = udp_handshake_ok || ping_ok;
+        let reachable = udp_handshake_ok || tcp_res.tcp_connected || ping_ok;
+        let transport_mode = if udp_handshake_ok {
+            Some("UDP (50200↔40200)".into())
+        } else if tcp_res.tcp_connected {
+            Some("TCP (50200 abierto)".into())
+        } else {
+            None
+        };
+
         let port_note = if local_port_40200_free {
             "Puerto UDP local 40200 libre."
         } else {
-            "Puerto local 40200 ocupado por LightBurn (usá 'Abrir en LightBurn' o cerrá LightBurn para envío UDP directo)."
+            "Puerto local 40200 ocupado por LightBurn (cerrá LightBurn para envío directo)."
         };
 
-        let macos_perm_hint = udp_error
+        let combined_err = tcp_res
+            .os_error
             .as_deref()
-            .map(|e| e.to_lowercase().contains("permitted") || e.contains("EPERM") || e.contains("os error 1"))
-            .unwrap_or(false);
+            .or(udp_error.as_deref())
+            .unwrap_or("");
+        let macos_perm_hint = is_macos_permission_error(combined_err);
 
         let message = if udp_handshake_ok {
             format!(
-                "✓ Vank 9060 online ({}:{}) · Handshake Ruida OK en {} ms. {}",
+                "✓ Vank 9060 online ({}:{} · UDP 50200↔40200) · Handshake Ruida OK en {} ms. {}",
                 ip_str,
                 port,
                 latency_ms.unwrap_or(0),
@@ -465,12 +848,17 @@ pub async fn probe_ruida_connection(ip: String, port: u16) -> Result<RuidaProbeR
             )
         } else if macos_perm_hint {
             format!(
-                "macOS bloqueó el socket UDP local hacia {}:{} (Privacidad → Red local). Habilitá 'Astra Studio' en Ajustes del Sistema → Privacidad y seguridad → Red local.",
+                "macOS bloqueó el socket de red local hacia {}:{} (Privacidad → Red local). Habilitá 'Astra Studio' en Ajustes del Sistema → Privacidad y seguridad → Red local.",
+                ip_str, port
+            )
+        } else if tcp_res.tcp_connected {
+            format!(
+                "Puerto TCP {}:{} abierto (RDC8445S), pero la controladora no devolvió ACK a la consulta Ruida. Si LightBurn está conectado a la máquina, cerralo y volvé a probar.",
                 ip_str, port
             )
         } else if ping_ok {
             format!(
-                "Red IP alcanzable ({}:{}), pero sin respuesta UDP en puerto {}. Verificá que 'Astra Studio' tenga permiso en Ajustes → Privacidad → Red local, que la Vank esté encendida y LightBurn cerrado. {}",
+                "Red IP alcanzable ({}:{}), pero no respondió por TCP ni UDP en {}. Verificá que 'Astra Studio' tenga permiso en Ajustes → Privacidad → Red local, que la Vank esté encendida y LightBurn cerrado. {}",
                 ip_str, port, port, port_note
             )
         } else {
@@ -484,6 +872,7 @@ pub async fn probe_ruida_connection(ip: String, port: u16) -> Result<RuidaProbeR
             reachable,
             ping_ok,
             udp_handshake_ok,
+            transport_mode,
             controller_reply_hex,
             latency_ms,
             ip: ip_str,
@@ -630,5 +1019,99 @@ mod tests {
         assert!(ok);
         assert_eq!(hex.as_deref(), Some("CC DA 01 05"));
         assert!(latency.is_some());
+    }
+
+    #[test]
+    fn tcp_packet_upload_strips_checksum_retries_on_nak_and_tracks_progress() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mock_port = listener.local_addr().unwrap().port();
+        let received_payloads = Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let payloads_clone = Arc::clone(&received_payloads);
+
+        let handle = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            conn.set_read_timeout(Some(Duration::from_millis(2000))).unwrap();
+            let mut buf = [0u8; 256];
+            for req_idx in 0..3 {
+                if let Ok(n) = conn.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    payloads_clone.lock().unwrap().push(buf[..n].to_vec());
+                    let reply = if req_idx == 0 {
+                        RUIDA_NAK_ALT
+                    } else {
+                        RUIDA_ACK_ALT
+                    };
+                    let _ = conn.write_all(&[reply]);
+                    let _ = conn.flush();
+                }
+            }
+        });
+
+        let mut stream = try_connect_ruida_tcp(Ipv4Addr::LOCALHOST, mock_port, 1500).unwrap();
+        let packets = vec![
+            build_checksum_udp_packet(&[0x11, 0x22, 0x33]),
+            build_checksum_udp_packet(&[0x44, 0x55, 0x66]),
+        ];
+        let mut progress_steps = Vec::new();
+
+        let res = upload_packets_tcp_internal(
+            Ipv4Addr::LOCALHOST,
+            mock_port,
+            &packets,
+            &mut stream,
+            |p| progress_steps.push(p.percent),
+        )
+        .unwrap();
+
+        handle.join().unwrap();
+        assert!(res.success);
+        assert_eq!(res.transport_mode, "TCP (RDC8445S)");
+        assert_eq!(res.packets_sent, 2);
+        assert_eq!(res.bytes_sent, 6);
+        assert_eq!(res.retries, 1);
+        assert_eq!(progress_steps, vec![50, 100]);
+
+        let seen = received_payloads.lock().unwrap();
+        assert_eq!(
+            *seen,
+            vec![
+                vec![0x11, 0x22, 0x33],
+                vec![0x11, 0x22, 0x33],
+                vec![0x44, 0x55, 0x66],
+            ]
+        );
+    }
+
+    #[test]
+    fn tcp_probe_handshake_succeeds_against_mock_rdc8445s_controller() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mock_port = listener.local_addr().unwrap().port();
+        let observed_len = Arc::new(AtomicUsize::new(0));
+        let len_clone = Arc::clone(&observed_len);
+
+        let handle = thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            conn.set_read_timeout(Some(Duration::from_millis(1500))).unwrap();
+            let mut buf = [0u8; 64];
+            if let Ok(n) = conn.read(&mut buf) {
+                len_clone.store(n, Ordering::SeqCst);
+                let _ = conn.write_all(&[RUIDA_ACK_ALT, 0xDA, 0x01, 0x05]);
+                let _ = conn.flush();
+            }
+        });
+
+        let outcome = probe_tcp_handshake_internal(Ipv4Addr::LOCALHOST, mock_port);
+        handle.join().unwrap();
+        assert!(outcome.tcp_connected);
+        assert!(outcome.handshake_ok);
+        assert_eq!(observed_len.load(Ordering::SeqCst), 4);
+        assert_eq!(outcome.reply_hex.as_deref(), Some("C6 DA 01 05"));
+        assert!(outcome.latency_ms.is_some());
     }
 }
