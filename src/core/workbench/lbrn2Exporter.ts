@@ -6,7 +6,10 @@
 
 import { rasterImageTransform, roundMm } from '../geometry/geometryEngine';
 import { LIGHTBURN_LAYERS, Point2D } from '../types';
-import { validateWorkbenchState } from './workbenchEngine';
+import {
+  sortInstancesInTravelOrder,
+  validateWorkbenchState,
+} from './workbenchEngine';
 import {
   WorkbenchConfig,
   WorkbenchJobItem,
@@ -159,9 +162,16 @@ export function exportWorkbenchToLbrn2(
 
   const shapesXml: string[] = [];
   let shapeCount = 0;
+  const executionMode = config.executionSequenceMode ?? 'sequential_per_job';
+  const travelOrder = config.travelOrder ?? 'zigzag_rows';
+  const useGroupedSequential =
+    executionMode === 'sequential_per_job' && visibleJobs.length > 1;
 
   for (const job of visibleJobs) {
-    for (const inst of job.instances) {
+    const jobShapesXml: string[] = [];
+    const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
+
+    for (const inst of orderedInstances) {
       // 1. Elementos de Grabado (Capa C00)
       for (const eng of inst.engraveItems) {
         if (eng.kind === 'vector_path' && eng.polylines && eng.polylines.length > 0) {
@@ -174,7 +184,7 @@ export function exportWorkbenchToLbrn2(
               job.yMm
             );
             if (xmlShape) {
-              shapesXml.push(xmlShape);
+              jobShapesXml.push(xmlShape);
               shapeCount++;
             }
           }
@@ -186,7 +196,7 @@ export function exportWorkbenchToLbrn2(
           const cx = roundMm(job.xMm + (eng.xMm ?? 0) + w / 2, 3);
           const cy = roundMm(job.yMm + (eng.yMm ?? 0) + h / 2, 3);
 
-          shapesXml.push(
+          jobShapesXml.push(
             [
               `  <Shape Type="Bitmap" CutIndex="${engraveLayer.cutIndex}" W="${w}" H="${h}" Data="${base64Data}">`,
               `    <XForm>1 0 0 1 ${cx} ${cy}</XForm>`,
@@ -207,7 +217,7 @@ export function exportWorkbenchToLbrn2(
           job.yMm
         );
         if (xmlShape) {
-          shapesXml.push(xmlShape);
+          jobShapesXml.push(xmlShape);
           shapeCount++;
         }
       }
@@ -222,10 +232,25 @@ export function exportWorkbenchToLbrn2(
           job.yMm
         );
         if (xmlShape) {
-          shapesXml.push(xmlShape);
+          jobShapesXml.push(xmlShape);
           shapeCount++;
         }
       }
+    }
+
+    if (useGroupedSequential && jobShapesXml.length > 0) {
+      shapesXml.push(
+        [
+          `  <Shape Type="Group">`,
+          `    <XForm>1 0 0 1 0 0</XForm>`,
+          `    <Children>`,
+          ...jobShapesXml,
+          `    </Children>`,
+          `  </Shape>`,
+        ].join('\n')
+      );
+    } else {
+      shapesXml.push(...jobShapesXml);
     }
   }
 
@@ -239,6 +264,8 @@ export function exportWorkbenchToLbrn2(
       .replace(/[^a-zA-Z0-9_-]+/g, '_')
       .replace(/^_+|_+$/g, '') || 'Mesa_Vank_9060';
 
+  const jobSequenceNote = visibleJobs.map((j, i) => `#${i + 1} ${j.name}`).join(' → ');
+
   const lbrn2Content = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<LightBurnProject AppVersion="1.4.00" FormatVersion="1" MaterialHeight="0" MirrorX="False" MirrorY="False">`,
@@ -249,15 +276,15 @@ export function exportWorkbenchToLbrn2(
     `    <Increment Value="1"/>`,
     `  </VariableText>`,
     `  <UIPrefs>`,
-    `    <Optimize_ByLayer Value="0"/>`,
-    `    <Optimize_ByGroup Value="-1"/>`,
+    `    <Optimize_ByLayer Value="${useGroupedSequential ? 0 : 1}"/>`,
+    `    <Optimize_ByGroup Value="${useGroupedSequential ? 1 : -1}"/>`,
     `    <Optimize_ByPriority Value="1"/>`,
     `    <Optimize_InnerToOuter Value="${config.optimizeInsideOut ? 1 : 0}"/>`,
     `  </UIPrefs>`,
     ...cutSettingsXml,
     ...shapesXml,
     `  <Notes ShowOnLoad="0" Notes="${xmlEscape(
-      `Generado por Astra Studio — Mesa Vank 9060 (${config.sheetWidthMm}x${config.sheetHeightMm} mm) — ${report.totalPieces} piezas en ${report.totalJobs} trabajo(s).`
+      `Generado por Astra Studio — Mesa Vank 9060 (${config.sheetWidthMm}x${config.sheetHeightMm} mm) — ${report.totalPieces} piezas en ${report.totalJobs} trabajo(s). Orden: ${jobSequenceNote || 'Único'}.`
     )}"/>`,
     `</LightBurnProject>`,
   ].join('\n');

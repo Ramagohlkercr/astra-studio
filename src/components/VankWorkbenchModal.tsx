@@ -83,7 +83,9 @@ import {
   createWorkbenchJobFromOrder,
   createWorkbenchJobFromUploadedLogo,
   fillLastRowFreeSlotsInWorkbench,
+  reorderWorkbenchJob,
   simulateWorkbenchToolpath,
+  sortWorkbenchJobsBySpatialOrder,
   syncLayersWithMaterialProfile,
   updateWorkbenchJobDesignAndQuantity,
   validateWorkbenchState,
@@ -103,8 +105,10 @@ import {
   SavedMaterialLibraryEntry,
   StartFromMode,
   WorkbenchConfig,
+  WorkbenchExecutionSequenceMode,
   WorkbenchJobItem,
   WorkbenchLayerConfig,
+  WorkbenchTravelOrder,
 } from '../core/workbench/workbenchTypes';
 
 interface VankWorkbenchModalProps {
@@ -319,20 +323,23 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     return () => window.clearInterval(interval);
   }, [isPlayingSim]);
 
-  // Calcular posición instantánea del cabezal láser durante la simulación
-  const simulatedLaserHead = useMemo(() => {
-    if (simulation.segments.length === 0) {
-      return validation.jobOriginPointMm;
-    }
+  // Segmento activo y posición instantánea del cabezal láser durante la simulación
+  const activeSimulatedSegment = useMemo(() => {
+    if (simulation.segments.length === 0) return null;
     const targetTime = (simProgress / 100) * simulation.totalDurationSec;
-    const activeSeg =
+    return (
       simulation.segments.find(
         (s) => targetTime >= s.startTimeSec && targetTime <= s.endTimeSec
-      ) ?? simulation.segments[simulation.segments.length - 1];
+      ) ?? simulation.segments[simulation.segments.length - 1]
+    );
+  }, [simulation, simProgress]);
 
+  const simulatedLaserHead = useMemo(() => {
+    const activeSeg = activeSimulatedSegment;
     if (!activeSeg || activeSeg.points.length === 0) {
       return validation.jobOriginPointMm;
     }
+    const targetTime = (simProgress / 100) * simulation.totalDurationSec;
     const ratio =
       activeSeg.durationSec > 0
         ? Math.max(0, Math.min(1, (targetTime - activeSeg.startTimeSec) / activeSeg.durationSec))
@@ -342,7 +349,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       Math.floor(ratio * activeSeg.points.length)
     );
     return activeSeg.points[ptIdx];
-  }, [simulation, simProgress, validation.jobOriginPointMm]);
+  }, [activeSimulatedSegment, simulation.totalDurationSec, simProgress, validation.jobOriginPointMm]);
 
   // Activar medida real del Rollo Ecocuero 73 cm x 5 m y optimizar tirada
   const handleApplyEcocueroRoll73cm = () => {
@@ -623,6 +630,27 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     if (selectedJobId === id) {
       setSelectedJobId(next[0]?.id ?? null);
     }
+  };
+
+  const handleMoveJob = (id: string, direction: 'up' | 'down') => {
+    const reordered = reorderWorkbenchJob(workbenchJobs, id, direction);
+    const useZeroWaste =
+      workbenchConfig.packingMode === 'continuous_zero_waste' ||
+      workbenchConfig.isRollMaterial ||
+      isEco;
+    const arranged = autoArrangeWorkbenchJobs(
+      reordered,
+      workbenchConfig,
+      workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+      useZeroWaste
+    );
+    onUpdateJobs(arranged);
+  };
+
+  const handleSortJobsBySpatialOrder = () => {
+    const sorted = sortWorkbenchJobsBySpatialOrder(workbenchJobs);
+    onUpdateJobs(sorted);
+    onNotify('Cola de corte ordenada de arriba hacia abajo e izquierda a derecha.');
   };
 
   const handleUpdateSelectedJob = (patch: Partial<WorkbenchJobItem>) => {
@@ -1638,6 +1666,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     aria-label="Progreso de simulación láser"
                     className="w-14 accent-cyan-400 cursor-pointer"
                   />
+                  {activeSimulatedSegment?.jobIndex !== undefined && (
+                    <span className="text-[10px] font-mono text-amber-300 px-1 truncate max-w-[120px]">
+                      #{activeSimulatedSegment.jobIndex + 1} · {activeSimulatedSegment.layerCode}
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -2956,7 +2989,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 <div className="flex items-center gap-1.5">
                   {rollMetrics.savedRollLengthCm > 0 && (
                     <span className="text-[10px] font-mono bg-emerald-500/15 px-2 py-0.5 rounded-md text-emerald-300 border border-emerald-500/30 font-semibold">
-                      Ahorro: -{rollMetrics.savedRollLengthCm} cm
+                      Ahorro: {rollMetrics.savedRollLengthCm} cm
                     </span>
                   )}
                   <span className="text-[10px] font-mono text-slate-400">
@@ -3080,8 +3113,96 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   className="py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] flex items-center justify-center gap-1.5 disabled:opacity-40 shrink-0"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>Optimizar 73 cm</span>
+                  <span>Optimizar {Math.round(workbenchConfig.sheetWidthMm / 10)} cm</span>
                 </button>
+              </div>
+
+              {/* Secuencia multi-archivo y sentido ordenado de corte */}
+              <div className="p-2 rounded-lg bg-slate-950/75 border border-slate-800/80 space-y-1.5">
+                <div className="grid grid-cols-2 gap-1.5">
+                  <label className="block">
+                    <span className="text-[10px] text-cyan-300 font-semibold block mb-0.5">
+                      Secuencia de archivos
+                    </span>
+                    <select
+                      aria-label="Secuencia de corte con varios archivos"
+                      value={workbenchConfig.executionSequenceMode ?? 'sequential_per_job'}
+                      onChange={(e) =>
+                        onUpdateConfig({
+                          ...workbenchConfig,
+                          executionSequenceMode: e.target.value as WorkbenchExecutionSequenceMode,
+                        })
+                      }
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-white"
+                    >
+                      <option value="sequential_per_job">
+                        Trabajo #1 completo → #2 → #3
+                      </option>
+                      <option value="global_by_layer">
+                        Global por capa (C00 → C01 → C02)
+                      </option>
+                    </select>
+                  </label>
+
+                  <label className="block">
+                    <span className="text-[10px] text-amber-300 font-semibold block mb-0.5">
+                      Sentido de recorrido
+                    </span>
+                    <select
+                      aria-label="Sentido ordenado del cabezal láser"
+                      value={workbenchConfig.travelOrder ?? 'zigzag_rows'}
+                      onChange={(e) =>
+                        onUpdateConfig({
+                          ...workbenchConfig,
+                          travelOrder: e.target.value as WorkbenchTravelOrder,
+                        })
+                      }
+                      className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-white"
+                    >
+                      <option value="zigzag_rows">
+                        Serpenteo ordenado (ZigZag)
+                      </option>
+                      <option value="left_to_right">
+                        Filas estrictas Izq → Der
+                      </option>
+                      <option value="top_to_bottom">
+                        Columnas Arriba ↔ Abajo
+                      </option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 text-[10px]">
+                  <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={workbenchConfig.preserveJobSequenceInNesting ?? false}
+                      onChange={(e) =>
+                        onUpdateConfig({
+                          ...workbenchConfig,
+                          preserveJobSequenceInNesting: e.target.checked,
+                        })
+                      }
+                      className="accent-cyan-400"
+                    />
+                    <span>Bloquear orden #1 → #2 → #3 al optimizar</span>
+                  </label>
+
+                  {rollMetrics.sheetPassCount !== undefined && rollMetrics.usedLengthMm > 0 && (
+                    <span
+                      className={`font-mono px-1.5 py-0.5 rounded border ${
+                        rollMetrics.exceedsSingleBedPass
+                          ? 'bg-amber-950/60 border-amber-600/60 text-amber-300'
+                          : 'bg-emerald-950/50 border-emerald-700/50 text-emerald-300'
+                      }`}
+                    >
+                      {rollMetrics.sheetPassCount} tirada{rollMetrics.sheetPassCount > 1 ? 's' : ''} ·{' '}
+                      {rollMetrics.exceedsSingleBedPass
+                        ? `supera 60 cm`
+                        : `${rollMetrics.remainingInCurrentPassCm ?? 0} cm libres en mesa`}
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Combinar también desde biblioteca de pedidos guardados */}
@@ -3106,9 +3227,23 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </div>
             </div>
 
-            {/* Lista de trabajos / logos en la tirada actual + Editor individual de medida y cantidad */}
+            {/* Lista de trabajos / logos en la tirada actual + Orden de corte + Editor individual */}
             {workbenchJobs.length > 0 && (
               <div className="space-y-2">
+                {workbenchJobs.length > 1 && (
+                  <div className="flex items-center justify-between text-[10px] text-slate-400 px-0.5">
+                    <span>
+                      Orden de ejecución ({workbenchJobs.length} archivos en tirada):
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleSortJobsBySpatialOrder}
+                      className="text-cyan-300 hover:text-cyan-200 font-semibold"
+                    >
+                      Ordenar por posición ⇅
+                    </button>
+                  </div>
+                )}
                 <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
                   {workbenchJobs.map((job, idx) => (
                     <div
@@ -3121,18 +3256,48 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       }`}
                     >
                       <div className="truncate pr-2">
-                        <span className="font-mono text-[10px] text-amber-400 mr-1.5">
+                        <span className="font-mono text-[10px] text-amber-400 mr-1.5 font-bold">
                           #{idx + 1}
                         </span>
                         <span className="font-semibold">{job.name}</span>
                         <span className="text-[10px] text-cyan-300 font-mono ml-2">
-                          {job.labelDesign.widthMm}×{job.labelDesign.heightMm} mm
+                          {job.labelDesign.widthMm}×{job.labelDesign.heightMm}mm
                         </span>
                         <span className="text-[10px] text-slate-400 font-mono ml-1.5">
-                          ({job.columns} col × {job.rows} fil)
+                          ({job.pieceCount}u · {job.blockRotationDeg}°)
                         </span>
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        {workbenchJobs.length > 1 && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveJob(job.id, 'up');
+                              }}
+                              className="p-1 text-slate-400 hover:text-cyan-300 disabled:opacity-25"
+                              title="Subir en orden de corte"
+                              aria-label={`Subir trabajo ${job.name}`}
+                            >
+                              <ArrowUp className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === workbenchJobs.length - 1}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveJob(job.id, 'down');
+                              }}
+                              className="p-1 text-slate-400 hover:text-cyan-300 disabled:opacity-25"
+                              title="Bajar en orden de corte"
+                              aria-label={`Bajar trabajo ${job.name}`}
+                            >
+                              <ArrowDown className="w-3 h-3" />
+                            </button>
+                          </>
+                        )}
                         <button
                           type="button"
                           onClick={(e) => {

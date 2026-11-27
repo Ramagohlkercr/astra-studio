@@ -10,7 +10,10 @@
  */
 
 import { roundMm } from '../geometry/geometryEngine';
-import { validateWorkbenchState } from './workbenchEngine';
+import {
+  sortInstancesInTravelOrder,
+  validateWorkbenchState,
+} from './workbenchEngine';
 import {
   WorkbenchConfig,
   WorkbenchJobItem,
@@ -262,56 +265,64 @@ export function compileWorkbenchToRuidaRd(
     emit([0xa8, ...encodeRuidaAbsCoordMm(xMm), ...encodeRuidaAbsCoordMm(yMm)]);
   };
 
-  let activeLayersCount = 0;
+  const emittedLayerCutIndices = new Set<number>();
+  const executionMode = config.executionSequenceMode ?? 'sequential_per_job';
+  const travelOrder = config.travelOrder ?? 'zigzag_rows';
 
-  for (const layer of sortedLayers) {
+  const emitJobLayerInRuida = (
+    job: WorkbenchJobItem,
+    layer: WorkbenchLayerConfig
+  ) => {
     const passes = Math.max(1, layer.passes);
-    let emittedInLayer = false;
+    const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
+    let emittedPreamble = false;
+
+    const ensurePreamble = () => {
+      if (!emittedPreamble) {
+        emitLayerPreamble(layer);
+        emittedPreamble = true;
+        emittedLayerCutIndices.add(layer.cutIndex);
+      }
+    };
 
     if (layer.role === 'ENGRAVE') {
-      for (const job of visibleJobs) {
-        for (const inst of job.instances) {
-          if (inst.engraveItems.length === 0) continue;
-          if (!emittedInLayer) {
-            emitLayerPreamble(layer);
-            emittedInLayer = true;
-            activeLayersCount++;
-          }
+      for (const inst of orderedInstances) {
+        if (inst.engraveItems.length === 0) continue;
+        ensurePreamble();
 
-          for (let pass = 0; pass < passes; pass++) {
-            for (const eng of inst.engraveItems) {
-              if (eng.kind === 'vector_path' && eng.polylines && eng.polylines.length > 0) {
-                for (const poly of eng.polylines) {
-                  if (poly.points.length < 2) continue;
-                  const p0 = poly.points[0];
-                  emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-                  for (let i = 1; i < poly.points.length; i++) {
-                    const pt = poly.points[i];
-                    emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
-                  }
-                  if (poly.closed && poly.points.length > 2) {
-                    emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-                  }
+        for (let pass = 0; pass < passes; pass++) {
+          for (const eng of inst.engraveItems) {
+            if (eng.kind === 'vector_path' && eng.polylines && eng.polylines.length > 0) {
+              for (const poly of eng.polylines) {
+                if (poly.points.length < 2) continue;
+                const p0 = poly.points[0];
+                emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
+                for (let i = 1; i < poly.points.length; i++) {
+                  const pt = poly.points[i];
+                  emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
                 }
-              } else {
-                // Barrido raster dentro de la caja del elemento
-                const bb = eng.boundingBox;
-                const minX = roundMm(job.xMm + bb.minX);
-                const maxX = roundMm(job.xMm + bb.maxX);
-                const minY = roundMm(job.yMm + bb.minY);
-                const maxY = roundMm(job.yMm + bb.maxY);
-                const interval = Math.max(0.05, layer.lineIntervalMm || 0.1);
-                const linesCount = Math.max(1, Math.min(400, Math.ceil((maxY - minY) / interval)));
+                if (poly.closed && poly.points.length > 2) {
+                  emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
+                }
+              }
+            } else {
+              // Barrido raster dentro de la caja del elemento
+              const bb = eng.boundingBox;
+              const minX = roundMm(job.xMm + bb.minX);
+              const maxX = roundMm(job.xMm + bb.maxX);
+              const minY = roundMm(job.yMm + bb.minY);
+              const maxY = roundMm(job.yMm + bb.maxY);
+              const interval = Math.max(0.05, layer.lineIntervalMm || 0.1);
+              const linesCount = Math.max(1, Math.min(400, Math.ceil((maxY - minY) / interval)));
 
-                for (let row = 0; row <= linesCount; row++) {
-                  const y = roundMm(minY + ((maxY - minY) * row) / Math.max(1, linesCount));
-                  if (row % 2 === 0) {
-                    emitMoveAbs(minX, y);
-                    emitCutAbs(maxX, y);
-                  } else {
-                    emitMoveAbs(maxX, y);
-                    emitCutAbs(minX, y);
-                  }
+              for (let row = 0; row <= linesCount; row++) {
+                const y = roundMm(minY + ((maxY - minY) * row) / Math.max(1, linesCount));
+                if (row % 2 === 0) {
+                  emitMoveAbs(minX, y);
+                  emitCutAbs(maxX, y);
+                } else {
+                  emitMoveAbs(maxX, y);
+                  emitCutAbs(minX, y);
                 }
               }
             }
@@ -319,50 +330,55 @@ export function compileWorkbenchToRuidaRd(
         }
       }
     } else if (layer.role === 'HOLES') {
-      for (const job of visibleJobs) {
-        for (const inst of job.instances) {
-          for (const hole of inst.holeContours) {
-            if (hole.points.length < 2) continue;
-            if (!emittedInLayer) {
-              emitLayerPreamble(layer);
-              emittedInLayer = true;
-              activeLayersCount++;
-            }
-            for (let pass = 0; pass < passes; pass++) {
-              const p0 = hole.points[0];
-              emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-              for (let i = 1; i < hole.points.length; i++) {
-                const pt = hole.points[i];
-                emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
-              }
-              emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-            }
-          }
-        }
-      }
-    } else if (layer.role === 'CUT') {
-      for (const job of visibleJobs) {
-        for (const inst of job.instances) {
-          const contour = inst.cutContour;
-          if (!contour || contour.points.length < 2) continue;
-          if (!emittedInLayer) {
-            emitLayerPreamble(layer);
-            emittedInLayer = true;
-            activeLayersCount++;
-          }
+      for (const inst of orderedInstances) {
+        for (const hole of inst.holeContours) {
+          if (hole.points.length < 2) continue;
+          ensurePreamble();
           for (let pass = 0; pass < passes; pass++) {
-            const p0 = contour.points[0];
+            const p0 = hole.points[0];
             emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-            for (let i = 1; i < contour.points.length; i++) {
-              const pt = contour.points[i];
+            for (let i = 1; i < hole.points.length; i++) {
+              const pt = hole.points[i];
               emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
             }
             emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
           }
         }
       }
+    } else if (layer.role === 'CUT') {
+      for (const inst of orderedInstances) {
+        const contour = inst.cutContour;
+        if (!contour || contour.points.length < 2) continue;
+        ensurePreamble();
+        for (let pass = 0; pass < passes; pass++) {
+          const p0 = contour.points[0];
+          emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
+          for (let i = 1; i < contour.points.length; i++) {
+            const pt = contour.points[i];
+            emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
+          }
+          emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
+        }
+      }
+    }
+  };
+
+  if (executionMode === 'sequential_per_job') {
+    // Ejecutar Trabajo #1 completo (C00 Grabado -> C01 Agujeros -> C02 Corte), y recién al terminar seguir con #2, #3...
+    for (const job of visibleJobs) {
+      for (const layer of sortedLayers) {
+        emitJobLayerInRuida(job, layer);
+      }
+    }
+  } else {
+    for (const layer of sortedLayers) {
+      for (const job of visibleJobs) {
+        emitJobLayerInRuida(job, layer);
+      }
     }
   }
+
+  const activeLayersCount = emittedLayerCutIndices.size;
 
   // Retornar cabezal al origen del trabajo y cerrar trama Ruida (D7 = EOF)
   const origin = report.jobOriginPointMm;

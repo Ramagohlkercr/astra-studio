@@ -52,6 +52,10 @@ export type JobOriginAnchor =
 
 export type WorkbenchPackingMode = 'continuous_zero_waste' | 'rectangular_blocks';
 
+export type WorkbenchExecutionSequenceMode = 'sequential_per_job' | 'global_by_layer';
+
+export type WorkbenchTravelOrder = 'zigzag_rows' | 'left_to_right' | 'top_to_bottom';
+
 export type MaterialSavingPreset =
   | 'extreme_zero_waste'
   | 'compact_safe'
@@ -307,6 +311,12 @@ export interface WorkbenchConfig {
   sheetSafetyMarginMm: Millimeters;
   /** Optimizar orden de corte: siempre interior antes de exterior */
   optimizeInsideOut: boolean;
+  /** Secuencia de ejecución con varios archivos: terminar trabajo #1 completo antes de pasar al #2, o global por capa */
+  executionSequenceMode?: WorkbenchExecutionSequenceMode;
+  /** Sentido ordenado de barrido dentro de cada trabajo (serpenteo zigzag, izq→der o arriba→abajo) */
+  travelOrder?: WorkbenchTravelOrder;
+  /** Al optimizar el espacio, respetar el orden #1 → #2 → #3 definido por el operador */
+  preserveJobSequenceInNesting?: boolean;
   /** Dirección IP de la controladora Ruida RDC8445S en la red local */
   ruidaIpAddress: string;
   /** Puerto UDP de la Ruida (estándar 50200) */
@@ -356,6 +366,10 @@ export interface EcocueroRollMetrics {
   usedPiecesAreaCm2?: number;
   /** Retazo rectangular limpio al costado derecho si hay espacio reutilizable */
   reusableSideRemnantMm?: { widthMm: Millimeters; heightMm: Millimeters } | null;
+  /** Cantidad de pasadas físicas de mesa Vank (máx 600 mm por pasada) requeridas por esta tirada */
+  sheetPassCount?: number;
+  /** Centímetros libres restantes dentro de la pasada de mesa actual de 60 cm antes de tener que avanzar el rollo */
+  remainingInCurrentPassCm?: number;
 }
 
 export interface WorkbenchValidationIssue {
@@ -383,6 +397,10 @@ export interface ToolpathSegment {
   kind: 'rapid_move' | 'engrave_scan' | 'hole_cut' | 'outer_cut';
   layerCode: string;
   hexColor: string;
+  /** Índice secuencial del trabajo (0-based) e ID para auditar ejecución ordenada trabajo por trabajo */
+  jobIndex?: number;
+  jobId?: string;
+  jobName?: string;
   fromX: Millimeters;
   fromY: Millimeters;
   toX: Millimeters;
@@ -534,6 +552,9 @@ export function createDefaultWorkbenchConfig(
     sheetOffsetYMm: 0,
     sheetSafetyMarginMm: 5,
     optimizeInsideOut: true,
+    executionSequenceMode: 'sequential_per_job',
+    travelOrder: 'zigzag_rows',
+    preserveJobSequenceInNesting: false,
     ruidaIpAddress: VANK_9060_DEFAULT_IP,
     ruidaPort: 50200,
     ruidaJobName: 'ASTRA01',

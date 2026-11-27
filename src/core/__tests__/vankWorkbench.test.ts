@@ -40,7 +40,9 @@ import {
   createWorkbenchJobFromUploadedLogo,
   evaluateBalancedLayoutPresets,
   fillLastRowFreeSlotsInWorkbench,
+  reorderWorkbenchJob,
   simulateWorkbenchToolpath,
+  sortInstancesInTravelOrder,
   updateWorkbenchJobDesignAndQuantity,
   updateWorkbenchJobGrid,
   validateWorkbenchState,
@@ -787,5 +789,143 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(metrics.stripAreaEfficiencyPercent).toBeGreaterThan(75);
     expect(metrics.wastePercent).toBeDefined();
     expect(metrics.wasteAreaCm2).toBeDefined();
+  });
+
+  it('17. Tirada secuencial multi-archivo (Trabajo #1 completo → #2 → #3): termina C00+C01+C02 del primer trabajo antes de iniciar el siguiente en Simulación, Ruida .RD y LightBurn .lbrn2', () => {
+    const ecocueroMat = INITIAL_MATERIALS_CATALOG[0];
+    const baseCfg = createDefaultWorkbenchConfig(730, 600, ecocueroMat);
+    const configuredCfg = {
+      ...baseCfg,
+      executionSequenceMode: 'sequential_per_job' as const,
+      travelOrder: 'zigzag_rows' as const,
+      layers: baseCfg.layers.map((l) => ({
+        ...l,
+        speedMmPerSec: l.role === 'ENGRAVE' ? 220 : 25,
+        maxPowerPercent: l.role === 'ENGRAVE' ? 25 : 65,
+        minPowerPercent: l.role === 'ENGRAVE' ? 20 : 55,
+      })),
+    };
+
+    const sampleElement = sampleOrder.labelDesign.elements[0];
+    const job1 = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Primero_Alfa',
+      element: sampleElement,
+      widthMm: 30,
+      heightMm: 15,
+      holePreset: 'two_horizontal',
+      quantity: 4,
+      existingJobs: [],
+      config: configuredCfg,
+    });
+    const job2 = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Segundo_Beta',
+      element: sampleElement,
+      widthMm: 25,
+      heightMm: 12,
+      holePreset: 'two_horizontal',
+      quantity: 4,
+      existingJobs: [job1],
+      config: configuredCfg,
+    });
+    const job3 = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Tercero_Gamma',
+      element: sampleElement,
+      widthMm: 20,
+      heightMm: 10,
+      holePreset: 'two_horizontal',
+      quantity: 3,
+      existingJobs: [job1, job2],
+      config: configuredCfg,
+    });
+
+    const arranged = autoArrangeWorkbenchJobs([job1, job2, job3], configuredCfg, 2, true);
+
+    // 1. Verificar en Simulación de trayectoria que los índices de trabajo son estrictamente monótonos (#0 -> #1 -> #2)
+    const sim = simulateWorkbenchToolpath(arranged, configuredCfg);
+    const nonRapidJobIndices = sim.segments
+      .filter((s) => s.kind !== 'rapid_move' && s.jobIndex !== undefined)
+      .map((s) => s.jobIndex as number);
+
+    expect(nonRapidJobIndices.length).toBeGreaterThan(10);
+    for (let i = 1; i < nonRapidJobIndices.length; i++) {
+      expect(nonRapidJobIndices[i]).toBeGreaterThanOrEqual(nonRapidJobIndices[i - 1]);
+    }
+    // Dentro de Trabajo #1, primero ocurre Grabado (engrave_scan), luego Agujeros (hole_cut), luego Corte (outer_cut)
+    const job0Kinds = sim.segments
+      .filter((s) => s.jobIndex === 0 && s.kind !== 'rapid_move')
+      .map((s) => s.kind);
+    const firstHole0 = job0Kinds.indexOf('hole_cut');
+    const firstCut0 = job0Kinds.indexOf('outer_cut');
+    expect(job0Kinds[0]).toBe('engrave_scan');
+    expect(firstHole0).toBeGreaterThan(0);
+    expect(firstCut0).toBeGreaterThan(firstHole0);
+
+    // 2. Verificar en Ruida .RD binario que CA 02 <layer> cambia por cada trabajo completo (0 -> 1 -> 2, luego 0 -> 1 -> 2...)
+    const rd = compileWorkbenchToRuidaRd(arranged, configuredCfg);
+    const layerTransitions: number[] = [];
+    for (let i = 0; i < rd.rawUnscrambledBytes.length - 2; i++) {
+      if (
+        rd.rawUnscrambledBytes[i] === 0xca &&
+        rd.rawUnscrambledBytes[i + 1] === 0x02
+      ) {
+        layerTransitions.push(rd.rawUnscrambledBytes[i + 2]);
+      }
+    }
+    expect(layerTransitions).toEqual([0, 1, 2, 0, 1, 2, 0, 1, 2]);
+
+    // 3. Verificar en LightBurn (.lbrn2) agrupación secuencial y Optimize_ByGroup=1
+    const lbrn2 = exportWorkbenchToLbrn2(arranged, configuredCfg, 'Multi_Ordenado');
+    expect(lbrn2.lbrn2Content).toContain('<Optimize_ByGroup Value="1"/>');
+    expect(lbrn2.lbrn2Content).toContain('<Shape Type="Group">');
+    expect(lbrn2.lbrn2Content).toContain('Orden: #1 Primero_Alfa');
+  });
+
+  it('18. Sentido de recorrido ordenado (ZigZag / Izq→Der), reordenamiento de trabajos y optimización con bloqueo de orden', () => {
+    const ecocueroMat = INITIAL_MATERIALS_CATALOG[0];
+    const cfg = createDefaultWorkbenchConfig(730, 600, ecocueroMat);
+    const sampleElement = sampleOrder.labelDesign.elements[0];
+
+    const jobA = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Pedido_A',
+      element: sampleElement,
+      widthMm: 100,
+      heightMm: 50,
+      quantity: 6,
+      existingJobs: [],
+      config: cfg,
+    });
+    const jobB = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Pedido_B',
+      element: sampleElement,
+      widthMm: 180,
+      heightMm: 40,
+      quantity: 4,
+      existingJobs: [jobA],
+      config: cfg,
+    });
+
+    // ZigZag serpenteo en jobB (2 filas de 2 piezas aprox): fila 0 izq->der, fila 1 der->izq
+    const zigzag = sortInstancesInTravelOrder(jobA.instances, 'zigzag_rows');
+    const row0Y = zigzag[0].localYMm;
+    const row0 = zigzag.filter((i) => Math.abs(i.localYMm - row0Y) < 1);
+    const row1 = zigzag.filter((i) => Math.abs(i.localYMm - row0Y) >= 1);
+    if (row0.length > 1 && row1.length > 1) {
+      expect(row0[1].localXMm).toBeGreaterThan(row0[0].localXMm);
+      expect(row1[1].localXMm).toBeLessThan(row1[0].localXMm);
+    }
+
+    // Reordenar cola manualmente: subir Pedido_B al #1
+    const reordered = reorderWorkbenchJob([jobA, jobB], jobB.id, 'up');
+    expect(reordered[0].id).toBe(jobB.id);
+    expect(reordered[1].id).toBe(jobA.id);
+
+    // Optimizar respetando orden exacto (preserveOrder: true) mantiene #1 Pedido_B y #2 Pedido_A
+    const { jobs: optPreserved } = applyExtremeMaterialSavingToWorkbench(
+      reordered,
+      cfg,
+      { preserveOrder: true }
+    );
+    expect(optPreserved[0].id).toBe(jobB.id);
+    expect(optPreserved[1].id).toBe(jobA.id);
   });
 });

@@ -37,6 +37,7 @@ import {
   WorkbenchLayerConfig,
   WorkbenchPlacedInstance,
   WorkbenchSimulationResult,
+  WorkbenchTravelOrder,
   WorkbenchValidationIssue,
   WorkbenchValidationReport,
 } from './workbenchTypes';
@@ -787,76 +788,116 @@ export function autoArrangeWorkbenchJobs(
         return rawJob;
       }
 
-      // Evaluar dimensiones de una pieza del trabajo
-      const sample = compileLabelGeometry(rawJob.labelDesign, {
-        offsetXMm: 0,
-        offsetYMm: 0,
-        rotated90: rawJob.blockRotationDeg === 90,
-      });
-      const pieceW = sample.effectiveCutWidthMm;
-      const pieceH = sample.effectiveCutHeightMm;
       const gapX = Math.max(0, rawJob.gapXMm);
       const gapY = Math.max(0, rawJob.gapYMm);
+      const candidateRotations: (0 | 90)[] =
+        config.autoRotateForMinRoll && !rawJob.labelDesign.fold
+          ? [0, 90]
+          : [rawJob.blockRotationDeg];
 
-      // Verificar si al menos 1 etiqueta de este trabajo entra en el hueco restante de la fila actual
-      if (currentIndentMm > 0 && currentIndentMm + pieceW > usableWidth + 0.01) {
-        // No entra ni 1 pieza en el resto de la fila: avanzar a una fila nueva limpia en X = 0
-        currentShelfY = roundMm(
-          currentShelfY + Math.max(currentShelfMaxHeight, pieceH) + Math.max(gapY, interJobGapMm)
+      let bestPlacement: {
+        placed: WorkbenchJobItem;
+        shelfY: number;
+        indentMm: number;
+        shelfMaxH: number;
+        bottomY: number;
+        wasteScore: number;
+      } | null = null;
+
+      for (const rotDeg of candidateRotations) {
+        let tryShelfY = currentShelfY;
+        let tryIndent = currentIndentMm;
+        let tryShelfMaxH = currentShelfMaxHeight;
+
+        const sample = compileLabelGeometry(rawJob.labelDesign, {
+          offsetXMm: 0,
+          offsetYMm: 0,
+          rotated90: rotDeg === 90,
+        });
+        const pieceW = sample.effectiveCutWidthMm;
+        const pieceH = sample.effectiveCutHeightMm;
+
+        // Verificar si al menos 1 etiqueta de este trabajo entra en el hueco restante de la fila actual
+        if (tryIndent > 0 && tryIndent + pieceW > usableWidth + 0.01) {
+          // No entra ni 1 pieza en el resto de la fila: avanzar a una fila nueva limpia en X = 0
+          tryShelfY = roundMm(
+            tryShelfY + Math.max(tryShelfMaxH, pieceH) + Math.max(gapY, interJobGapMm)
+          );
+          tryIndent = 0;
+          tryShelfMaxH = 0;
+        }
+
+        const rebuilt = updateWorkbenchJobDesignAndQuantity(
+          rawJob,
+          {
+            pieceCount: rawJob.pieceCount,
+            blockRotationDeg: rotDeg,
+            autoFitColumnsToRoll: true,
+            firstRowIndentMm: tryIndent,
+            firstRowShelfHeightMm: tryShelfMaxH,
+          },
+          config
         );
-        currentIndentMm = 0;
-        currentShelfMaxHeight = 0;
+
+        const placed: WorkbenchJobItem = {
+          ...rebuilt,
+          xMm: startX,
+          yMm: tryShelfY,
+        };
+
+        const lastRowLocalY = rebuilt.lastRowLocalYMm ?? 0;
+        const lastRowEndX = rebuilt.lastRowEndXMm ?? rebuilt.widthMm;
+        const stayedInsidePocket =
+          tryIndent > 0 && lastRowLocalY + pieceH <= tryShelfMaxH + 0.01;
+
+        let nextShelfY = tryShelfY;
+        let nextShelfMaxH = tryShelfMaxH;
+
+        if (stayedInsidePocket) {
+          // Sigue dentro del mismo bolsillo lateral compartido (una o más mini-filas dentro de currentShelfMaxHeight)
+          nextShelfMaxH = Math.max(pieceH, roundMm(tryShelfMaxH - lastRowLocalY));
+          nextShelfY = roundMm(tryShelfY + lastRowLocalY);
+        } else if (lastRowLocalY > 0) {
+          // El trabajo envolvió hacia una o más filas nuevas debajo de currentShelfY
+          nextShelfY = roundMm(tryShelfY + lastRowLocalY);
+          nextShelfMaxH = pieceH;
+        } else {
+          // El trabajo entero quedó en la misma fila compartida
+          nextShelfMaxH = Math.max(tryShelfMaxH, pieceH);
+        }
+
+        let nextIndent = roundMm(lastRowEndX + Math.max(gapX, interJobGapMm));
+        if (nextIndent + pieceW > usableWidth + 0.01) {
+          nextShelfY = roundMm(nextShelfY + nextShelfMaxH + Math.max(gapY, interJobGapMm));
+          nextIndent = 0;
+          nextShelfMaxH = 0;
+        }
+
+        const bottomY = roundMm(placed.yMm + placed.heightMm);
+        const wasteScore = roundMm(Math.max(0, usableWidth - lastRowEndX));
+
+        if (
+          !bestPlacement ||
+          bottomY < bestPlacement.bottomY - 0.1 ||
+          (Math.abs(bottomY - bestPlacement.bottomY) <= 0.1 &&
+            wasteScore < bestPlacement.wasteScore - 0.5)
+        ) {
+          bestPlacement = {
+            placed,
+            shelfY: nextShelfY,
+            indentMm: nextIndent,
+            shelfMaxH: nextShelfMaxH,
+            bottomY,
+            wasteScore,
+          };
+        }
       }
 
-      const rebuilt = updateWorkbenchJobDesignAndQuantity(
-        rawJob,
-        {
-          pieceCount: rawJob.pieceCount,
-          autoFitColumnsToRoll: true,
-          firstRowIndentMm: currentIndentMm,
-          firstRowShelfHeightMm: currentShelfMaxHeight,
-        },
-        config
-      );
-
-      const placed: WorkbenchJobItem = {
-        ...rebuilt,
-        xMm: startX,
-        yMm: currentShelfY,
-      };
-
-      const lastRowLocalY = rebuilt.lastRowLocalYMm ?? 0;
-      const lastRowEndX = rebuilt.lastRowEndXMm ?? rebuilt.widthMm;
-      const stayedInsidePocket =
-        currentIndentMm > 0 &&
-        lastRowLocalY + pieceH <= currentShelfMaxHeight + 0.01;
-
-      if (stayedInsidePocket) {
-        // Sigue dentro del mismo bolsillo lateral compartido (una o más mini-filas dentro de currentShelfMaxHeight)
-        currentShelfMaxHeight = Math.max(
-          pieceH,
-          roundMm(currentShelfMaxHeight - lastRowLocalY)
-        );
-        currentShelfY = roundMm(currentShelfY + lastRowLocalY);
-      } else if (lastRowLocalY > 0) {
-        // El trabajo envolvió hacia una o más filas nuevas debajo de currentShelfY
-        currentShelfY = roundMm(currentShelfY + lastRowLocalY);
-        currentShelfMaxHeight = pieceH;
-      } else {
-        // El trabajo entero quedó en la misma fila compartida
-        currentShelfMaxHeight = Math.max(currentShelfMaxHeight, pieceH);
-      }
-
-      currentIndentMm = roundMm(lastRowEndX + Math.max(gapX, interJobGapMm));
-      if (currentIndentMm + pieceW > usableWidth + 0.01) {
-        currentShelfY = roundMm(
-          currentShelfY + currentShelfMaxHeight + Math.max(gapY, interJobGapMm)
-        );
-        currentIndentMm = 0;
-        currentShelfMaxHeight = 0;
-      }
-
-      return placed;
+      if (!bestPlacement) return rawJob;
+      currentShelfY = bestPlacement.shelfY;
+      currentIndentMm = bestPlacement.indentMm;
+      currentShelfMaxHeight = bestPlacement.shelfMaxH;
+      return bestPlacement.placed;
     });
   }
 
@@ -916,14 +957,19 @@ export function autoArrangeWorkbenchJobs(
  */
 export function applyExtremeMaterialSavingToWorkbench(
   jobs: WorkbenchJobItem[],
-  config: WorkbenchConfig
+  config: WorkbenchConfig,
+  options?: { preserveOrder?: boolean }
 ): { config: WorkbenchConfig; jobs: WorkbenchJobItem[] } {
+  const preserveOrder =
+    options?.preserveOrder ?? config.preserveJobSequenceInNesting ?? false;
+
   const nextConfig: WorkbenchConfig = {
     ...config,
     sheetSafetyMarginMm: 2,
     packingMode: 'continuous_zero_waste',
     savingPreset: 'extreme_zero_waste',
     autoRotateForMinRoll: true,
+    preserveJobSequenceInNesting: preserveOrder,
   };
 
   const compactJobs = jobs.map((job) => {
@@ -948,8 +994,8 @@ export function applyExtremeMaterialSavingToWorkbench(
     );
   });
 
-  // Si hay múltiples trabajos distintos desbloqueados, probar ordenamiento por altura de pieza (FFD)
-  // frente al orden original y quedarse con el que consume menos rollo/plancha.
+  // Cuando el operador pide respetar el orden #1 → #2 → #3, optimizar rotación 0°/90° y relleno continuo
+  // de bolsillos SIN alterar el orden secuencial de los archivos en la cola de corte.
   const unlockedVisibleCount = compactJobs.filter(
     (j) => j.visible && !j.locked
   ).length;
@@ -960,10 +1006,11 @@ export function applyExtremeMaterialSavingToWorkbench(
     true
   );
 
-  if (unlockedVisibleCount <= 1) {
+  if (preserveOrder || unlockedVisibleCount <= 1) {
     return { config: nextConfig, jobs: arrangedOriginal };
   }
 
+  // Si está habilitado reordenar por tamaño, probar altura descendente (FFD) frente al orden original.
   const tallestFirst = [...compactJobs].sort((a, b) => {
     if (!a.visible || a.locked || !b.visible || b.locked) return 0;
     const ah = a.blockRotationDeg === 90 ? a.labelDesign.widthMm : a.labelDesign.heightMm;
@@ -990,6 +1037,110 @@ export function applyExtremeMaterialSavingToWorkbench(
       : arrangedOriginal;
 
   return { config: nextConfig, jobs: arranged };
+}
+
+/**
+ * Reordena manualmente un trabajo dentro de la cola de corte (#1 -> #2 -> #3).
+ */
+export function reorderWorkbenchJob(
+  jobs: WorkbenchJobItem[],
+  jobId: string,
+  direction: 'up' | 'down' | 'top' | 'bottom'
+): WorkbenchJobItem[] {
+  const idx = jobs.findIndex((j) => j.id === jobId);
+  if (idx < 0) return jobs;
+  const copy = [...jobs];
+  const [item] = copy.splice(idx, 1);
+  if (direction === 'top') {
+    copy.unshift(item);
+  } else if (direction === 'bottom') {
+    copy.push(item);
+  } else if (direction === 'up') {
+    copy.splice(Math.max(0, idx - 1), 0, item);
+  } else {
+    copy.splice(Math.min(copy.length, idx + 1), 0, item);
+  }
+  return copy;
+}
+
+/**
+ * Ordena los trabajos automáticamente según su posición espacial en la plancha
+ * (arriba hacia abajo y, dentro de una misma fila, de izquierda a derecha) para mantener sentido lógico de corte.
+ */
+export function sortWorkbenchJobsBySpatialOrder(
+  jobs: WorkbenchJobItem[]
+): WorkbenchJobItem[] {
+  return [...jobs].sort((a, b) => {
+    const dy = a.yMm - b.yMm;
+    if (Math.abs(dy) > 3) return dy;
+    const ax = a.xMm + (a.firstRowIndentMm ?? 0);
+    const bx = b.xMm + (b.firstRowIndentMm ?? 0);
+    return ax - bx;
+  });
+}
+
+/**
+ * Ordena las instancias de un trabajo en sentido lógico de barrido láser:
+ * - 'zigzag_rows': arriba→abajo por filas, alternando izq→der y der→izq (mínimo viaje en vacío)
+ * - 'left_to_right': estrictamente por fila de izquierda a derecha
+ * - 'top_to_bottom': por columnas de izquierda a derecha, barriendo arriba↔abajo en serpenteo
+ */
+export function sortInstancesInTravelOrder(
+  instances: WorkbenchPlacedInstance[],
+  travelOrder: WorkbenchTravelOrder = 'zigzag_rows'
+): WorkbenchPlacedInstance[] {
+  if (instances.length <= 1) return instances;
+
+  if (travelOrder === 'top_to_bottom') {
+    const sortedByCol = [...instances].sort((a, b) => {
+      const dx = Math.round(a.localXMm * 2) - Math.round(b.localXMm * 2);
+      if (Math.abs(dx) > 4) return dx;
+      return a.localYMm - b.localYMm;
+    });
+    const cols: WorkbenchPlacedInstance[][] = [];
+    for (const inst of sortedByCol) {
+      const lastCol = cols[cols.length - 1];
+      if (!lastCol || Math.abs(lastCol[0].localXMm - inst.localXMm) > 2) {
+        cols.push([inst]);
+      } else {
+        lastCol.push(inst);
+      }
+    }
+    const ordered: WorkbenchPlacedInstance[] = [];
+    cols.forEach((col, cIdx) => {
+      const colSorted = [...col].sort((a, b) =>
+        cIdx % 2 === 0 ? a.localYMm - b.localYMm : b.localYMm - a.localYMm
+      );
+      ordered.push(...colSorted);
+    });
+    return ordered;
+  }
+
+  // Agrupar por filas (tolerancia 2 mm para compensar diferencias finas)
+  const sortedByRow = [...instances].sort((a, b) => {
+    const dy = a.localYMm - b.localYMm;
+    if (Math.abs(dy) > 2) return dy;
+    return a.localXMm - b.localXMm;
+  });
+  const rows: WorkbenchPlacedInstance[][] = [];
+  for (const inst of sortedByRow) {
+    const lastRow = rows[rows.length - 1];
+    if (!lastRow || Math.abs(lastRow[0].localYMm - inst.localYMm) > 2) {
+      rows.push([inst]);
+    } else {
+      lastRow.push(inst);
+    }
+  }
+
+  const ordered: WorkbenchPlacedInstance[] = [];
+  rows.forEach((row, rIdx) => {
+    const reverse = travelOrder === 'zigzag_rows' && rIdx % 2 === 1;
+    const rowSorted = [...row].sort((a, b) =>
+      reverse ? b.localXMm - a.localXMm : a.localXMm - b.localXMm
+    );
+    ordered.push(...rowSorted);
+  });
+  return ordered;
 }
 
 /**
@@ -1152,7 +1303,17 @@ export function computeEcocueroRollMetrics(
 
   const estimatedRunsPerRoll =
     usedLengthMm > 0 ? Math.floor(totalRollLengthMm / usedLengthMm) : 0;
-  const exceedsSingleBedPass = usedLengthMm > config.machineBedHeightMm + 0.01;
+  const bedPassHeightMm = Math.max(100, config.machineBedHeightMm || 600);
+  const exceedsSingleBedPass = usedLengthMm > bedPassHeightMm + 0.01;
+  const sheetPassCount =
+    usedLengthMm > 0 ? Math.max(1, Math.ceil(usedLengthMm / bedPassHeightMm)) : 0;
+  const remainderInPassMm =
+    usedLengthMm > 0
+      ? usedLengthMm <= bedPassHeightMm
+        ? bedPassHeightMm - usedLengthMm
+        : Math.max(0, sheetPassCount * bedPassHeightMm - usedLengthMm)
+      : bedPassHeightMm;
+  const remainingInCurrentPassCm = roundMm(remainderInPassMm / 10, 1);
 
   const wastePercent = roundMm(Math.max(0, 100 - stripAreaEfficiencyPercent), 1);
   const usedPiecesAreaCm2 = roundMm(totalPiecesAreaMm2 / 100, 1);
@@ -1198,6 +1359,8 @@ export function computeEcocueroRollMetrics(
     wasteAreaCm2,
     usedPiecesAreaCm2,
     reusableSideRemnantMm,
+    sheetPassCount,
+    remainingInCurrentPassCm,
   };
 }
 
@@ -2019,10 +2182,16 @@ export function simulateWorkbenchToolpath(
   const sortedLayers = [...config.layers]
     .filter((l) => l.outputEnabled)
     .sort((a, b) => a.priority - b.priority);
+  const executionMode = config.executionSequenceMode ?? 'sequential_per_job';
+  const travelOrder = config.travelOrder ?? 'zigzag_rows';
 
   let segCounter = 0;
 
-  const pushRapidMove = (targetX: Millimeters, targetY: Millimeters) => {
+  const pushRapidMove = (
+    targetX: Millimeters,
+    targetY: Millimeters,
+    jobMeta?: { jobIndex: number; jobId: string; jobName: string }
+  ) => {
     const dist = roundMm(Math.hypot(targetX - headX, targetY - headY));
     if (dist < 0.05) {
       headX = targetX;
@@ -2036,6 +2205,9 @@ export function simulateWorkbenchToolpath(
       kind: 'rapid_move',
       layerCode: 'G0',
       hexColor: '#38BDF8',
+      jobIndex: jobMeta?.jobIndex,
+      jobId: jobMeta?.jobId,
+      jobName: jobMeta?.jobName,
       fromX: headX,
       fromY: headY,
       toX: targetX,
@@ -2056,145 +2228,108 @@ export function simulateWorkbenchToolpath(
     rapidDurationSec += dur;
   };
 
-  for (const layer of sortedLayers) {
+  const emitJobLayerSegments = (
+    job: WorkbenchJobItem,
+    jobIndex: number,
+    layer: WorkbenchLayerConfig
+  ) => {
     const passes = Math.max(1, layer.passes);
+    const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
+    const jobMeta = { jobIndex, jobId: job.id, jobName: job.name };
 
     if (layer.role === 'ENGRAVE') {
       const speed =
         layer.speedMmPerSec && layer.speedMmPerSec > 0 ? layer.speedMmPerSec : 200;
       const interval = Math.max(0.04, layer.lineIntervalMm || 0.1);
 
-      for (const job of visibleJobs) {
-        for (const inst of job.instances) {
-          if (inst.engraveItems.length === 0) continue;
+      for (const inst of orderedInstances) {
+        if (inst.engraveItems.length === 0) continue;
 
-          let minX = Infinity;
-          let minY = Infinity;
-          let maxX = -Infinity;
-          let maxY = -Infinity;
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
 
-          for (const item of inst.engraveItems) {
-            minX = Math.min(minX, job.xMm + item.boundingBox.minX);
-            minY = Math.min(minY, job.yMm + item.boundingBox.minY);
-            maxX = Math.max(maxX, job.xMm + item.boundingBox.maxX);
-            maxY = Math.max(maxY, job.yMm + item.boundingBox.maxY);
-          }
-
-          if (!Number.isFinite(minX)) continue;
-
-          const scanWidth = Math.max(1, roundMm(maxX - minX));
-          const scanHeight = Math.max(0.5, roundMm(maxY - minY));
-          const realScanLines = Math.max(1, Math.ceil(scanHeight / interval));
-          const totalScanDist = roundMm(scanWidth * realScanLines * passes);
-          const turnaroundTime = realScanLines * 0.018 * passes;
-          const totalScanDur = Math.max(0.05, totalScanDist / speed + turnaroundTime);
-
-          pushRapidMove(roundMm(minX), roundMm(minY));
-
-          const visualRows = Math.min(8, Math.max(3, Math.ceil(scanHeight / 1.5)));
-          const pts: { x: Millimeters; y: Millimeters }[] = [{ x: roundMm(minX), y: roundMm(minY) }];
-          for (let r = 0; r < visualRows; r++) {
-            const y = roundMm(minY + (scanHeight * r) / Math.max(1, visualRows - 1));
-            if (r % 2 === 0) {
-              pts.push({ x: roundMm(minX), y });
-              pts.push({ x: roundMm(maxX), y });
-            } else {
-              pts.push({ x: roundMm(maxX), y });
-              pts.push({ x: roundMm(minX), y });
-            }
-          }
-
-          const lastPt = pts[pts.length - 1];
-          segCounter++;
-          segments.push({
-            id: `seg-eng-${segCounter}`,
-            kind: 'engrave_scan',
-            layerCode: layer.code,
-            hexColor: layer.hexColor,
-            fromX: roundMm(minX),
-            fromY: roundMm(minY),
-            toX: lastPt.x,
-            toY: lastPt.y,
-            points: pts,
-            distanceMm: totalScanDist,
-            durationSec: totalScanDur,
-            startTimeSec: elapsedSec,
-            endTimeSec: elapsedSec + totalScanDur,
-          });
-
-          headX = lastPt.x;
-          headY = lastPt.y;
-          elapsedSec += totalScanDur;
-          engraveDistanceMm = roundMm(engraveDistanceMm + totalScanDist);
-          engraveDurationSec += totalScanDur;
+        for (const item of inst.engraveItems) {
+          minX = Math.min(minX, job.xMm + item.boundingBox.minX);
+          minY = Math.min(minY, job.yMm + item.boundingBox.minY);
+          maxX = Math.max(maxX, job.xMm + item.boundingBox.maxX);
+          maxY = Math.max(maxY, job.yMm + item.boundingBox.maxY);
         }
+
+        if (!Number.isFinite(minX)) continue;
+
+        const scanWidth = Math.max(1, roundMm(maxX - minX));
+        const scanHeight = Math.max(0.5, roundMm(maxY - minY));
+        const realScanLines = Math.max(1, Math.ceil(scanHeight / interval));
+        const totalScanDist = roundMm(scanWidth * realScanLines * passes);
+        const turnaroundTime = realScanLines * 0.018 * passes;
+        const totalScanDur = Math.max(0.05, totalScanDist / speed + turnaroundTime);
+
+        pushRapidMove(roundMm(minX), roundMm(minY), jobMeta);
+
+        const visualRows = Math.min(8, Math.max(3, Math.ceil(scanHeight / 1.5)));
+        const pts: { x: Millimeters; y: Millimeters }[] = [{ x: roundMm(minX), y: roundMm(minY) }];
+        for (let r = 0; r < visualRows; r++) {
+          const y = roundMm(minY + (scanHeight * r) / Math.max(1, visualRows - 1));
+          if (r % 2 === 0) {
+            pts.push({ x: roundMm(minX), y });
+            pts.push({ x: roundMm(maxX), y });
+          } else {
+            pts.push({ x: roundMm(maxX), y });
+            pts.push({ x: roundMm(minX), y });
+          }
+        }
+
+        const lastPt = pts[pts.length - 1];
+        segCounter++;
+        segments.push({
+          id: `seg-eng-${segCounter}`,
+          kind: 'engrave_scan',
+          layerCode: layer.code,
+          hexColor: layer.hexColor,
+          ...jobMeta,
+          fromX: roundMm(minX),
+          fromY: roundMm(minY),
+          toX: lastPt.x,
+          toY: lastPt.y,
+          points: pts,
+          distanceMm: totalScanDist,
+          durationSec: totalScanDur,
+          startTimeSec: elapsedSec,
+          endTimeSec: elapsedSec + totalScanDur,
+        });
+
+        headX = lastPt.x;
+        headY = lastPt.y;
+        elapsedSec += totalScanDur;
+        engraveDistanceMm = roundMm(engraveDistanceMm + totalScanDist);
+        engraveDurationSec += totalScanDur;
       }
     } else if (layer.role === 'HOLES') {
       const speed =
         layer.speedMmPerSec && layer.speedMmPerSec > 0 ? layer.speedMmPerSec : 20;
 
-      for (const job of visibleJobs) {
-        for (const inst of job.instances) {
-          for (const hole of inst.holeContours) {
-            if (hole.points.length === 0) continue;
-            const absPts = hole.points.map((p) => ({
-              x: roundMm(job.xMm + p.x),
-              y: roundMm(job.yMm + p.y),
-            }));
-            absPts.push({ ...absPts[0] });
-
-            pushRapidMove(absPts[0].x, absPts[0].y);
-
-            const len = roundMm(polylineLengthMm(absPts) * passes);
-            const dur = Math.max(0.03, len / speed);
-            segCounter++;
-            segments.push({
-              id: `seg-hole-${segCounter}`,
-              kind: 'hole_cut',
-              layerCode: layer.code,
-              hexColor: layer.hexColor,
-              fromX: absPts[0].x,
-              fromY: absPts[0].y,
-              toX: absPts[0].x,
-              toY: absPts[0].y,
-              points: absPts,
-              distanceMm: len,
-              durationSec: dur,
-              startTimeSec: elapsedSec,
-              endTimeSec: elapsedSec + dur,
-            });
-
-            elapsedSec += dur;
-            cutDistanceMm = roundMm(cutDistanceMm + len);
-            holesDurationSec += dur;
-          }
-        }
-      }
-    } else if (layer.role === 'CUT') {
-      const speed =
-        layer.speedMmPerSec && layer.speedMmPerSec > 0 ? layer.speedMmPerSec : 25;
-
-      for (const job of visibleJobs) {
-        for (const inst of job.instances) {
-          const contour = inst.cutContour;
-          if (!contour || contour.points.length === 0) continue;
-
-          const absPts = contour.points.map((p) => ({
+      for (const inst of orderedInstances) {
+        for (const hole of inst.holeContours) {
+          if (hole.points.length === 0) continue;
+          const absPts = hole.points.map((p) => ({
             x: roundMm(job.xMm + p.x),
             y: roundMm(job.yMm + p.y),
           }));
           absPts.push({ ...absPts[0] });
 
-          pushRapidMove(absPts[0].x, absPts[0].y);
+          pushRapidMove(absPts[0].x, absPts[0].y, jobMeta);
 
           const len = roundMm(polylineLengthMm(absPts) * passes);
-          const dur = Math.max(0.05, len / speed);
+          const dur = Math.max(0.03, len / speed);
           segCounter++;
           segments.push({
-            id: `seg-cut-${segCounter}`,
-            kind: 'outer_cut',
+            id: `seg-hole-${segCounter}`,
+            kind: 'hole_cut',
             layerCode: layer.code,
             hexColor: layer.hexColor,
+            ...jobMeta,
             fromX: absPts[0].x,
             fromY: absPts[0].y,
             toX: absPts[0].x,
@@ -2208,9 +2343,64 @@ export function simulateWorkbenchToolpath(
 
           elapsedSec += dur;
           cutDistanceMm = roundMm(cutDistanceMm + len);
-          outerCutDurationSec += dur;
+          holesDurationSec += dur;
         }
       }
+    } else if (layer.role === 'CUT') {
+      const speed =
+        layer.speedMmPerSec && layer.speedMmPerSec > 0 ? layer.speedMmPerSec : 25;
+
+      for (const inst of orderedInstances) {
+        const contour = inst.cutContour;
+        if (!contour || contour.points.length === 0) continue;
+
+        const absPts = contour.points.map((p) => ({
+          x: roundMm(job.xMm + p.x),
+          y: roundMm(job.yMm + p.y),
+        }));
+        absPts.push({ ...absPts[0] });
+
+        pushRapidMove(absPts[0].x, absPts[0].y, jobMeta);
+
+        const len = roundMm(polylineLengthMm(absPts) * passes);
+        const dur = Math.max(0.05, len / speed);
+        segCounter++;
+        segments.push({
+          id: `seg-cut-${segCounter}`,
+          kind: 'outer_cut',
+          layerCode: layer.code,
+          hexColor: layer.hexColor,
+          ...jobMeta,
+          fromX: absPts[0].x,
+          fromY: absPts[0].y,
+          toX: absPts[0].x,
+          toY: absPts[0].y,
+          points: absPts,
+          distanceMm: len,
+          durationSec: dur,
+          startTimeSec: elapsedSec,
+          endTimeSec: elapsedSec + dur,
+        });
+
+        elapsedSec += dur;
+        cutDistanceMm = roundMm(cutDistanceMm + len);
+        outerCutDurationSec += dur;
+      }
+    }
+  };
+
+  if (executionMode === 'sequential_per_job') {
+    // Terminar completamente el Trabajo #1 (Grabado -> Agujeros -> Corte), luego seguir en orden con #2, #3...
+    visibleJobs.forEach((job, jobIndex) => {
+      for (const layer of sortedLayers) {
+        emitJobLayerSegments(job, jobIndex, layer);
+      }
+    });
+  } else {
+    for (const layer of sortedLayers) {
+      visibleJobs.forEach((job, jobIndex) => {
+        emitJobLayerSegments(job, jobIndex, layer);
+      });
     }
   }
 

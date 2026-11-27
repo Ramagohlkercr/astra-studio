@@ -424,7 +424,8 @@ export const Workbench3DViewport: React.FC<Props> = ({
             topSurfaceY - 0.15,
             toWorldZ(absY + inst.heightMm / 2)
           );
-          dummy.rotation.set(0, inst.rotated90 ? -Math.PI / 2 : 0, 0);
+          // protoInst.cutContour ya incluye rotated90 cuando corresponde
+          dummy.rotation.set(0, 0, 0);
           dummy.updateMatrix();
           tilesMesh.setMatrixAt(idx, dummy.matrix);
         });
@@ -454,13 +455,14 @@ export const Workbench3DViewport: React.FC<Props> = ({
         const absX = job.xMm + inst.localXMm;
         const absY = job.yMm + inst.localYMm;
 
+        // Nota: cutContour.points y holeContours.points ya están expresados en coords locales del trabajo (incluyen inst.localXMm / inst.localYMm)
         if (inst.cutContour?.points?.length > 1) {
           const pts = inst.cutContour.points.map(
             (p) =>
               new THREE.Vector3(
-                toWorldX(absX + p.x),
+                toWorldX(job.xMm + p.x),
                 topSurfaceY + 0.48,
-                toWorldZ(absY + p.y)
+                toWorldZ(job.yMm + p.y)
               )
           );
           pts.push(pts[0].clone());
@@ -472,9 +474,9 @@ export const Workbench3DViewport: React.FC<Props> = ({
           const hPts = hole.points.map(
             (p) =>
               new THREE.Vector3(
-                toWorldX(absX + p.x),
+                toWorldX(job.xMm + p.x),
                 topSurfaceY + 0.5,
-                toWorldZ(absY + p.y)
+                toWorldZ(job.yMm + p.y)
               )
           );
           hPts.push(hPts[0].clone());
