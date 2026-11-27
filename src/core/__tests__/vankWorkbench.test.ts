@@ -1200,9 +1200,11 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(findSubseq([0xca, 0x41, 0x00, 0x02])).toBeGreaterThan(-1);
     expect(findSubseq([0xca, 0x41, 0x01, 0x00])).toBeGreaterThan(-1);
     expect(findSubseq([0xca, 0x41, 0x02, 0x00])).toBeGreaterThan(-1);
-    // CA 22 <maxLayerIndex> y bandera inline Scan CA 01 05 seguido de CA 01 02
-    expect(findSubseq([0xca, 0x22, 0x02])).toBeGreaterThan(-1);
+    // Bandera inline Scan CA 01 05 seguido de CA 01 02 y capa C00 (sin E7 11/12 que RDC8445S hwType 0x13 rechaza)
     expect(findSubseq([0xca, 0x01, 0x05, 0xca, 0x01, 0x02, 0xca, 0x02, 0x00])).toBeGreaterThan(-1);
+    expect(findSubseq([0xe7, 0x11])).toBe(-1);
+    expect(findSubseq([0xe7, 0x12])).toBe(-1);
+    expect(findSubseq([0xea, 0x00])).toBe(-1);
 
     // Miniaturas hardware RDC8445S (`E7 11` 144x144 -> 3x1010B, `E7 12` 300x300 -> 15x862B)
     const thumbs = buildRuidaThumbnailsCommands({

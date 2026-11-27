@@ -16,7 +16,6 @@ import {
   rasterizePolylinesToHorizontalRuns,
   RasterScanlineMask,
 } from './rasterScanlines';
-import { buildRuidaThumbnailsCommands } from './ruidaThumbnail';
 import {
   sortInstancesInTravelOrder,
   validateWorkbenchState,
@@ -428,11 +427,9 @@ export function compileWorkbenchToRuidaRd(
     return layer.bidirectional === false ? 0x01 : 0x02;
   };
 
-  // 2. Cabeceras de parámetros por capa activa (`OutputCutBankInfo` LightBurn)
-  let maxCutIndex = 0;
+  // 2. Cabeceras de parámetros por capa activa (`OutputCutBankInfo` compatible RDC8445S hwType 0x13, 1 tubo)
   for (const layer of sortedLayers) {
     const lIdx = layer.cutIndex & 0x7f;
-    if (lIdx > maxCutIndex) maxCutIndex = lIdx;
     const speed = layer.speedMmPerSec!;
     const maxP = layer.maxPowerPercent!;
     const minP =
@@ -446,30 +443,11 @@ export function compileWorkbenchToRuidaRd(
     // C6 31/32 <layer> <power 2B>: Tube 1 Min/Max Power
     emit([0xc6, 0x31, lIdx, ...encodeRuidaPowerPercent(minP)]);
     emit([0xc6, 0x32, lIdx, ...encodeRuidaPowerPercent(maxP)]);
-    // C6 41/42 <layer> 00 00: Tube 2 disabled
-    emit([0xc6, 0x41, lIdx, 0x00, 0x00]);
-    emit([0xc6, 0x42, lIdx, 0x00, 0x00]);
-    // CA 41 <layer> <mode>: 0=Cut/Line, 1=Unidir Scan, 2=Bidir Scan
+    // CA 41 <layer> <mode>: 0=Cut/Line, 1=Unidir Scan, 2=Bidir Scan (válido en RDC8445S hwType 0x13)
     emit([0xca, 0x41, lIdx, workMode]);
   }
 
-  // CA 22 <maxLayer>: Cantidad máxima de capa activa
-  emit([0xca, 0x22, maxCutIndex & 0x7f]);
-
-  // Miniaturas LCD de hardware RDC8445S (`E7 11` 144x144 + `E7 12` 300x300) + `EA 00`
-  const engraveLayer = sortedLayers.find((l) => l.role === 'ENGRAVE') ?? config.layers[0];
-  for (const thumbPacket of buildRuidaThumbnailsCommands({
-    visibleJobs,
-    boundsMm: bounds,
-    rasterMasks,
-    engraveIntervalMm: Math.max(0.025, engraveLayer?.lineIntervalMm || 0.08),
-    engraveDitherMode: engraveLayer?.imageDitherMode ?? 'threshold',
-  })) {
-    emit(thumbPacket);
-  }
-  emit([0xea, 0x00]);
-
-  // 3. Emisión de trayectorias por orden de prioridad de capa (`EmitInlineCutSetting`)
+  // 3. Emisión de trayectorias por orden de prioridad de capa
   const emitLayerPreamble = (layer: WorkbenchLayerConfig) => {
     const lIdx = layer.cutIndex & 0x7f;
     const speed = layer.speedMmPerSec!;
@@ -481,27 +459,20 @@ export function compileWorkbenchToRuidaRd(
     const workMode = getLayerWorkModeByte(layer);
 
     if (workMode !== 0x00) {
-      // CA 01 05: Habilitar modo escaneo ráster (`OutputShapeCuts` / `EmitInlineCutSetting`)
+      // CA 01 05: Habilitar modo escaneo ráster (`EmitInlineCutSetting`)
       emit([0xca, 0x01, 0x05]);
     }
     // CA 01 <mode>: 0x00 Corte, 0x01 Scan Unidir, 0x02 Scan Bidir
     emit([0xca, 0x01, workMode]);
     // CA 02 <layer>: Select active layer
     emit([0xca, 0x02, lIdx]);
-    // Banderas estándar LightBurn de tubo láser y soplador
-    emit([0xca, 0x01, 0x30]);
-    emit([0xca, 0x01, 0x10]);
+    // CA 01: Air assist toggle por capa
     emit([0xca, 0x01, layer.airAssist ? 0x13 : 0x12]);
     // C9 02 <speed 5B>: Active cut speed
     emit([0xc9, 0x02, ...encodeRuidaSpeedMmPerSec(speed)]);
-    // C6 01/21/02/22: Active Min/Max power (LightBurn `EmitPowerSettings`)
-    const minPowBytes = encodeRuidaPowerPercent(minP);
-    const maxPowBytes = encodeRuidaPowerPercent(maxP);
-    emit([0xc6, 0x01, ...minPowBytes]);
-    emit([0xc6, 0x21, ...minPowBytes]);
-    emit([0xc6, 0x02, ...maxPowBytes]);
-    emit([0xc6, 0x22, ...maxPowBytes]);
-    emit([0xca, 0x03, 0x00]);
+    // C6 01/02: Tube 1 Active Min/Max power
+    emit([0xc6, 0x01, ...encodeRuidaPowerPercent(minP)]);
+    emit([0xc6, 0x02, ...encodeRuidaPowerPercent(maxP)]);
   };
 
   let curUmX = 0;
