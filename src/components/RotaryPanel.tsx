@@ -65,7 +65,11 @@ import {
   exportRotaryTestPatternSvg,
   exportRotaryToLbrn2,
 } from '../core/exporters/rotaryExporter';
-import { buildRuidaUdpPackets } from '../core/workbench/ruidaCompiler';
+import { RuidaUploadProgress } from '../core/workbench/ruidaCompiler';
+import {
+  probeVankRuidaConnection,
+  uploadRdBytesToVankRuida,
+} from '../core/workbench/ruidaTransportClient';
 import { VANK_9060_DEFAULT_IP } from '../core/workbench/workbenchTypes';
 import { LogoOutputFile } from '../core/exporters/logoFolder';
 import { roundMm } from '../core/geometry/geometryEngine';
@@ -367,10 +371,14 @@ export function RotaryPanel({
   // Conexión directa UDP con Vank 9060 (Ruida RDC8445S)
   const [ruidaIp, setRuidaIp] = useState<string>(VANK_9060_DEFAULT_IP);
   const [ruidaPort] = useState<number>(50200);
+  const [rotaryJobName, setRotaryJobName] = useState<string>('ROTAT01');
   const [ruidaStatus, setRuidaStatus] = useState<{
     probing?: boolean;
     sending?: boolean;
     reachable?: boolean;
+    udpHandshakeOk?: boolean;
+    latencyMs?: number | null;
+    progress?: RuidaUploadProgress | null;
     message?: string;
   } | null>(null);
 
@@ -876,26 +884,20 @@ export function RotaryPanel({
     setRecipes(deleteRotaryRecipe(id));
   };
 
-  // Prueba de red UDP/40200 hacia Ruida RDC8445S (Vank 9060)
+  // Prueba real UDP/40200 y ping hacia Ruida RDC8445S (Vank 9060)
   const handleProbeRuidaConnection = async () => {
-    if (!isTauri()) {
-      setRuidaStatus({
-        reachable: false,
-        message:
-          'Modo navegador: para enviar UDP directo a 192.168.0.195 usá la app nativa Astra Studio (.app), o descargá el archivo .RD para pendrive.',
-      });
-      return;
-    }
     setRuidaStatus({ probing: true, message: `Probando ${ruidaIp}:${ruidaPort}…` });
     try {
-      const res = await invoke<{
-        reachable: boolean;
-        ip: string;
-        port: number;
-        local_port_40200_free: boolean;
-        message: string;
-      }>('probe_ruida_connection', { ip: ruidaIp.trim(), port: ruidaPort });
-      setRuidaStatus({ reachable: res.reachable, message: res.message });
+      const res = await probeVankRuidaConnection({
+        ip: ruidaIp,
+        port: ruidaPort,
+      });
+      setRuidaStatus({
+        reachable: res.reachable,
+        udpHandshakeOk: res.udp_handshake_ok,
+        latencyMs: res.latency_ms,
+        message: res.message,
+      });
     } catch (e) {
       setRuidaStatus({
         reachable: false,
@@ -924,7 +926,12 @@ export function RotaryPanel({
       return;
     }
     try {
-      const compiled = compileRotaryToRuidaRd(design, config, layerParams);
+      const compiled = compileRotaryToRuidaRd(
+        design,
+        config,
+        layerParams,
+        rotaryJobName
+      );
       if (mode === 'download') {
         const blob = new Blob([new Uint8Array(compiled.rdBytes)], {
           type: 'application/octet-stream',
@@ -943,34 +950,25 @@ export function RotaryPanel({
         return;
       }
 
-      if (!isTauri()) {
-        setRuidaStatus({
-          reachable: false,
-          message:
-            'El envío UDP directo requiere la app nativa macOS. Podés usar "Guardar .RD (USB)" para pendrive o "Abrir en LightBurn (.lbrn2)".',
-        });
-        return;
-      }
-
       setRuidaStatus({
         sending: true,
+        progress: null,
         message: `Enviando ${compiled.filenameSuggested} por UDP a ${ruidaIp}:${ruidaPort}…`,
       });
-      const packets = buildRuidaUdpPackets(compiled.rdBytes);
-      const packetArrays = packets.map((p) => Array.from(p));
-      const res = await invoke<{
-        success: boolean;
-        packets_sent: number;
-        bytes_sent: number;
-        remote_endpoint: string;
-        message: string;
-      }>('upload_rd_to_ruida', {
-        ip: ruidaIp.trim(),
+      const res = await uploadRdBytesToVankRuida({
+        ip: ruidaIp,
         port: ruidaPort,
-        packets: packetArrays,
+        rdBytes: compiled.rdBytes,
+        onProgress: (progress) =>
+          setRuidaStatus((prev) => ({
+            ...prev,
+            sending: true,
+            progress,
+            message: `Enviando paquete ${progress.current_packet}/${progress.total_packets} (${progress.percent}%)…`,
+          })),
       });
       setRuidaStatus({ reachable: res.success, message: res.message });
-      setStatusBanner(`✓ ${res.message}`);
+      setStatusBanner(res.message);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setSaveError(msg);
@@ -3005,16 +3003,40 @@ export function RotaryPanel({
                   onChange={(e) => setRuidaIp(e.target.value)}
                   className="flex-1 bg-slate-900 border border-slate-700 px-2 py-1 rounded text-[11px] font-mono text-cyan-200 focus:border-cyan-500 focus:outline-none min-w-0"
                 />
+                <input
+                  type="text"
+                  maxLength={8}
+                  aria-label="Nombre archivo en Vank"
+                  value={rotaryJobName}
+                  onChange={(e) => setRotaryJobName(e.target.value.toUpperCase())}
+                  placeholder="ROTAT01"
+                  className="w-20 bg-slate-900 border border-slate-700 px-1.5 py-1 rounded text-[11px] font-mono text-amber-200 uppercase text-center focus:border-cyan-500 focus:outline-none shrink-0"
+                />
                 <button
                   type="button"
                   onClick={() => void handleProbeRuidaConnection()}
                   disabled={!!ruidaStatus?.probing}
                   className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-[10px] font-semibold flex items-center gap-1 shrink-0"
                 >
-                  <Wifi className="w-3 h-3 text-cyan-400" />
+                  <Wifi
+                    className={`w-3 h-3 ${
+                      ruidaStatus?.udpHandshakeOk
+                        ? 'text-emerald-400'
+                        : 'text-cyan-400'
+                    }`}
+                  />
                   <span>{ruidaStatus?.probing ? 'Probando…' : 'Probar Red'}</span>
                 </button>
               </div>
+
+              {ruidaStatus?.sending && ruidaStatus.progress && (
+                <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+                  <div
+                    className="bg-amber-400 h-full transition-all duration-150"
+                    style={{ width: `${ruidaStatus.progress.percent}%` }}
+                  />
+                </div>
+              )}
 
               {ruidaStatus?.message && (
                 <p

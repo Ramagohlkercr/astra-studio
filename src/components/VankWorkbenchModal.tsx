@@ -72,9 +72,13 @@ import {
   saveMaterialLibraryEntry,
 } from '../core/workbench/materialCalibrationEngine';
 import {
-  buildRuidaUdpPackets,
   compileWorkbenchToRuidaRd,
+  RuidaUploadProgress,
 } from '../core/workbench/ruidaCompiler';
+import {
+  probeVankRuidaConnection,
+  uploadRdBytesToVankRuida,
+} from '../core/workbench/ruidaTransportClient';
 import {
   applyExtremeMaterialSavingToWorkbench,
   applyWorkbenchLayersToMaterialProfile,
@@ -199,8 +203,13 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   const [ruidaProbeResult, setRuidaProbeResult] = useState<{
     reachable: boolean;
     localPortFree: boolean;
+    udpHandshakeOk?: boolean;
+    pingOk?: boolean;
+    latencyMs?: number | null;
     message: string;
   } | null>(null);
+  const [ruidaUploadProgress, setRuidaUploadProgress] =
+    useState<RuidaUploadProgress | null>(null);
   const [showSimulation, setShowSimulation] = useState<boolean>(false);
   const [isPlayingSim, setIsPlayingSim] = useState<boolean>(false);
   const [simProgress, setSimProgress] = useState<number>(100);
@@ -997,23 +1006,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   const handleSendCalibrationMatrixToVank = async () => {
     try {
       const compiled = compileMaterialTestToRuidaRd(calibrationConfig, 'CALTEST');
-      const udpPackets = buildRuidaUdpPackets(compiled.rdBytes);
       if (!isTauri()) {
         handleDownloadCalibrationRd();
         return;
       }
       setIsSendingToRuida(true);
-      const packetArrays = udpPackets.map((pkt) => Array.from(pkt));
-      const response = await invoke<{
-        success: boolean;
-        packets_sent: number;
-        bytes_sent: number;
-        remote_endpoint: string;
-        message: string;
-      }>('upload_rd_to_ruida', {
+      setRuidaUploadProgress(null);
+      const response = await uploadRdBytesToVankRuida({
         ip: workbenchConfig.ruidaIpAddress,
         port: workbenchConfig.ruidaPort,
-        packets: packetArrays,
+        rdBytes: compiled.rdBytes,
+        onProgress: setRuidaUploadProgress,
       });
       onNotify(response.message);
     } catch (err) {
@@ -1024,6 +1027,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       );
     } finally {
       setIsSendingToRuida(false);
+      setRuidaUploadProgress(null);
     }
   };
 
@@ -1117,7 +1121,6 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
     try {
       const compiled = compileWorkbenchToRuidaRd(workbenchJobs, workbenchConfig);
-      const udpPackets = buildRuidaUdpPackets(compiled.rdBytes);
 
       if (!isTauri()) {
         const blob = new Blob([compiled.rdBytes], { type: 'application/octet-stream' });
@@ -1130,24 +1133,19 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         setRuidaStatusMsg({
-          type: 'success',
-          text: `Archivo binario Ruida "${compiled.filenameSuggested}" (${compiled.rdBytes.length} bytes) generado y descargado. Para envío directo por red UDP usá la app nativa macOS.`,
+          type: 'info',
+          text: `Archivo binario Ruida "${compiled.filenameSuggested}" (${compiled.rdBytes.length} bytes) descargado. El envío UDP directo sin cables se realiza desde la app nativa Astra Studio (.app).`,
         });
         return;
       }
 
       setIsSendingToRuida(true);
-      const packetArrays = udpPackets.map((pkt) => Array.from(pkt));
-      const response = await invoke<{
-        success: boolean;
-        packets_sent: number;
-        bytes_sent: number;
-        remote_endpoint: string;
-        message: string;
-      }>('upload_rd_to_ruida', {
+      setRuidaUploadProgress(null);
+      const response = await uploadRdBytesToVankRuida({
         ip: workbenchConfig.ruidaIpAddress,
         port: workbenchConfig.ruidaPort,
-        packets: packetArrays,
+        rdBytes: compiled.rdBytes,
+        onProgress: setRuidaUploadProgress,
       });
 
       setRuidaStatusMsg({
@@ -1163,6 +1161,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       });
     } finally {
       setIsSendingToRuida(false);
+      setRuidaUploadProgress(null);
     }
   };
 
@@ -1251,56 +1250,28 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     }
   };
 
-  // Probar alcance de red hacia la Vank 9060 (192.168.0.195:50200) sin mover el láser
+  // Probar alcance de red y handshake Ruida hacia la Vank 9060 (192.168.0.195:50200) sin mover el láser
   const handleProbeRuidaConnection = async () => {
     setIsProbingRuida(true);
     setRuidaStatusMsg(null);
     try {
-      const cleanIp = workbenchConfig.ruidaIpAddress.trim();
-      const ipv4Regex =
-        /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
-      if (!ipv4Regex.test(cleanIp)) {
-        const msg = `Dirección IP inválida: "${cleanIp}". Debe tener formato IPv4 como 192.168.0.195.`;
-        setRuidaProbeResult({
-          reachable: false,
-          localPortFree: false,
-          message: msg,
-        });
-        setRuidaStatusMsg({ type: 'error', text: msg });
-        return;
-      }
-
-      if (!isTauri()) {
-        const compiled = validateWorkbenchState(workbenchJobs, workbenchConfig);
-        const msg = `✓ Red lista hacia Vank 9060 (${cleanIp}:${workbenchConfig.ruidaPort}). Tirada preparada (${compiled.totalPieces} u. en ${rollMetrics.usedLengthCm} cm). Abrí la app nativa macOS para transmisión UDP directa o usá "Abrir en LightBurn (.lbrn2)" / "Guardar .RD".`;
-        setRuidaProbeResult({
-          reachable: true,
-          localPortFree: true,
-          message: msg,
-        });
-        setRuidaStatusMsg({ type: 'info', text: msg });
-        onNotify(msg);
-        return;
-      }
-
-      const res = await invoke<{
-        reachable: boolean;
-        ip: string;
-        port: number;
-        local_port_40200_free: boolean;
-        message: string;
-      }>('probe_ruida_connection', {
-        ip: cleanIp,
+      const val = validateWorkbenchState(workbenchJobs, workbenchConfig);
+      const res = await probeVankRuidaConnection({
+        ip: workbenchConfig.ruidaIpAddress,
         port: workbenchConfig.ruidaPort,
+        preparedSummary: `Tirada actual: ${val.totalPieces} u. (${rollMetrics.usedLengthCm} cm).`,
       });
 
       setRuidaProbeResult({
         reachable: res.reachable,
         localPortFree: res.local_port_40200_free,
+        udpHandshakeOk: res.udp_handshake_ok,
+        pingOk: res.ping_ok,
+        latencyMs: res.latency_ms,
         message: res.message,
       });
       setRuidaStatusMsg({
-        type: res.reachable ? 'success' : 'error',
+        type: res.reachable ? 'success' : !isTauri() && res.ip ? 'info' : 'error',
         text: res.message,
       });
       onNotify(res.message);
@@ -3985,10 +3956,20 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     <Send className="w-4 h-4" />
                     <span>
                       {isSendingToRuida
-                        ? 'Enviando a Ruida RDC8445S...'
+                        ? ruidaUploadProgress
+                          ? `Enviando ${ruidaUploadProgress.percent}% (${ruidaUploadProgress.current_packet}/${ruidaUploadProgress.total_packets} paq.)...`
+                          : 'Enviando a Ruida RDC8445S...'
                         : `Enviar a Vank 9060 (${workbenchConfig.ruidaIpAddress})`}
                     </span>
                   </button>
+                  {isSendingToRuida && ruidaUploadProgress && (
+                    <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+                      <div
+                        className="bg-emerald-400 h-full transition-all duration-150"
+                        style={{ width: `${ruidaUploadProgress.percent}%` }}
+                      />
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-2 gap-1.5">
                     <button
@@ -4139,16 +4120,24 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 <div className="flex items-center gap-1.5">
                   <span
                     className={`w-2.5 h-2.5 rounded-full ${
-                      ruidaProbeResult?.reachable
+                      ruidaProbeResult?.udpHandshakeOk
                         ? 'bg-emerald-400 animate-pulse'
-                        : validation.isValidForMachineSend
-                          ? 'bg-cyan-400'
-                          : 'bg-amber-400'
+                        : ruidaProbeResult?.reachable
+                          ? 'bg-amber-400'
+                          : validation.isValidForMachineSend
+                            ? 'bg-cyan-400'
+                            : 'bg-slate-500'
                     }`}
                   />
                   <span className="font-bold text-white text-[11px]">
                     Vank 9060 ({workbenchConfig.ruidaIpAddress}:{workbenchConfig.ruidaPort})
                   </span>
+                  {ruidaProbeResult?.latencyMs !== undefined &&
+                    ruidaProbeResult?.latencyMs !== null && (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-950/70 text-emerald-300 border border-emerald-700/60">
+                        UDP {ruidaProbeResult.latencyMs}ms
+                      </span>
+                    )}
                 </div>
 
                 <div className="flex items-center gap-1">

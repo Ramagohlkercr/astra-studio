@@ -20,9 +20,48 @@ import {
   WorkbenchLayerConfig,
 } from './workbenchTypes';
 
+/** Valida direcciones IPv4 de la red local (ej. 192.168.0.195). */
+export function isValidIpv4Address(ip: string): boolean {
+  const ipv4Regex =
+    /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+  return ipv4Regex.test(ip.trim());
+}
+
+export interface RuidaUploadProgress {
+  current_packet: number;
+  total_packets: number;
+  percent: number;
+  bytes_sent: number;
+  total_bytes: number;
+  retries: number;
+}
+
+export interface RuidaUploadResponse {
+  success: boolean;
+  packets_sent: number;
+  bytes_sent: number;
+  retries?: number;
+  elapsed_ms?: number;
+  used_local_port_40200?: boolean;
+  remote_endpoint: string;
+  message: string;
+}
+
+export interface RuidaProbeResponse {
+  reachable: boolean;
+  ping_ok?: boolean;
+  udp_handshake_ok?: boolean;
+  controller_reply_hex?: string | null;
+  latency_ms?: number | null;
+  ip: string;
+  port: number;
+  local_port_40200_free: boolean;
+  message: string;
+}
+
 /**
  * Codifica una coordenada o velocidad absoluta en micrómetros (1 mm = 1000 µm)
- * en 5 bytes de 7 bits cada uno (35 bits con signo, Big-Endian).
+ * en 5 bytes de 7 bits cada uno (35 bits con signo, Big-Endian) usando aritmética exacta >32 bits.
  */
 export function encodeRuidaAbsCoordMm(mm: number): number[] {
   let um = Math.round(mm * 1000);
@@ -31,10 +70,10 @@ export function encodeRuidaAbsCoordMm(mm: number): number[] {
     um = 0x800000000 + um;
   }
   const b0 = Math.floor(um / 0x10000000) & 0x7f;
-  const b1 = (um >>> 21) & 0x7f;
-  const b2 = (um >>> 14) & 0x7f;
-  const b3 = (um >>> 7) & 0x7f;
-  const b4 = um & 0x7f;
+  const b1 = Math.floor(um / 0x200000) & 0x7f;
+  const b2 = Math.floor(um / 0x4000) & 0x7f;
+  const b3 = Math.floor(um / 0x80) & 0x7f;
+  const b4 = Math.floor(um) & 0x7f;
   return [b0, b1, b2, b3, b4];
 }
 
@@ -45,9 +84,9 @@ export function decodeRuidaAbsCoordMm(bytes: number[]): number {
   if (bytes.length < 5) throw new Error('Se requieren 5 bytes para coordenada absoluta Ruida.');
   let um =
     (bytes[0] & 0x7f) * 0x10000000 +
-    ((bytes[1] & 0x7f) << 21) +
-    ((bytes[2] & 0x7f) << 14) +
-    ((bytes[3] & 0x7f) << 7) +
+    (bytes[1] & 0x7f) * 0x200000 +
+    (bytes[2] & 0x7f) * 0x4000 +
+    (bytes[3] & 0x7f) * 0x80 +
     (bytes[4] & 0x7f);
   if (um >= 0x400000000) {
     um -= 0x800000000;
@@ -129,6 +168,41 @@ export function buildRuidaUdpPackets(
   return packets;
 }
 
+/**
+ * Audita que todos los datagramas UDP Ruida tengan longitud válida y checksum Big-Endian de 16 bits íntegro.
+ */
+export function verifyRuidaUdpPacketChecksums(packets: Uint8Array[]): boolean {
+  if (packets.length === 0) return false;
+  for (const pkt of packets) {
+    if (pkt.length < 3 || pkt.length > 1472) return false;
+    let sum = 0;
+    for (let i = 2; i < pkt.length; i++) {
+      sum = (sum + pkt[i]) & 0xffff;
+    }
+    const header = ((pkt[0] & 0xff) << 8) | (pkt[1] & 0xff);
+    if (header !== sum) return false;
+  }
+  return true;
+}
+
+/**
+ * Emite las etiquetas de envolvente Ruida estándar (`E7 03`/`E7 07` y `E7 50`/`E7 51`)
+ * usadas por la controladora para `FRAME` y verificación de límites.
+ */
+export function buildRuidaEnvelopeBoundsCommands(bounds: {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}): number[][] {
+  return [
+    [0xe7, 0x03, ...encodeRuidaAbsCoordMm(bounds.minX), ...encodeRuidaAbsCoordMm(bounds.minY)],
+    [0xe7, 0x07, ...encodeRuidaAbsCoordMm(bounds.maxX), ...encodeRuidaAbsCoordMm(bounds.maxY)],
+    [0xe7, 0x50, ...encodeRuidaAbsCoordMm(bounds.minX), ...encodeRuidaAbsCoordMm(bounds.minY)],
+    [0xe7, 0x51, ...encodeRuidaAbsCoordMm(bounds.maxX), ...encodeRuidaAbsCoordMm(bounds.maxY)],
+  ];
+}
+
 export interface CompiledRuidaRdArtifact {
   /** Bytes ofuscados listos para guardar como archivo .rd (U-Disk USB o envío UDP) */
   rdBytes: Uint8Array;
@@ -173,6 +247,22 @@ export function compileWorkbenchToRuidaRd(
   }
 
   const bounds = report.occupiedBoundsMm;
+  const origin = report.jobOriginPointMm;
+  // En Origen del Usuario o Posición Actual trasladamos toda la geometría respecto al punto ancla elegido
+  // para que dicho ancla sea (0, 0) al apretar ORIGIN + FRAME/START en la Vank 9060.
+  const useRelativeOrigin = config.startFromMode !== 'absolute_coords';
+  const offsetX = useRelativeOrigin ? origin.x : 0;
+  const offsetY = useRelativeOrigin ? origin.y : 0;
+  const toRuidaX = (bedX: number) => roundMm(bedX - offsetX, 3);
+  const toRuidaY = (bedY: number) => roundMm(bedY - offsetY, 3);
+
+  const emittedBounds = {
+    minX: toRuidaX(bounds.minX),
+    minY: toRuidaY(bounds.minY),
+    maxX: toRuidaX(bounds.maxX),
+    maxY: toRuidaY(bounds.maxY),
+  };
+
   const visibleJobs = jobs.filter((j) => j.visible && j.instances.length > 0);
   const sortedLayers = [...config.layers]
     .filter((l) => l.outputEnabled)
@@ -198,19 +288,10 @@ export function compileWorkbenchToRuidaRd(
   const nameBytes = Array.from(cleanJobName).map((ch) => ch.charCodeAt(0) & 0x7f);
   emit([0xe7, 0x01, ...nameBytes, 0x00]);
 
-  // E7 03 (Top-Left Bound) y E7 07 (Bottom-Right Bound)
-  emit([
-    0xe7,
-    0x03,
-    ...encodeRuidaAbsCoordMm(bounds.minX),
-    ...encodeRuidaAbsCoordMm(bounds.minY),
-  ]);
-  emit([
-    0xe7,
-    0x07,
-    ...encodeRuidaAbsCoordMm(bounds.maxX),
-    ...encodeRuidaAbsCoordMm(bounds.maxY),
-  ]);
+  // E7 03 / E7 07 + E7 50 / E7 51 (Límites de encuadre Frame en el origen elegido)
+  for (const cmd of buildRuidaEnvelopeBoundsCommands(emittedBounds)) {
+    emit(cmd);
+  }
 
   // Asistencia de aire (Soplador general si alguna capa lo requiere)
   const anyAirAssist = sortedLayers.some((l) => l.airAssist);
@@ -257,12 +338,20 @@ export function compileWorkbenchToRuidaRd(
 
   const emitMoveAbs = (xMm: number, yMm: number) => {
     // 88 <X 5B> <Y 5B>: Move Absolute (Rapid G0 Laser Off)
-    emit([0x88, ...encodeRuidaAbsCoordMm(xMm), ...encodeRuidaAbsCoordMm(yMm)]);
+    emit([
+      0x88,
+      ...encodeRuidaAbsCoordMm(toRuidaX(xMm)),
+      ...encodeRuidaAbsCoordMm(toRuidaY(yMm)),
+    ]);
   };
 
   const emitCutAbs = (xMm: number, yMm: number) => {
     // A8 <X 5B> <Y 5B>: Cut Absolute (G1 Laser On)
-    emit([0xa8, ...encodeRuidaAbsCoordMm(xMm), ...encodeRuidaAbsCoordMm(yMm)]);
+    emit([
+      0xa8,
+      ...encodeRuidaAbsCoordMm(toRuidaX(xMm)),
+      ...encodeRuidaAbsCoordMm(toRuidaY(yMm)),
+    ]);
   };
 
   const emittedLayerCutIndices = new Set<number>();
@@ -381,7 +470,6 @@ export function compileWorkbenchToRuidaRd(
   const activeLayersCount = emittedLayerCutIndices.size;
 
   // Retornar cabezal al origen del trabajo y cerrar trama Ruida (D7 = EOF)
-  const origin = report.jobOriginPointMm;
   emitMoveAbs(origin.x, origin.y);
   emit([0xd7]);
 

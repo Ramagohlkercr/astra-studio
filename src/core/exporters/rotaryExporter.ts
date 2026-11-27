@@ -9,6 +9,7 @@ import {
   warpPointForTaper,
 } from '../rotary/rotaryEngine';
 import {
+  buildRuidaEnvelopeBoundsCommands,
   CompiledRuidaRdArtifact,
   encodeRuidaAbsCoordMm,
   encodeRuidaPowerPercent,
@@ -812,18 +813,9 @@ export function compileRotaryToRuidaRd(
     ...Array.from(cleanName).map((ch) => ch.charCodeAt(0) & 0x7f),
     0x00,
   ]);
-  emit([
-    0xe7,
-    0x03,
-    ...encodeRuidaAbsCoordMm(bounds.minX),
-    ...encodeRuidaAbsCoordMm(bounds.minY),
-  ]);
-  emit([
-    0xe7,
-    0x07,
-    ...encodeRuidaAbsCoordMm(bounds.maxX),
-    ...encodeRuidaAbsCoordMm(bounds.maxY),
-  ]);
+  for (const cmd of buildRuidaEnvelopeBoundsCommands(bounds)) {
+    emit(cmd);
+  }
 
   emit([0xca, 0x01, layerParams.airAssist ? 0x13 : 0x12]);
 
@@ -870,7 +862,12 @@ export function compileRotaryToRuidaRd(
     }
   }
 
-  // Fin de trabajo (volver al origen / cierre)
+  // Fin de trabajo: retornar al origen inicial del rotativo antes de EOF (D7)
+  emit([
+    0x88,
+    ...encodeRuidaAbsCoordMm(bounds.minX),
+    ...encodeRuidaAbsCoordMm(bounds.minY),
+  ]);
   emit([0xd7]);
 
   const rawUnscrambledBytes = Uint8Array.from(raw);

@@ -25,9 +25,15 @@ import {
   decodeRuidaPowerPercent,
   encodeRuidaAbsCoordMm,
   encodeRuidaPowerPercent,
+  isValidIpv4Address,
   scrambleRuidaByte,
   unscrambleRuidaByte,
+  verifyRuidaUdpPacketChecksums,
 } from '../workbench/ruidaCompiler';
+import {
+  probeVankRuidaConnection,
+  uploadRdBytesToVankRuida,
+} from '../workbench/ruidaTransportClient';
 import {
   analyzeStepMaterialSavings,
   applyExtremeMaterialSavingToWorkbench,
@@ -927,5 +933,90 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     );
     expect(optPreserved[0].id).toBe(jobB.id);
     expect(optPreserved[1].id).toBe(jobA.id);
+  });
+
+  it('19. Coordenadas Ruida 35-bit con signo, normalización de origen (user_origin top_right vs absolute_coords) y verificación de checksum UDP', async () => {
+    // 1. Roundtrip exacto incluyendo coordenadas negativas grandes (ej. User Origin Superior Derecha)
+    for (const mm of [-720, -250.375, -10.5, -0.001, 0, 145.125, 900]) {
+      const enc = encodeRuidaAbsCoordMm(mm);
+      expect(enc).toHaveLength(5);
+      expect(decodeRuidaAbsCoordMm(enc)).toBeCloseTo(mm, 3);
+    }
+
+    // 2. Verificar que en user_origin top_right los límites E7 03/07 y E7 50/51 se emiten respecto al ancla derecha (minX negativo, maxX = 0)
+    const ecoCfg = createDefaultWorkbenchConfig(730, 600, material);
+    const sampleElement = sampleOrder.labelDesign.elements[0];
+    const job = createWorkbenchJobFromUploadedLogo({
+      logoName: 'Origen_Der',
+      element: sampleElement,
+      widthMm: 40,
+      heightMm: 20,
+      quantity: 2,
+      existingJobs: [],
+      config: ecoCfg,
+    });
+
+    const userOriginCfg = {
+      ...ecoCfg,
+      startFromMode: 'user_origin' as const,
+      jobOriginAnchor: 'top_right' as const,
+      layers: ecoCfg.layers.map((l) => ({
+        ...l,
+        speedMmPerSec: l.role === 'ENGRAVE' ? 200 : 25,
+        maxPowerPercent: l.role === 'ENGRAVE' ? 25 : 65,
+        minPowerPercent: l.role === 'ENGRAVE' ? 20 : 55,
+      })),
+    };
+
+    const rdUser = compileWorkbenchToRuidaRd([job], userOriginCfg);
+    const e703Idx = rdUser.rawUnscrambledBytes.findIndex(
+      (b, idx, arr) => b === 0xe7 && arr[idx + 1] === 0x03
+    );
+    const e707Idx = rdUser.rawUnscrambledBytes.findIndex(
+      (b, idx, arr) => b === 0xe7 && arr[idx + 1] === 0x07
+    );
+    const e750Idx = rdUser.rawUnscrambledBytes.findIndex(
+      (b, idx, arr) => b === 0xe7 && arr[idx + 1] === 0x50
+    );
+    expect(e703Idx).toBeGreaterThan(-1);
+    expect(e707Idx).toBeGreaterThan(-1);
+    expect(e750Idx).toBeGreaterThan(-1);
+
+    const minXRel = decodeRuidaAbsCoordMm(
+      Array.from(rdUser.rawUnscrambledBytes.slice(e703Idx + 2, e703Idx + 7))
+    );
+    const maxXRel = decodeRuidaAbsCoordMm(
+      Array.from(rdUser.rawUnscrambledBytes.slice(e707Idx + 2, e707Idx + 7))
+    );
+    expect(minXRel).toBeLessThan(0); // Extensión hacia la izquierda del origen derecho
+    expect(maxXRel).toBeCloseTo(0, 2); // Ancla top_right en X = 0
+
+    // 3. Verificación estricta de checksum UDP e IPv4 sin transmitir paquetes reales
+    const packets = buildRuidaUdpPackets(rdUser.rdBytes);
+    expect(verifyRuidaUdpPacketChecksums(packets)).toBe(true);
+    const corrupted = packets.map((p) => new Uint8Array(p));
+    corrupted[0][2] ^= 0xff;
+    expect(verifyRuidaUdpPacketChecksums(corrupted)).toBe(false);
+
+    expect(isValidIpv4Address('192.168.0.195')).toBe(true);
+    expect(isValidIpv4Address('999.168.0.1')).toBe(false);
+
+    // En navegador (sin Tauri), probeVankRuidaConnection NO simula falso online (reachable === false)
+    const probeBadIp = await probeVankRuidaConnection({ ip: 'bad-ip', port: 50200 });
+    expect(probeBadIp.reachable).toBe(false);
+    const probeWeb = await probeVankRuidaConnection({
+      ip: '192.168.0.195',
+      port: 50200,
+    });
+    expect(probeWeb.reachable).toBe(false);
+    expect(probeWeb.udp_handshake_ok).toBe(false);
+
+    await expect(
+      uploadRdBytesToVankRuida({
+        ip: 'invalid-ip',
+        port: 50200,
+        rdBytes: rdUser.rdBytes,
+      })
+    ).rejects.toThrow('Dirección IP inválida');
   });
 });
