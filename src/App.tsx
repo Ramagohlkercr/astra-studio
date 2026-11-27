@@ -1731,13 +1731,13 @@ export function App() {
 
           <label
             className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-slate-200 cursor-pointer transition-colors"
-            title="Abrir proyecto (.lhstudio.json / .json) o archivo externo de grabado y corte (.dxf, .svg, .lbrn2, .ai, .rd)"
+            title="Abrir proyecto (.lhstudio.json / .json) o archivo externo de grabado y corte (.dxf, .svg, .lbrn2, .ai, .rd, .png, .jpg)"
           >
             Abrir archivo
             <input
               type="file"
               aria-label="Abrir archivo de proyecto"
-              accept=".json,.lhstudio.json,.dxf,.svg,.lbrn2,.lbrn,.ai,.rd"
+              accept=".json,.lhstudio.json,.dxf,.svg,.lbrn2,.lbrn,.ai,.rd,.png,.jpg,.jpeg,.webp,.bmp"
               className="hidden"
               onChange={async (e) => {
                 const file = e.target.files?.[0];
@@ -1776,7 +1776,7 @@ export function App() {
                         ? ` (${imported.summary.warnings[0]})`
                         : '';
                     notify(
-                      `📂 "${file.name}" (${imported.summary.format.toUpperCase()} ${imported.summary.widthMm}×${imported.summary.heightMm} mm) abierto en Mesa Vank 9060: ${imported.summary.engravePathCount} grabados, ${imported.summary.holeContourCount} agujeros, ${imported.summary.cutContourCount} cortes.${warnTxt}`
+                      `📂 "${file.name}" (${imported.summary.format.toUpperCase()} ${imported.summary.widthMm}×${imported.summary.heightMm} mm) abierto en Mesa Vank 9060: ${imported.summary.engravePathCount + imported.summary.rasterCount} grabados, ${imported.summary.holeContourCount} agujeros, ${imported.summary.cutContourCount} cortes.${warnTxt}`
                     );
                   } else {
                     openProject(deserializeOrderProjectFromJson(await file.text()));

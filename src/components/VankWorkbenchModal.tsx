@@ -783,8 +783,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
           currentList.push(j);
           lastCreatedId = j.id;
         }
+        const engTotal = res.summary.engravePathCount + res.summary.rasterCount;
         summaries.push(
-          `${file.name} (${res.summary.widthMm}×${res.summary.heightMm} mm · ${res.summary.engravePathCount}G/${res.summary.holeContourCount}A/${res.summary.cutContourCount}C)`
+          `${file.name} (${res.summary.widthMm}×${res.summary.heightMm} mm · ${engTotal}G/${res.summary.holeContourCount}A/${res.summary.cutContourCount}C)`
         );
       }
 
@@ -2040,12 +2041,12 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       }}
       className="fixed inset-0 z-50 bg-[#070a0e]/95 backdrop-blur-sm flex flex-col text-slate-100 select-none"
     >
-      {/* Input oculto para abrir archivos externos completos de grabado y corte (DXF, SVG, LBRN2, AI, RD) */}
+      {/* Input oculto para abrir archivos externos completos de grabado y corte (DXF, SVG, LBRN2, AI, RD, PNG, JPG) */}
       <input
         ref={externalLaserInputRef}
         type="file"
         multiple
-        accept=".dxf,.svg,.lbrn2,.lbrn,.ai,.rd"
+        accept=".dxf,.svg,.lbrn2,.lbrn,.ai,.rd,.png,.jpg,.jpeg,.webp,.bmp"
         aria-label="Abrir archivo externo de grabado y corte"
         onChange={handleExternalLaserFilesSelected}
         className="hidden"
@@ -2084,7 +2085,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             disabled={isUploadingLogos}
             onClick={() => externalLaserInputRef.current?.click()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600/90 hover:bg-cyan-500 text-white text-xs font-bold transition-colors whitespace-nowrap"
-            title="Abrir archivo externo de grabado y corte (DXF, SVG, LightBurn .lbrn2, Illustrator .ai o Ruida .rd) en medidas 1:1 mm"
+            title="Abrir archivo externo de grabado y corte (DXF, SVG, LightBurn .lbrn2, Illustrator .ai, Ruida .rd o PNG/JPG) en medidas 1:1 mm"
           >
             <FolderOpen className="w-3.5 h-3.5 shrink-0" />
             <span>Abrir Archivo</span>

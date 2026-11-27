@@ -1916,5 +1916,22 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(rdRes.summary.cutContourCount).toBeGreaterThanOrEqual(1);
     expect(rdRes.summary.holeContourCount).toBeGreaterThanOrEqual(1);
     expect(rdRes.summary.hasAppliedLayerParams).toBe(true);
+
+    // 6. Ráster externo de grabado (.png a 600 DPI): 1181 x 591 px -> ~50 x 25 mm exactos
+    const pngHeader = new Uint8Array(24);
+    pngHeader.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    pngHeader.set([0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52], 8);
+    const dv = new DataView(pngHeader.buffer);
+    dv.setUint32(16, 1181, false);
+    dv.setUint32(20, 591, false);
+    const pngRes = await importExternalLaserFile({
+      fileName: '01_GRABADO_50_600dpi.png',
+      bytes: pngHeader,
+      config: cfgWithLaser,
+    });
+    expect(pngRes.summary.format).toBe('raster');
+    expect(pngRes.summary.rasterCount).toBe(1);
+    expect(pngRes.summary.widthMm).toBeCloseTo(50, 0);
+    expect(pngRes.summary.heightMm).toBeCloseTo(25, 0);
   });
 });

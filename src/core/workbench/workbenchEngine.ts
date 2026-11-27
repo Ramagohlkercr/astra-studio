@@ -2066,7 +2066,7 @@ export function validateWorkbenchState(
     for (const inst of job.instances) {
       if (inst.engraveItems.length > 0) hasEngraveGeometry = true;
       if (inst.holeContours.length > 0) hasHolesGeometry = true;
-      if (inst.cutContour) hasCutGeometry = true;
+      if (inst.cutContour && inst.cutContour.points.length >= 2) hasCutGeometry = true;
     }
   }
 

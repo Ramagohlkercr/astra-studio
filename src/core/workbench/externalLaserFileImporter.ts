@@ -37,7 +37,7 @@ import {
 } from './workbenchTypes';
 import { createWorkbenchJobFromOrder } from './workbenchEngine';
 
-export type ExternalLaserFormat = 'dxf' | 'svg' | 'lbrn2' | 'ai' | 'rd';
+export type ExternalLaserFormat = 'dxf' | 'svg' | 'lbrn2' | 'ai' | 'rd' | 'raster';
 
 export type ExternalLaserRole = 'ENGRAVE' | 'HOLES' | 'CUT' | 'AUTO';
 
@@ -55,6 +55,9 @@ export interface ImportedRasterImage {
   yMm: number;
   widthMm: number;
   heightMm: number;
+  pixelWidth?: number;
+  pixelHeight?: number;
+  effectiveDpi?: number;
   rotationDeg?: number;
   mirrored?: boolean;
 }
@@ -1932,20 +1935,20 @@ function buildWorkbenchJobFromParsedPaths(params: {
       visible: true,
       originalDataUrl: r.dataUrl,
       processedDataUrl: r.dataUrl,
-      pixelWidth: 500,
-      pixelHeight: 500,
+      pixelWidth: r.pixelWidth ?? 500,
+      pixelHeight: r.pixelHeight ?? 500,
       processing: {
         mode: 'raster',
         threshold: 165,
         brightness: 0,
         contrast: 0,
         invert: false,
-        removeBackground: true,
+        removeBackground: false,
         backgroundTolerance: 20,
         turdSize: 0.8,
       },
       vectorizedPathsNormalized: [],
-      effectiveDpi: 300,
+      effectiveDpi: r.effectiveDpi ?? 300,
     };
     elements.push(rasterEl);
     directEngraveItems.push({
@@ -2098,6 +2101,170 @@ export function mergeImportedLayerUpdates(
   };
 }
 
+// =========================================================================
+// 6. PARSER RÁSTER EXTERNO (.png / .jpg / .webp / .bmp) CON DPI FÍSICO REAL
+// =========================================================================
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const sub = bytes.subarray(i, Math.min(bytes.length, i + chunkSize));
+    binary += String.fromCharCode(...sub);
+  }
+  return btoa(binary);
+}
+
+function readUint16BE(b: Uint8Array, off: number): number {
+  return ((b[off] << 8) | b[off + 1]) >>> 0;
+}
+
+function readUint32BE(b: Uint8Array, off: number): number {
+  return ((b[off] << 24) | (b[off + 1] << 16) | (b[off + 2] << 8) | b[off + 3]) >>> 0;
+}
+
+function readInt32LE(b: Uint8Array, off: number): number {
+  return (b[off] | (b[off + 1] << 8) | (b[off + 2] << 16) | (b[off + 3] << 24)) | 0;
+}
+
+function extractFilenameDpiHint(fileName: string): number | null {
+  const m = fileName.match(/(?:^|[^0-9])(\d{2,4})\s*dpi\b/i);
+  if (!m) return null;
+  const dpi = parseInt(m[1], 10);
+  return Number.isFinite(dpi) && dpi >= 36 && dpi <= 2400 ? dpi : null;
+}
+
+export function parseRasterEngraveExternalFile(
+  fileName: string,
+  bytes: Uint8Array
+): ParsedExternalLaserGeometry {
+  const lower = fileName.trim().toLowerCase();
+  let mime = 'image/png';
+  let widthPx = 0;
+  let heightPx = 0;
+  let dpiX: number | null = null;
+  let dpiY: number | null = null;
+
+  const isPng =
+    bytes.length >= 24 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47;
+
+  if (isPng) {
+    mime = 'image/png';
+    widthPx = readUint32BE(bytes, 16);
+    heightPx = readUint32BE(bytes, 20);
+    let pos = 8;
+    while (pos + 12 <= bytes.length) {
+      const len = readUint32BE(bytes, pos);
+      const tag = String.fromCharCode(
+        bytes[pos + 4],
+        bytes[pos + 5],
+        bytes[pos + 6],
+        bytes[pos + 7]
+      );
+      if (tag === 'pHYs' && len >= 9 && pos + 8 + 9 <= bytes.length) {
+        const ppuX = readUint32BE(bytes, pos + 8);
+        const ppuY = readUint32BE(bytes, pos + 12);
+        const unit = bytes[pos + 16];
+        if (unit === 1 && ppuX > 0 && ppuY > 0) {
+          dpiX = Math.round(ppuX * 0.0254);
+          dpiY = Math.round(ppuY * 0.0254);
+        }
+        break;
+      }
+      if (tag === 'IDAT' || tag === 'IEND') break;
+      pos += 12 + len;
+    }
+  } else if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    mime = 'image/jpeg';
+    let pos = 2;
+    while (pos + 4 <= bytes.length && bytes[pos] === 0xff) {
+      const marker = bytes[pos + 1];
+      if (marker === 0xd9 || marker === 0xda) break;
+      const segLen = readUint16BE(bytes, pos + 2);
+      if (segLen < 2 || pos + 2 + segLen > bytes.length) break;
+      if (
+        marker === 0xe0 &&
+        segLen >= 16 &&
+        bytes[pos + 4] === 0x4a &&
+        bytes[pos + 5] === 0x46 &&
+        bytes[pos + 6] === 0x49 &&
+        bytes[pos + 7] === 0x46
+      ) {
+        const units = bytes[pos + 11];
+        const xDens = readUint16BE(bytes, pos + 12);
+        const yDens = readUint16BE(bytes, pos + 14);
+        if (units === 1 && xDens > 0 && yDens > 0) {
+          dpiX = xDens;
+          dpiY = yDens;
+        } else if (units === 2 && xDens > 0 && yDens > 0) {
+          dpiX = Math.round(xDens * 2.54);
+          dpiY = Math.round(yDens * 2.54);
+        }
+      } else if (marker >= 0xc0 && marker <= 0xc3 && segLen >= 9) {
+        heightPx = readUint16BE(bytes, pos + 5);
+        widthPx = readUint16BE(bytes, pos + 7);
+      }
+      pos += 2 + segLen;
+    }
+  } else if (bytes.length >= 26 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+    mime = 'image/bmp';
+    widthPx = Math.abs(readInt32LE(bytes, 18));
+    heightPx = Math.abs(readInt32LE(bytes, 22));
+    if (bytes.length >= 46) {
+      const ppmX = readInt32LE(bytes, 38);
+      const ppmY = readInt32LE(bytes, 42);
+      if (ppmX > 0 && ppmY > 0) {
+        dpiX = Math.round(ppmX * 0.0254);
+        dpiY = Math.round(ppmY * 0.0254);
+      }
+    }
+  } else if (lower.endsWith('.webp') && bytes.length >= 30) {
+    mime = 'image/webp';
+    const chunkTag = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
+    if (chunkTag === 'VP8X') {
+      widthPx = (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)) + 1;
+      heightPx = (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16)) + 1;
+    }
+  } else if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+    mime = 'image/jpeg';
+  } else if (lower.endsWith('.bmp')) {
+    mime = 'image/bmp';
+  }
+
+  const nameDpi = extractFilenameDpiHint(fileName);
+  const effDpiX = nameDpi ?? (dpiX && dpiX >= 36 ? dpiX : 300);
+  const effDpiY = nameDpi ?? (dpiY && dpiY >= 36 ? dpiY : effDpiX);
+
+  const safeWpx = widthPx > 0 ? widthPx : 600;
+  const safeHpx = heightPx > 0 ? heightPx : 600;
+  const widthMm = Math.max(1, roundMm((safeWpx / effDpiX) * 25.4, 2));
+  const heightMm = Math.max(1, roundMm((safeHpx / effDpiY) * 25.4, 2));
+
+  const dataUrl = `data:${mime};base64,${uint8ToBase64(bytes)}`;
+
+  return {
+    format: 'raster',
+    paths: [],
+    rasters: [
+      {
+        dataUrl,
+        xMm: 0,
+        yMm: 0,
+        widthMm,
+        heightMm,
+        pixelWidth: safeWpx,
+        pixelHeight: safeHpx,
+        effectiveDpi: effDpiX,
+      },
+    ],
+    layerPresets: {},
+  };
+}
+
 export function detectExternalLaserFormat(fileName: string): ExternalLaserFormat | null {
   const lower = fileName.trim().toLowerCase();
   if (lower.endsWith('.dxf')) return 'dxf';
@@ -2105,6 +2272,15 @@ export function detectExternalLaserFormat(fileName: string): ExternalLaserFormat
   if (lower.endsWith('.lbrn2') || lower.endsWith('.lbrn')) return 'lbrn2';
   if (lower.endsWith('.ai')) return 'ai';
   if (lower.endsWith('.rd')) return 'rd';
+  if (
+    lower.endsWith('.png') ||
+    lower.endsWith('.jpg') ||
+    lower.endsWith('.jpeg') ||
+    lower.endsWith('.webp') ||
+    lower.endsWith('.bmp')
+  ) {
+    return 'raster';
+  }
   return null;
 }
 
@@ -2117,7 +2293,7 @@ export async function importExternalLaserFile(params: {
   const format = detectExternalLaserFormat(fileName);
   if (!format) {
     throw new Error(
-      `Formato no soportado para "${fileName}". Formatos admitidos: .dxf, .svg, .lbrn2, .lbrn, .ai y .rd`
+      `Formato no soportado para "${fileName}". Formatos admitidos: .dxf, .svg, .lbrn2, .lbrn, .ai, .rd, .png, .jpg, .webp y .bmp`
     );
   }
 
@@ -2132,8 +2308,10 @@ export async function importExternalLaserFile(params: {
     parsed = parseLbrn2ExternalFile(new TextDecoder('utf-8').decode(bytes));
   } else if (format === 'ai') {
     parsed = await parseAiExternalFile(bytes);
-  } else {
+  } else if (format === 'rd') {
     parsed = parseRdExternalFile(bytes);
+  } else {
+    parsed = parseRasterEngraveExternalFile(fileName, bytes);
   }
 
   const built = buildWorkbenchJobFromParsedPaths({
