@@ -72,6 +72,9 @@ import {
   saveMaterialLibraryEntry,
 } from '../core/workbench/materialCalibrationEngine';
 import {
+  prepareWorkbenchRasterMasks,
+} from '../core/workbench/rasterScanlines';
+import {
   compileWorkbenchToRuidaRd,
   RuidaUploadProgress,
 } from '../core/workbench/ruidaCompiler';
@@ -1128,9 +1131,23 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     setSafetyHighlight(false);
 
     try {
-      const compiled = compileWorkbenchToRuidaRd(workbenchJobs, workbenchConfig);
+      setIsSendingToRuida(true);
+      setRuidaStatusMsg({
+        type: 'info',
+        text: 'Procesando píxeles reales del logo para el grabado láser…',
+      });
+      const rasterMasks = await prepareWorkbenchRasterMasks(
+        workbenchJobs,
+        workbenchConfig
+      );
+      const compiled = compileWorkbenchToRuidaRd(
+        workbenchJobs,
+        workbenchConfig,
+        rasterMasks
+      );
 
       if (!isTauri()) {
+        setIsSendingToRuida(false);
         const blob = new Blob([compiled.rdBytes], { type: 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1142,12 +1159,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         setRuidaStatusMsg({
           type: 'info',
-          text: `Archivo binario Ruida "${compiled.filenameSuggested}" (${compiled.rdBytes.length} bytes) descargado. El envío UDP directo sin cables se realiza desde la app nativa Astra Studio (.app).`,
+          text: `Archivo binario Ruida "${compiled.filenameSuggested}" (${compiled.rdBytes.length} bytes) descargado. El envío TCP/UDP directo sin cables se realiza desde la app nativa Astra Studio (.app).`,
         });
         return;
       }
 
-      setIsSendingToRuida(true);
       setRuidaUploadProgress(null);
       const response = await uploadRdBytesToVankRuida({
         ip: workbenchConfig.ruidaIpAddress,
@@ -1174,10 +1190,18 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     }
   };
 
-  const handleDownloadRdFile = () => {
+  const handleDownloadRdFile = async () => {
     setRuidaStatusMsg(null);
     try {
-      const compiled = compileWorkbenchToRuidaRd(workbenchJobs, workbenchConfig);
+      const rasterMasks = await prepareWorkbenchRasterMasks(
+        workbenchJobs,
+        workbenchConfig
+      );
+      const compiled = compileWorkbenchToRuidaRd(
+        workbenchJobs,
+        workbenchConfig,
+        rasterMasks
+      );
       const blob = new Blob([compiled.rdBytes], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -4013,7 +4037,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     <button
                       type="button"
                       disabled={!validation.isValidForMachineSend}
-                      onClick={handleDownloadRdFile}
+                      onClick={() => void handleDownloadRdFile()}
                       className="py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-emerald-300 font-bold text-xs flex items-center justify-center gap-1.5 transition"
                     >
                       <Download className="w-3.5 h-3.5" />
@@ -4314,7 +4338,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 <button
                   type="button"
                   disabled={!validation.isValidForMachineSend}
-                  onClick={handleDownloadRdFile}
+                  onClick={() => void handleDownloadRdFile()}
                   className="py-2 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-emerald-300 font-bold text-[11px] flex items-center justify-center gap-1"
                 >
                   <Download className="w-3.5 h-3.5 shrink-0" />

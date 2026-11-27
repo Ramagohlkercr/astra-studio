@@ -19,6 +19,10 @@ import {
   saveMaterialLibraryEntry,
 } from '../workbench/materialCalibrationEngine';
 import {
+  buildRasterMaskCacheKey,
+  buildScanlineMaskFromRgba,
+} from '../workbench/rasterScanlines';
+import {
   buildRuidaFileUploadHeaderBytes,
   buildRuidaUdpPackets,
   compileWorkbenchToRuidaRd,
@@ -1018,6 +1022,103 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
       unscrambleRuidaByte(b)
     );
     expect(hdr).toEqual([0xe8, 0x02, 0xe7, 0x01, 67, 72, 85, 82, 73, 84, 65, 83, 0x00]);
+
+    // 5. Verificar que imágenes raster generen corridas reales píxel a píxel (NO rectángulos sólidos)
+    // Matriz RGBA 10x4: filas 0 y 3 todo blanco; filas 1 y 2 barra oscura solo en columnas 2..7
+    const rgba = new Uint8ClampedArray(10 * 4 * 4);
+    for (let y = 0; y < 4; y++) {
+      for (let x = 0; x < 10; x++) {
+        const idx = (y * 10 + x) * 4;
+        const isInk = (y === 1 || y === 2) && x >= 2 && x <= 7;
+        rgba[idx] = isInk ? 10 : 255;
+        rgba[idx + 1] = isInk ? 10 : 255;
+        rgba[idx + 2] = isInk ? 10 : 255;
+        rgba[idx + 3] = 255;
+      }
+    }
+    const mask = buildScanlineMaskFromRgba(rgba, 10, 4, 'threshold');
+    expect(mask.rowRuns[0]).toEqual([]);
+    expect(mask.rowRuns[1]).toEqual([[0.2, 0.8]]);
+    expect(mask.rowRuns[2]).toEqual([[0.2, 0.8]]);
+    expect(mask.rowRuns[3]).toEqual([]);
+
+    const fakePng = 'data:image/png;base64,iVBORw0KGgo=';
+    const rasterDesign = {
+      ...sampleOrder.labelDesign,
+      elements: [
+        {
+          id: 'logo-raster',
+          type: 'logo_raster' as const,
+          name: 'Logo Raster',
+          visible: true,
+          locked: false,
+          xMm: 10,
+          yMm: 5,
+          widthMm: 10,
+          heightMm: 4,
+          aspectRatio: 2.5,
+          lockAspectRatio: true,
+          rotationDeg: 0,
+          mirrored: false,
+          operationLayer: 'ENGRAVE' as const,
+          originalDataUrl: fakePng,
+          processedDataUrl: fakePng,
+          pixelWidth: 100,
+          pixelHeight: 40,
+          processing: {
+            mode: 'raster' as const,
+            threshold: 175,
+            ditherStrength: 0.5,
+            invert: false,
+            contrast: 1.1,
+            brightness: 0,
+            gamma: 1,
+            removeLightBackground: true,
+            removeBackground: true,
+            turdSize: 2,
+            backgroundTolerance: 24,
+            preserveLogoDetail: true,
+          },
+          vectorizedPathsNormalized: [],
+          effectiveDpi: 254,
+        },
+      ],
+    };
+    const rasterJob = createWorkbenchJobFromOrder({
+      design: rasterDesign,
+      nesting,
+      mode: 'single_piece',
+      projectName: 'Raster Logo',
+      clientName: 'Cliente',
+      orderId: 'ord-raster',
+      existingJobs: [],
+      config: userOriginCfg,
+    });
+    const engItem = rasterJob.instances[0].engraveItems.find(
+      (it) => it.kind === 'raster_image'
+    )!;
+    const maskKey = buildRasterMaskCacheKey({
+      dataUrl: engItem.dataUrl!,
+      bboxWidthMm: engItem.boundingBox.width,
+      bboxHeightMm: engItem.boundingBox.height,
+      rotationDeg: engItem.rotationDeg ?? 0,
+      mirrored: !!engItem.mirrored,
+      lineIntervalMm: userOriginCfg.layers[0].lineIntervalMm || 0.08,
+      ditherMode: userOriginCfg.layers[0].imageDitherMode ?? 'threshold',
+    });
+    const rdRaster = compileWorkbenchToRuidaRd(
+      [rasterJob],
+      userOriginCfg,
+      new Map([[maskKey, mask]])
+    );
+    const emptyMask = { cols: 10, rows: 4, rowRuns: [[], [], [], []] };
+    const rdRasterEmpty = compileWorkbenchToRuidaRd(
+      [rasterJob],
+      userOriginCfg,
+      new Map([[maskKey, emptyMask]])
+    );
+    // Solo las 2 filas con tinta emiten (Move + Cut = 2 comandos c/u -> exactamente +4 comandos vs máscara vacía)
+    expect(rdRaster.commandCount - rdRasterEmpty.commandCount).toBe(4);
 
     // En navegador (sin Tauri), probeVankRuidaConnection NO simula falso online (reachable === false)
     const probeBadIp = await probeVankRuidaConnection({ ip: 'bad-ip', port: 50200 });

@@ -11,6 +11,11 @@
 
 import { roundMm } from '../geometry/geometryEngine';
 import {
+  buildRasterMaskCacheKey,
+  getCachedRasterScanlineMask,
+  RasterScanlineMask,
+} from './rasterScanlines';
+import {
   sortInstancesInTravelOrder,
   validateWorkbenchState,
 } from './workbenchEngine';
@@ -331,12 +336,20 @@ export interface CompiledRuidaRdArtifact {
   commandCount: number;
 }
 
+/** Codifica un desplazamiento relativo en micrómetros ([-8000..+8000] µm) en 2 bytes de 7 bits (complemento a dos 14-bit). */
+export function encodeRuidaRelUm(deltaUm: number): number[] {
+  const clamped = Math.max(-8191, Math.min(8191, Math.round(deltaUm)));
+  const encoded = clamped < 0 ? (0x4000 + clamped) & 0x3fff : clamped & 0x3fff;
+  return [(encoded >>> 7) & 0x7f, encoded & 0x7f];
+}
+
 /**
  * Compila la mesa de trabajo completa en un archivo binario Ruida (.rd) verificado.
  */
 export function compileWorkbenchToRuidaRd(
   jobs: WorkbenchJobItem[],
-  config: WorkbenchConfig
+  config: WorkbenchConfig,
+  rasterMasks?: Map<string, RasterScanlineMask>
 ): CompiledRuidaRdArtifact {
   const report = validateWorkbenchState(jobs, config);
 
@@ -447,22 +460,55 @@ export function compileWorkbenchToRuidaRd(
     emit([0xc6, 0x02, ...encodeRuidaPowerPercent(maxP)]);
   };
 
+  let curUmX = 0;
+  let curUmY = 0;
+  let hasCursor = false;
+
   const emitMoveAbs = (xMm: number, yMm: number) => {
-    // 88 <X 5B> <Y 5B>: Move Absolute (Rapid G0 Laser Off)
-    emit([
-      0x88,
-      ...encodeRuidaAbsCoordMm(toRuidaX(xMm)),
-      ...encodeRuidaAbsCoordMm(toRuidaY(yMm)),
-    ]);
+    const rx = toRuidaX(xMm);
+    const ry = toRuidaY(yMm);
+    const tx = Math.round(rx * 1000);
+    const ty = Math.round(ry * 1000);
+    const dx = tx - curUmX;
+    const dy = ty - curUmY;
+    if (hasCursor && dx === 0 && dy === 0) return;
+    if (hasCursor && dy === 0 && Math.abs(dx) < 8000) {
+      // 8A <dx 2B>: Move Rel X (3 bytes en vez de 11, idéntico a LightBurn EmitMoveOrCut)
+      emit([0x8a, ...encodeRuidaRelUm(dx)]);
+    } else {
+      // 88 <X 5B> <Y 5B>: Move Absolute (Rapid G0 Laser Off)
+      emit([
+        0x88,
+        ...encodeRuidaAbsCoordMm(rx),
+        ...encodeRuidaAbsCoordMm(ry),
+      ]);
+    }
+    curUmX = tx;
+    curUmY = ty;
+    hasCursor = true;
   };
 
   const emitCutAbs = (xMm: number, yMm: number) => {
-    // A8 <X 5B> <Y 5B>: Cut Absolute (G1 Laser On)
-    emit([
-      0xa8,
-      ...encodeRuidaAbsCoordMm(toRuidaX(xMm)),
-      ...encodeRuidaAbsCoordMm(toRuidaY(yMm)),
-    ]);
+    const rx = toRuidaX(xMm);
+    const ry = toRuidaY(yMm);
+    const tx = Math.round(rx * 1000);
+    const ty = Math.round(ry * 1000);
+    const dx = tx - curUmX;
+    const dy = ty - curUmY;
+    if (hasCursor && dy === 0 && dx !== 0 && Math.abs(dx) < 8000) {
+      // AA <dx 2B>: Cut Rel X (3 bytes en vez de 11 para trazos horizontales)
+      emit([0xaa, ...encodeRuidaRelUm(dx)]);
+    } else {
+      // A8 <X 5B> <Y 5B>: Cut Absolute (G1 Laser On)
+      emit([
+        0xa8,
+        ...encodeRuidaAbsCoordMm(rx),
+        ...encodeRuidaAbsCoordMm(ry),
+      ]);
+    }
+    curUmX = tx;
+    curUmY = ty;
+    hasCursor = true;
   };
 
   const emittedLayerCutIndices = new Set<number>();
@@ -480,6 +526,7 @@ export function compileWorkbenchToRuidaRd(
     const ensurePreamble = () => {
       if (!emittedPreamble) {
         emitLayerPreamble(layer);
+        hasCursor = false;
         emittedPreamble = true;
         emittedLayerCutIndices.add(layer.cutIndex);
       }
@@ -506,24 +553,65 @@ export function compileWorkbenchToRuidaRd(
                 }
               }
             } else {
-              // Barrido raster dentro de la caja del elemento
+              // Grabado raster real píxel a píxel (nunca rellenar el rectángulo entero)
               const bb = eng.boundingBox;
               const minX = roundMm(job.xMm + bb.minX);
               const maxX = roundMm(job.xMm + bb.maxX);
               const minY = roundMm(job.yMm + bb.minY);
               const maxY = roundMm(job.yMm + bb.maxY);
-              const interval = Math.max(0.05, layer.lineIntervalMm || 0.1);
-              const linesCount = Math.max(1, Math.min(400, Math.ceil((maxY - minY) / interval)));
+              const interval = Math.max(0.05, layer.lineIntervalMm || 0.08);
+              const effInterval =
+                report.totalPieces > 60 ? Math.max(interval, 0.1) : interval;
+              const ditherMode = layer.imageDitherMode ?? 'threshold';
 
-              for (let row = 0; row <= linesCount; row++) {
-                const y = roundMm(minY + ((maxY - minY) * row) / Math.max(1, linesCount));
-                if (row % 2 === 0) {
-                  emitMoveAbs(minX, y);
-                  emitCutAbs(maxX, y);
-                } else {
-                  emitMoveAbs(maxX, y);
-                  emitCutAbs(minX, y);
+              let mask: RasterScanlineMask | undefined;
+              if (eng.kind === 'raster_image' && eng.dataUrl) {
+                const key = buildRasterMaskCacheKey({
+                  dataUrl: eng.dataUrl,
+                  bboxWidthMm: Math.max(0.5, bb.width || eng.widthMm || 10),
+                  bboxHeightMm: Math.max(0.5, bb.height || eng.heightMm || 10),
+                  rotationDeg: eng.rotationDeg ?? 0,
+                  mirrored: !!eng.mirrored,
+                  lineIntervalMm: effInterval,
+                  ditherMode,
+                });
+                mask = rasterMasks?.get(key) ?? getCachedRasterScanlineMask(key);
+              }
+
+              if (mask && mask.rowRuns.length > 0) {
+                const spanX = Math.max(0.01, maxX - minX);
+                const spanY = Math.max(0.01, maxY - minY);
+                for (let row = 0; row < mask.rowRuns.length; row++) {
+                  const runs = mask.rowRuns[row];
+                  if (runs.length === 0) continue;
+                  const y = roundMm(minY + ((row + 0.5) / mask.rows) * spanY, 3);
+                  if (row % 2 === 0) {
+                    for (let r = 0; r < runs.length; r++) {
+                      const [u0, u1] = runs[r];
+                      const x0 = roundMm(minX + u0 * spanX, 3);
+                      const x1 = roundMm(minX + u1 * spanX, 3);
+                      if (x1 - x0 < 0.02) continue;
+                      emitMoveAbs(x0, y);
+                      emitCutAbs(x1, y);
+                    }
+                  } else {
+                    for (let r = runs.length - 1; r >= 0; r--) {
+                      const [u0, u1] = runs[r];
+                      const x0 = roundMm(minX + u0 * spanX, 3);
+                      const x1 = roundMm(minX + u1 * spanX, 3);
+                      if (x1 - x0 < 0.02) continue;
+                      emitMoveAbs(x1, y);
+                      emitCutAbs(x0, y);
+                    }
+                  }
                 }
+              } else {
+                // Fallback seguro si no hay canvas DOM (tests headless): marcar solo contorno de encuadre sin bloque negro sólido
+                emitMoveAbs(minX, minY);
+                emitCutAbs(maxX, minY);
+                emitCutAbs(maxX, maxY);
+                emitCutAbs(minX, maxY);
+                emitCutAbs(minX, minY);
               }
             }
           }
