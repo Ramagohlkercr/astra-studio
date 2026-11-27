@@ -49,6 +49,8 @@ import {
   verifyRuidaUdpPacketChecksums,
 } from '../workbench/ruidaCompiler';
 import {
+  buildSmartRelayPowerCommand,
+  DEFAULT_MACHINE_POWER_RELAY_CONFIG,
   probeVankRuidaConnection,
   uploadRdBytesToVankRuida,
 } from '../workbench/ruidaTransportClient';
@@ -1991,5 +1993,32 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
 
     const rollStats = computeEcocueroRollMetrics(arrangedSheet, ecoCfg);
     expect(rollStats.usedLengthMm).toBeLessThan(350);
+  });
+
+  it('26. Construcción de comandos de apagado completo de máquina (Shelly Gen2/Gen1, Tasmota, Webhook)', () => {
+    const shellyGen2 = buildSmartRelayPowerCommand(
+      { ...DEFAULT_MACHINE_POWER_RELAY_CONFIG, relayPreset: 'shelly_gen2', relayHostOrUrl: '192.168.0.210' },
+      'off'
+    );
+    expect(shellyGen2?.url).toBe('http://192.168.0.210/rpc/Switch.Set?id=0&on=false');
+    expect(shellyGen2?.method).toBe('GET');
+
+    const shellyGen1 = buildSmartRelayPowerCommand(
+      { ...DEFAULT_MACHINE_POWER_RELAY_CONFIG, relayPreset: 'shelly_gen1', relayHostOrUrl: 'http://192.168.0.211/' },
+      'off'
+    );
+    expect(shellyGen1?.url).toBe('http://192.168.0.211/relay/0?turn=off');
+
+    const tasmota = buildSmartRelayPowerCommand(
+      { ...DEFAULT_MACHINE_POWER_RELAY_CONFIG, relayPreset: 'tasmota', relayHostOrUrl: '192.168.0.212' },
+      'off'
+    );
+    expect(tasmota?.url).toBe('http://192.168.0.212/cm?cmnd=Power%20Off');
+
+    const disabled = buildSmartRelayPowerCommand(
+      { ...DEFAULT_MACHINE_POWER_RELAY_CONFIG, relayPreset: 'none', relayHostOrUrl: '192.168.0.210' },
+      'off'
+    );
+    expect(disabled).toBeNull();
   });
 });

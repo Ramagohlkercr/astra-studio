@@ -10,7 +10,9 @@ pub fn run() {
       ruida_transport::probe_ruida_connection,
       ruida_transport::query_ruida_machine_status,
       ruida_transport::query_ruida_motion_params,
-      ruida_transport::list_ruida_files
+      ruida_transport::list_ruida_files,
+      ruida_transport::send_ruida_panel_action,
+      ruida_transport::trigger_smart_relay_http
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

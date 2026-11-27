@@ -1304,6 +1304,247 @@ pub async fn list_ruida_files(ip: String, port: u16) -> Result<RuidaFilesListRes
     .map_err(|e| format!("Error interno al listar archivos de Vank 9060: {e}"))?
 }
 
+#[derive(Serialize)]
+pub struct RuidaPanelActionResponse {
+    pub ok: bool,
+    pub reachable: bool,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct SmartRelayHttpResponse {
+    pub ok: bool,
+    pub status_code: Option<u16>,
+    pub body_preview: String,
+    pub message: String,
+}
+
+fn send_ruida_panel_action_internal(
+    target_ip: Ipv4Addr,
+    panel_port: u16,
+    cmd: &[u8],
+    action_label: &str,
+) -> RuidaPanelActionResponse {
+    let remote = SocketAddr::from((target_ip, panel_port));
+    let sock = UdpSocket::bind(("0.0.0.0", 40207))
+        .or_else(|_| UdpSocket::bind(("0.0.0.0", 0)));
+    let Ok(sock) = sock else {
+        return RuidaPanelActionResponse {
+            ok: false,
+            reachable: false,
+            message: "No se pudo abrir socket UDP local para enviar comando al panel Ruida."
+                .to_string(),
+        };
+    };
+
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(450)));
+    let _ = sock.set_write_timeout(Some(Duration::from_millis(450)));
+
+    if sock.send_to(&[0xCC], remote).is_err() {
+        return RuidaPanelActionResponse {
+            ok: false,
+            reachable: false,
+            message: format!("Sin respuesta UDP en {target_ip}:{panel_port}."),
+        };
+    }
+
+    let mut ack_buf = [0u8; 64];
+    let handshake_ok = match sock.recv_from(&mut ack_buf) {
+        Ok((n, _)) if n >= 1 => ack_buf[0] == 0xCC || ack_buf[0] == 0xC6,
+        _ => false,
+    };
+
+    let sent_cmd = sock.send_to(cmd, remote).is_ok();
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(180)));
+    let mut cmd_ack = [0u8; 32];
+    let _ = sock.recv_from(&mut cmd_ack);
+    let _ = sock.send_to(&[0xCD], remote);
+
+    if sent_cmd && handshake_ok {
+        RuidaPanelActionResponse {
+            ok: true,
+            reachable: true,
+            message: format!("Comando \"{action_label}\" enviado a la controladora Ruida ({target_ip}:{panel_port})."),
+        }
+    } else if sent_cmd {
+        RuidaPanelActionResponse {
+            ok: false,
+            reachable: false,
+            message: format!(
+                "Se intentó \"{action_label}\" hacia {target_ip}:{panel_port}, pero el puerto remoto 50207 no devolvió confirmación."
+            ),
+        }
+    } else {
+        RuidaPanelActionResponse {
+            ok: false,
+            reachable: false,
+            message: format!("No se pudo enviar \"{action_label}\" a {target_ip}:{panel_port}."),
+        }
+    }
+}
+
+/// Envía comandos de panel remoto al puerto UDP 50207 de Ruida RDC8445S:
+/// - `stop`: 0xA5 0x50 0x09 (Detener trabajo + apagar láser/aire)
+/// - `pause`: 0xA5 0x50 0x06 (Pausar / Reanudar)
+/// - `reset`: 0xA5 0x50 0x5A (Reiniciar controladora Ruida)
+#[tauri::command]
+pub async fn send_ruida_panel_action(
+    ip: String,
+    port: u16,
+    action: String,
+) -> Result<RuidaPanelActionResponse, String> {
+    let target_ip = parse_ipv4(&ip)?;
+    if port == 0 {
+        return Err("Puerto Ruida inválido.".into());
+    }
+    let clean_action = action.trim().to_ascii_lowercase();
+    let (cmd, label): (&[u8], &str) = match clean_action.as_str() {
+        "stop" => (&[0xA5, 0x50, 0x09], "STOP / Detener trabajo"),
+        "pause" => (&[0xA5, 0x50, 0x06], "Pausa / Reanudar"),
+        "reset" => (&[0xA5, 0x50, 0x5A], "Reset de controladora"),
+        _ => return Err("Acción Ruida no válida. Usar stop, pause o reset.".into()),
+    };
+
+    // Puerto de comandos remotos Ruida = 50207 cuando se configura el puerto estándar 50200
+    let panel_port = if port == 50200 { 50207 } else { port };
+    tauri::async_runtime::spawn_blocking(move || {
+        send_ruida_panel_action_internal(target_ip, panel_port, cmd, label)
+    })
+    .await
+    .map_err(|e| format!("Error interno al enviar comando remoto a Ruida: {e}"))
+}
+
+fn trigger_smart_relay_http_internal(
+    url: &str,
+    method: &str,
+    body_json: Option<&str>,
+    auth_header: Option<&str>,
+) -> Result<SmartRelayHttpResponse, String> {
+    if url.contains('\r') || url.contains('\n') {
+        return Err("URL de relé inválida.".into());
+    }
+    let trimmed = url.trim();
+    let without_scheme = trimmed
+        .strip_prefix("http://")
+        .ok_or_else(|| "La URL del relé local debe comenzar con http:// (ej. http://192.168.0.210/...).".to_string())?;
+
+    let (authority, path_and_query) = match without_scheme.find('/') {
+        Some(idx) => (&without_scheme[..idx], &without_scheme[idx..]),
+        None => (without_scheme, "/"),
+    };
+    if authority.is_empty() {
+        return Err("Falta la dirección IP o host del relé.".into());
+    }
+
+    let (host, port_num): (&str, u16) = match authority.rfind(':') {
+        Some(colon) => {
+            let p = authority[colon + 1..]
+                .parse::<u16>()
+                .map_err(|_| "Puerto inválido en URL de relé.".to_string())?;
+            (&authority[..colon], p)
+        }
+        None => (authority, 80),
+    };
+
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<SocketAddr> = format!("{host}:{port_num}")
+        .to_socket_addrs()
+        .map_err(|e| format!("No se pudo resolver {host}:{port_num}: {e}"))?
+        .collect();
+    let Some(&addr) = addrs.first() else {
+        return Err(format!("Sin dirección válida para {host}:{port_num}."));
+    };
+
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(2200))
+        .map_err(|e| format!("Sin conexión con relé 220V en {host}:{port_num} ({e})."))?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(2200)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(2200)));
+
+    let clean_method = if method.eq_ignore_ascii_case("POST") {
+        "POST"
+    } else {
+        "GET"
+    };
+    let mut req = format!(
+        "{clean_method} {path_and_query} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n"
+    );
+    if let Some(auth) = auth_header {
+        let clean_auth = auth.trim();
+        if !clean_auth.is_empty() && !clean_auth.contains('\r') && !clean_auth.contains('\n') {
+            req.push_str(&format!("Authorization: {clean_auth}\r\n"));
+        }
+    }
+    if let Some(body) = body_json {
+        if clean_method == "POST" {
+            req.push_str("Content-Type: application/json\r\n");
+            req.push_str(&format!("Content-Length: {}\r\n\r\n{}", body.len(), body));
+        } else {
+            req.push_str("\r\n");
+        }
+    } else {
+        req.push_str("\r\n");
+    }
+
+    stream
+        .write_all(req.as_bytes())
+        .and_then(|_| stream.flush())
+        .map_err(|e| format!("Error enviando orden al relé 220V: {e}"))?;
+
+    let mut resp_buf = [0u8; 1024];
+    let n = stream.read(&mut resp_buf).unwrap_or(0);
+    let text = String::from_utf8_lossy(&resp_buf[..n]).to_string();
+    let status_code = text
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok());
+    let body_preview = text
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(180)
+        .collect::<String>();
+
+    let ok = status_code.map(|c| (200..300).contains(&c)).unwrap_or(false);
+    Ok(SmartRelayHttpResponse {
+        ok,
+        status_code,
+        body_preview,
+        message: if ok {
+            format!("Relé 220 V respondió OK (HTTP {}).", status_code.unwrap_or(200))
+        } else {
+            format!(
+                "Relé en {host}:{port_num} devolvió HTTP {}.",
+                status_code.map(|c| c.to_string()).unwrap_or_else(|| "sin respuesta".to_string())
+            )
+        },
+    })
+}
+
+/// Dispara una orden HTTP local hacia un relé inteligente 220V / contactor (Shelly, Tasmota, Home Assistant)
+/// sin restricciones de CORS del WebView.
+#[tauri::command]
+pub async fn trigger_smart_relay_http(
+    url: String,
+    method: Option<String>,
+    body_json: Option<String>,
+    auth_header: Option<String>,
+) -> Result<SmartRelayHttpResponse, String> {
+    let clean_method = method.unwrap_or_else(|| "GET".to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        trigger_smart_relay_http_internal(
+            &url,
+            &clean_method,
+            body_json.as_deref(),
+            auth_header.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("Error interno al comunicarse con relé 220V: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1607,5 +1848,64 @@ mod tests {
         let files = parse_ruida_e50a_file_records(&rec_wire, 0, RUIDA_MAGIC);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "ASTRA01");
+    }
+
+    #[test]
+    fn sends_ruida_panel_stop_and_triggers_mock_smart_relay_http() {
+        use std::net::TcpListener;
+
+        // 1. Mock UDP 50207 Ruida panel endpoint
+        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mock_udp_port = sock.local_addr().unwrap().port();
+        let observed = Arc::new(AtomicUsize::new(0));
+        let obs_clone = Arc::clone(&observed);
+
+        let udp_handle = thread::spawn(move || {
+            sock.set_read_timeout(Some(Duration::from_millis(1200))).unwrap();
+            let mut buf = [0u8; 32];
+            for _ in 0..3 {
+                if let Ok((n, src)) = sock.recv_from(&mut buf) {
+                    if n == 1 && buf[0] == 0xCC {
+                        let _ = sock.send_to(&[0xCC], src);
+                    } else if n == 3 && buf[..3] == [0xA5, 0x50, 0x09] {
+                        obs_clone.store(1, Ordering::SeqCst);
+                        let _ = sock.send_to(&[0xCC], src);
+                    }
+                }
+            }
+        });
+
+        let panel_res = send_ruida_panel_action_internal(
+            Ipv4Addr::LOCALHOST,
+            mock_udp_port,
+            &[0xA5, 0x50, 0x09],
+            "STOP",
+        );
+        udp_handle.join().unwrap();
+        assert!(panel_res.ok);
+        assert!(panel_res.reachable);
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
+
+        // 2. Mock local Shelly/Tasmota HTTP server
+        let http_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mock_http_port = http_listener.local_addr().unwrap().port();
+        let http_handle = thread::spawn(move || {
+            let (mut conn, _) = http_listener.accept().unwrap();
+            let mut buf = [0u8; 512];
+            let _ = conn.read(&mut buf);
+            let _ = conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\n{\"was_on\":true}");
+        });
+
+        let relay_res = trigger_smart_relay_http_internal(
+            &format!("http://127.0.0.1:{mock_http_port}/rpc/Switch.Set?id=0&on=false"),
+            "GET",
+            None,
+            None,
+        )
+        .unwrap();
+        http_handle.join().unwrap();
+        assert!(relay_res.ok);
+        assert_eq!(relay_res.status_code, Some(200));
+        assert!(relay_res.body_preview.contains("was_on"));
     }
 }

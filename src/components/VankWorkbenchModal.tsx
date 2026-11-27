@@ -22,12 +22,14 @@ import {
   Pause,
   Play,
   Plus,
+  Power,
   RotateCw,
   Ruler,
   Save,
   Send,
   Sliders,
   Sparkles,
+  Square,
   Target,
   Trash2,
   Upload,
@@ -96,11 +98,18 @@ import {
   RuidaUploadProgress,
 } from '../core/workbench/ruidaCompiler';
 import {
+  buildSmartRelayPowerCommand,
   listVankRuidaFiles,
+  loadMachinePowerRelayConfig,
+  MachinePowerRelayConfig,
   probeVankRuidaConnection,
   queryVankRuidaMachineStatus,
   queryVankRuidaMotionParams,
   RuidaControllerFile,
+  saveMachinePowerRelayConfig,
+  sendVankRuidaPanelAction,
+  SmartRelayPreset,
+  triggerSmartRelayPower,
   uploadRdBytesToVankRuida,
 } from '../core/workbench/ruidaTransportClient';
 import {
@@ -307,6 +316,18 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     Record<string, RememberedRuidaFileEstimate>
   >(() => loadRememberedFileEstimates());
   const [activeVankFileName, setActiveVankFileName] = useState<string>('');
+  const [powerRelayConfig, setPowerRelayConfig] = useState<MachinePowerRelayConfig>(() =>
+    loadMachinePowerRelayConfig()
+  );
+  const [showPowerOffModal, setShowPowerOffModal] = useState<boolean>(false);
+  const [isExecutingPowerAction, setIsExecutingPowerAction] = useState<boolean>(false);
+  const [powerActionFeedback, setPowerActionFeedback] = useState<{
+    type: 'success' | 'info' | 'error';
+    text: string;
+  } | null>(null);
+  const [autoPowerOffRemainingSec, setAutoPowerOffRemainingSec] = useState<number | null>(
+    null
+  );
   const rasterMasksRef = useRef<Map<string, RasterScanlineMask>>(new Map());
   const [preparedRasterVersion, setPreparedRasterVersion] = useState<number>(0);
 
@@ -566,7 +587,137 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     onNotify(
       `✅ Vank 9060 terminó "${machineTimer.jobName}" (${machineTimer.totalPieces} u.) en ${elapsedText}.`
     );
-  }, [machineTimer, onNotify]);
+
+    if (
+      powerRelayConfig.autoPowerOffOnFinish &&
+      buildSmartRelayPowerCommand(powerRelayConfig, 'off')
+    ) {
+      setAutoPowerOffRemainingSec(powerRelayConfig.cooldownSeconds);
+    }
+  }, [machineTimer, onNotify, powerRelayConfig]);
+
+  // Cuenta regresiva segura de enfriamiento del chiller antes de cortar 220V automáticamente al finalizar
+  useEffect(() => {
+    if (autoPowerOffRemainingSec === null) return;
+    if (machineTimer.phase === 'running') {
+      setAutoPowerOffRemainingSec(null);
+      return;
+    }
+    if (autoPowerOffRemainingSec <= 0) {
+      setAutoPowerOffRemainingSec(null);
+      void (async () => {
+        const st = await queryVankRuidaMachineStatus({
+          ip: workbenchConfig.ruidaIpAddress,
+          port: workbenchConfig.ruidaPort,
+        });
+        if (st.is_running && !st.is_paused) {
+          onNotify('⚠ Auto-apagado cancelado: la Vank 9060 volvió a estar en ejecución.');
+          return;
+        }
+        const relayRes = await triggerSmartRelayPower(powerRelayConfig, 'off');
+        onNotify(
+          relayRes.ok
+            ? `⏻ Vank 9060 apagada automáticamente tras enfriamiento (${relayRes.message}).`
+            : `⚠ Auto-apagado pendiente: ${relayRes.message}`
+        );
+      })();
+      return;
+    }
+    const id = window.setTimeout(() => {
+      setAutoPowerOffRemainingSec((prev) => (prev !== null ? Math.max(0, prev - 1) : null));
+    }, 1000);
+    return () => window.clearTimeout(id);
+  }, [
+    autoPowerOffRemainingSec,
+    machineTimer.phase,
+    workbenchConfig.ruidaIpAddress,
+    workbenchConfig.ruidaPort,
+    powerRelayConfig,
+    onNotify,
+  ]);
+
+  const handleUpdatePowerRelayConfig = (patch: Partial<MachinePowerRelayConfig>) => {
+    setPowerRelayConfig((prev) => {
+      const next = { ...prev, ...patch };
+      saveMachinePowerRelayConfig(next);
+      return next;
+    });
+  };
+
+  const handleRuidaRemoteCommand = async (action: 'stop' | 'pause' | 'reset') => {
+    setIsExecutingPowerAction(true);
+    setPowerActionFeedback(null);
+    try {
+      const res = await sendVankRuidaPanelAction({
+        ip: workbenchConfig.ruidaIpAddress,
+        port: workbenchConfig.ruidaPort,
+        action,
+      });
+      setPowerActionFeedback({
+        type: res.ok ? 'success' : 'info',
+        text: res.message,
+      });
+      onNotify(res.message);
+    } finally {
+      setIsExecutingPowerAction(false);
+    }
+  };
+
+  const handleExecuteFullMachineShutdown = async () => {
+    setIsExecutingPowerAction(true);
+    setPowerActionFeedback(null);
+    try {
+      const steps: string[] = [];
+      // 1. Verificar estado y enviar STOP + RESET seguro a la Ruida para frenar tubo láser, aire y motores
+      const st = await queryVankRuidaMachineStatus({
+        ip: workbenchConfig.ruidaIpAddress,
+        port: workbenchConfig.ruidaPort,
+      });
+      if (st.reachable) {
+        if (st.is_running || st.is_paused || st.is_framing) {
+          const stopRes = await sendVankRuidaPanelAction({
+            ip: workbenchConfig.ruidaIpAddress,
+            port: workbenchConfig.ruidaPort,
+            action: 'stop',
+          });
+          steps.push(stopRes.message);
+          await new Promise((r) => setTimeout(r, 900));
+        }
+        const resetRes = await sendVankRuidaPanelAction({
+          ip: workbenchConfig.ruidaIpAddress,
+          port: workbenchConfig.ruidaPort,
+          action: 'reset',
+        });
+        if (resetRes.ok) {
+          steps.push('Controladora Ruida detenida y en reposo seguro.');
+        }
+      } else {
+        steps.push(`Ruida (${workbenchConfig.ruidaIpAddress}) sin respuesta previa al corte.`);
+      }
+
+      // 2. Cortar 220V mediante relé inteligente local (Shelly / Tasmota / Webhook)
+      const relayCmd = buildSmartRelayPowerCommand(powerRelayConfig, 'off');
+      if (relayCmd) {
+        const relayRes = await triggerSmartRelayPower(powerRelayConfig, 'off');
+        steps.push(relayRes.message);
+        setPowerActionFeedback({
+          type: relayRes.ok ? 'success' : 'error',
+          text: steps.join(' · '),
+        });
+        if (relayRes.ok) {
+          setMachineTimer(createInitialJobTimerState());
+          setAutoPowerOffRemainingSec(null);
+        }
+        onNotify(steps.join(' · '));
+      } else {
+        const infoTxt = `${steps.join(' · ')} ⚠️ Para cortar electricidad 220 V (pantalla, chiller y extractor) conectá un relé Wi-Fi con contactor ≥25A (ej. Shelly Plus 1) e ingresá su IP abajo.`;
+        setPowerActionFeedback({ type: 'info', text: infoTxt });
+        onNotify(infoTxt);
+      }
+    } finally {
+      setIsExecutingPowerAction(false);
+    }
+  };
 
   // Monitor SIEMPRE ACTIVO de la controladora Ruida RDC8445S:
   // Detecta cualquier START físico (incluso tras Stop, desde LightBurn o USB, enviado o no desde Astra)
@@ -2186,6 +2337,19 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
           >
             <FlaskConical className="w-3.5 h-3.5 shrink-0" />
             <span>Matriz de Prueba</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setPowerActionFeedback(null);
+              setShowPowerOffModal(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/90 hover:bg-rose-900 border border-rose-700/80 text-rose-200 text-xs font-bold transition-colors whitespace-nowrap"
+            title="Detener trabajo y apagar completamente la Vank 9060 (STOP Ruida + corte 220V)"
+          >
+            <Power className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+            <span>Apagar Máquina</span>
           </button>
 
           <button
@@ -6414,6 +6578,29 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </div>
             </div>
 
+            {autoPowerOffRemainingSec !== null && (
+              <div className="p-2.5 rounded-xl bg-rose-950/60 border border-rose-700/70 text-xs text-rose-200 flex items-center justify-between gap-2">
+                <div className="text-left">
+                  <div className="font-bold">
+                    ⏻ Auto-apagado 220 V tras enfriamiento en{' '}
+                    <span className="font-mono text-white">
+                      {formatDurationTimer(autoPowerOffRemainingSec)}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-rose-300/80">
+                    Dejando circular agua del chiller antes de cortar energía.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAutoPowerOffRemainingSec(null)}
+                  className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] font-bold text-white shrink-0"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+
             <div className="flex items-center gap-2 pt-1">
               <button
                 type="button"
@@ -6430,6 +6617,213 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Entendido · Cerrar Alerta</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 7. MODAL DE APAGADO COMPLETO DE MÁQUINA VANK 9060 (STOP RUIDA + RELÉ 220 V) */}
+      {showPowerOffModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Apagado completo de Vank 9060"
+          className="fixed inset-0 z-[65] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-lg rounded-2xl bg-[#0d121a] border-2 border-rose-500/70 shadow-2xl shadow-rose-950/60 p-5 text-slate-100 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-rose-500/20 border border-rose-500/50 flex items-center justify-center text-rose-300 shrink-0">
+                  <Power className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">
+                    Apagado Completo — Vank 9060 CO₂
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Frena la controladora Ruida ({workbenchConfig.ruidaIpAddress}) y corta alimentación eléctrica 220 V si tenés relé conectado.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPowerOffModal(false)}
+                className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Estado en vivo + Controles remotos directos por red a Ruida */}
+            <div className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 space-y-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-400 font-semibold">
+                  Estado actual Vank 9060:
+                </span>
+                <span
+                  className={`font-bold px-2 py-0.5 rounded-md border text-[11px] ${
+                    machineTimer.phase === 'running'
+                      ? 'bg-amber-950/70 border-amber-600/70 text-amber-300'
+                      : machineLiveStatus?.reachable
+                        ? 'bg-emerald-950/60 border-emerald-700/70 text-emerald-300'
+                        : 'bg-slate-900 border-slate-700 text-slate-400'
+                  }`}
+                >
+                  {machineTimer.phase === 'running'
+                    ? '⚠ Grabando / Cortando ahora'
+                    : machineLiveStatus?.reachable
+                      ? '● Conectada en reposo seguro'
+                      : '○ Sin enlace LAN detectado'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  disabled={isExecutingPowerAction}
+                  onClick={() => void handleRuidaRemoteCommand('pause')}
+                  className="py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-bold text-[11px] flex items-center justify-center gap-1"
+                >
+                  <Pause className="w-3.5 h-3.5" />
+                  <span>Pausar Ruida</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isExecutingPowerAction}
+                  onClick={() => void handleRuidaRemoteCommand('stop')}
+                  className="py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-rose-300 font-bold text-[11px] flex items-center justify-center gap-1"
+                >
+                  <Square className="w-3 h-3 fill-current" />
+                  <span>STOP Trabajo</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isExecutingPowerAction}
+                  onClick={() => void handleRuidaRemoteCommand('reset')}
+                  className="py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 font-bold text-[11px] flex items-center justify-center gap-1"
+                >
+                  <RotateCw className="w-3.5 h-3.5" />
+                  <span>Reset Panel</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Configuración de Relé Wi-Fi 220V (Shelly + Contactor / Tasmota / Webhook) */}
+            <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2.5 text-xs">
+              <div className="font-bold text-slate-200 flex items-center justify-between">
+                <span>Corte eléctrico 220 V (Relé Wi-Fi + Contactor ≥25 A)</span>
+                <span className="text-[10px] font-mono text-slate-400">
+                  Vank + Chiller + Extractor
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <label className="space-y-1">
+                  <span className="text-[10px] text-slate-400">Tipo de relé local</span>
+                  <select
+                    value={powerRelayConfig.relayPreset}
+                    onChange={(e) =>
+                      handleUpdatePowerRelayConfig({
+                        relayPreset: e.target.value as SmartRelayPreset,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-100"
+                  >
+                    <option value="shelly_gen2">Shelly Plus / Pro (Gen2)</option>
+                    <option value="shelly_gen1">Shelly 1 / 1PM (Gen1)</option>
+                    <option value="tasmota">Sonoff / Tasmota</option>
+                    <option value="custom_http">Webhook HTTP local personalizado</option>
+                    <option value="none">Solo control Ruida (sin relé 220V)</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1">
+                  <span className="text-[10px] text-slate-400">
+                    IP del relé o URL HTTP local
+                  </span>
+                  <input
+                    type="text"
+                    value={powerRelayConfig.relayHostOrUrl}
+                    onChange={(e) =>
+                      handleUpdatePowerRelayConfig({
+                        relayHostOrUrl: e.target.value,
+                      })
+                    }
+                    placeholder="ej. 192.168.0.210"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs font-mono text-cyan-200"
+                  />
+                </label>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={powerRelayConfig.autoPowerOffOnFinish}
+                    onChange={(e) =>
+                      handleUpdatePowerRelayConfig({
+                        autoPowerOffOnFinish: e.target.checked,
+                      })
+                    }
+                    className="rounded border-slate-600 bg-slate-950 text-rose-500"
+                  />
+                  <span>Auto-apagar 220 V al terminar pedido</span>
+                </label>
+
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  <span>Enfriar chiller:</span>
+                  <select
+                    value={powerRelayConfig.cooldownSeconds}
+                    onChange={(e) =>
+                      handleUpdatePowerRelayConfig({
+                        cooldownSeconds: Number(e.target.value) || 120,
+                      })
+                    }
+                    className="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] text-slate-200"
+                  >
+                    <option value={60}>1 min</option>
+                    <option value={120}>2 min</option>
+                    <option value={180}>3 min</option>
+                    <option value={300}>5 min</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            {powerActionFeedback && (
+              <div
+                className={`p-2.5 rounded-xl border text-xs ${
+                  powerActionFeedback.type === 'success'
+                    ? 'bg-emerald-950/60 border-emerald-700 text-emerald-200'
+                    : powerActionFeedback.type === 'error'
+                      ? 'bg-rose-950/70 border-rose-700 text-rose-200'
+                      : 'bg-amber-950/50 border-amber-700/70 text-amber-200'
+                }`}
+              >
+                {powerActionFeedback.text}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowPowerOffModal(false)}
+                className="py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-xs"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isExecutingPowerAction}
+                onClick={() => void handleExecuteFullMachineShutdown()}
+                className="py-2 px-5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-rose-900/50"
+              >
+                <Power className="w-4 h-4" />
+                <span>
+                  {isExecutingPowerAction
+                    ? 'Apagando...'
+                    : '⏻ Confirmar Apagado Completo'}
+                </span>
               </button>
             </div>
           </div>
