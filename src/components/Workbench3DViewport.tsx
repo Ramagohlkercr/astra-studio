@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { MaterialProfile } from '../core/types';
 import {
   WorkbenchConfig,
@@ -13,11 +14,16 @@ import {
   createBrushedMetalTexture,
   createHoneycombBedTexture,
   createLaserGlowTexture,
+  createStudioComposer,
   createStudioEnvironment,
   createStudioRenderer,
   disposeObject3D,
+  StudioPostComposer,
 } from '../core/three/threeUtils';
-import { buildVankLaserHeadMeshGroup } from '../core/three/cadModels';
+import {
+  buildPhysicalCutLabelGeometry,
+  buildVankLaserHeadMeshGroup,
+} from '../core/three/cadModels';
 import {
   createLeatherPbrTextures,
   createWoodPbrTextures,
@@ -46,6 +52,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const composerRef = useRef<StudioPostComposer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
@@ -108,9 +115,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
       ctrls.target.set(0, 0, 0);
     }
     ctrls.update();
-    if (rendererRef.current && sceneRef.current) {
-      rendererRef.current.render(sceneRef.current, cam);
-    }
+    composerRef.current?.render();
   };
 
   // 1. Inicializar WebGLRenderer + RoomEnvironment PBR + iluminación con sombras reales + OrbitControls
@@ -143,6 +148,8 @@ export const Workbench3DViewport: React.FC<Props> = ({
       1,
       5000
     );
+
+    const composer = createStudioComposer(renderer, scene, camera);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -179,6 +186,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
     scene.add(worldRoot);
 
     rendererRef.current = renderer;
+    composerRef.current = composer;
     sceneRef.current = scene;
     cameraRef.current = camera;
     controlsRef.current = controls;
@@ -188,7 +196,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
     const loop = () => {
       rafId = window.requestAnimationFrame(loop);
       controls.update();
-      renderer.render(scene, camera);
+      composer.render();
     };
     loop();
 
@@ -201,6 +209,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
               camera.aspect = w / h;
               camera.updateProjectionMatrix();
               renderer.setSize(w, h);
+              composer.setSize(w, h);
               if (!userMovedCameraRef.current) {
                 const aspectPad = Math.max(1, 1.45 / Math.max(0.7, camera.aspect));
                 camera.position.set(
@@ -224,9 +233,11 @@ export const Workbench3DViewport: React.FC<Props> = ({
       controls.removeEventListener('start', onControlStart);
       disposeObject3D(worldRoot);
       studioEnv.dispose();
+      composer.dispose();
       controls.dispose();
       renderer.dispose();
       rendererRef.current = null;
+      composerRef.current = null;
       sceneRef.current = null;
       cameraRef.current = null;
       controlsRef.current = null;
@@ -234,7 +245,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
     };
   }, []);
 
-  // 2. Reconstruir mesa 900x600 mm alveolar, rieles Y, plancha con relieve, piezas anidadas y pórtico láser
+  // 2. Reconstruir mesa 900x600 mm alveolar, rieles Y, plancha con relieve, piezas CSG con InstancedMesh y pórtico láser
   useEffect(() => {
     const root = worldGroupRef.current;
     const renderer = rendererRef.current;
@@ -251,9 +262,9 @@ export const Workbench3DViewport: React.FC<Props> = ({
     const brushedTex = createBrushedMetalTexture();
     const honeycombTex = createHoneycombBedTexture();
 
-    // Chasis metálico Vank 9060 con reflejos PBR
+    // Chasis metálico Vank 9060 chaflanado con RoundedBoxGeometry y reflejos PBR
     const chassis = new THREE.Mesh(
-      new THREE.BoxGeometry(bedW + 56, 22, bedH + 56),
+      new RoundedBoxGeometry(bedW + 56, 22, bedH + 56, 3, 4),
       new THREE.MeshStandardMaterial({
         color: '#111827',
         metalness: 0.82,
@@ -362,14 +373,14 @@ export const Workbench3DViewport: React.FC<Props> = ({
     const jobTextureDisposers: Array<() => void> = [];
 
     for (const job of jobs) {
-      if (!job.visible) continue;
+      if (!job.visible || !job.instances.length) continue;
       const isSelected = job.id === selectedJobId;
 
       // Compilar textura PBR real (color láser quemado + bajorrelieve bumpMap) 1 sola vez por trabajo
       const labelMaps = buildFlatLabelEngravedTextures(
         job.labelDesign,
         material.visual.engraveColor || '#261408',
-        () => renderer.render(scene, camera)
+        () => composerRef.current?.render()
       );
       jobTextureDisposers.push(labelMaps.dispose);
 
@@ -388,15 +399,48 @@ export const Workbench3DViewport: React.FC<Props> = ({
         Math.max(1, job.labelDesign.heightMm)
       );
 
+      // Pieza física 3D extruida y perforada realmente con three-bvh-csg (1 draw call InstancedMesh para todas!)
+      const protoInst = job.instances[0];
+      if (protoInst?.cutContour?.points?.length >= 3) {
+        const tileGeo = buildPhysicalCutLabelGeometry(
+          protoInst.cutContour,
+          protoInst.holeContours ?? [],
+          0.55
+        );
+        const tileMat = sheetMat.clone();
+        const tilesMesh = new THREE.InstancedMesh(
+          tileGeo,
+          tileMat,
+          job.instances.length
+        );
+        tilesMesh.castShadow = true;
+        tilesMesh.receiveShadow = true;
+        const dummy = new THREE.Object3D();
+        job.instances.forEach((inst, idx) => {
+          const absX = job.xMm + inst.localXMm;
+          const absY = job.yMm + inst.localYMm;
+          dummy.position.set(
+            toWorldX(absX + inst.widthMm / 2),
+            topSurfaceY - 0.15,
+            toWorldZ(absY + inst.heightMm / 2)
+          );
+          dummy.rotation.set(0, inst.rotated90 ? -Math.PI / 2 : 0, 0);
+          dummy.updateMatrix();
+          tilesMesh.setMatrixAt(idx, dummy.matrix);
+        });
+        tilesMesh.instanceMatrix.needsUpdate = true;
+        root.add(tilesMesh);
+      }
+
       if (isSelected) {
         const bx = toWorldX(job.xMm);
         const bz = toWorldZ(job.yMm);
         const selPts = [
-          new THREE.Vector3(bx - 1, topSurfaceY + 0.7, bz - 1),
-          new THREE.Vector3(bx + job.widthMm + 1, topSurfaceY + 0.7, bz - 1),
-          new THREE.Vector3(bx + job.widthMm + 1, topSurfaceY + 0.7, bz + job.heightMm + 1),
-          new THREE.Vector3(bx - 1, topSurfaceY + 0.7, bz + job.heightMm + 1),
-          new THREE.Vector3(bx - 1, topSurfaceY + 0.7, bz - 1),
+          new THREE.Vector3(bx - 1, topSurfaceY + 0.85, bz - 1),
+          new THREE.Vector3(bx + job.widthMm + 1, topSurfaceY + 0.85, bz - 1),
+          new THREE.Vector3(bx + job.widthMm + 1, topSurfaceY + 0.85, bz + job.heightMm + 1),
+          new THREE.Vector3(bx - 1, topSurfaceY + 0.85, bz + job.heightMm + 1),
+          new THREE.Vector3(bx - 1, topSurfaceY + 0.85, bz - 1),
         ];
         root.add(
           new THREE.Line(
@@ -415,7 +459,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
             (p) =>
               new THREE.Vector3(
                 toWorldX(absX + p.x),
-                topSurfaceY + 0.25,
+                topSurfaceY + 0.48,
                 toWorldZ(absY + p.y)
               )
           );
@@ -429,7 +473,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
             (p) =>
               new THREE.Vector3(
                 toWorldX(absX + p.x),
-                topSurfaceY + 0.3,
+                topSurfaceY + 0.5,
                 toWorldZ(absY + p.y)
               )
           );
@@ -437,7 +481,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
           root.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(hPts), holeMat));
         }
 
-        // Proyección física del logo real grabado sobre la etiqueta
+        // Proyección física del logo real grabado sobre la pieza extruida
         if (inst.engraveItems?.length) {
           const markMesh = new THREE.Mesh(baseGeo, jobEngraveMat);
           markMesh.rotation.order = 'YXZ';
@@ -447,7 +491,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
           }
           markMesh.position.set(
             toWorldX(absX + inst.widthMm / 2),
-            topSurfaceY + 0.18,
+            topSurfaceY + 0.58,
             toWorldZ(absY + inst.heightMm / 2)
           );
           markMesh.receiveShadow = true;
@@ -480,14 +524,17 @@ export const Workbench3DViewport: React.FC<Props> = ({
       roughness: 0.34,
     });
     for (const side of [-1, 1]) {
-      const endTruck = new THREE.Mesh(new THREE.BoxGeometry(18, 28, 38), carriageEndMat);
+      const endTruck = new THREE.Mesh(
+        new RoundedBoxGeometry(18, 28, 38, 2, 2.5),
+        carriageEndMat
+      );
       endTruck.position.set(side * (bedW / 2 + 16), 34, 0);
       endTruck.castShadow = true;
       gantry.add(endTruck);
     }
 
     const mirror2Mount = new THREE.Mesh(
-      new THREE.BoxGeometry(16, 18, 18),
+      new RoundedBoxGeometry(16, 18, 18, 2, 2),
       new THREE.MeshStandardMaterial({ color: '#0284c7', metalness: 0.82, roughness: 0.24 })
     );
     mirror2Mount.position.set(-bedW / 2 - 4, 56, 12);
@@ -509,7 +556,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
     if (camera.position.lengthSq() < 1) {
       applyPreset(cameraPreset);
     } else {
-      renderer.render(scene, camera);
+      composerRef.current?.render();
     }
 
     return () => {
@@ -530,9 +577,7 @@ export const Workbench3DViewport: React.FC<Props> = ({
         1
       );
     }
-    if (rendererRef.current && sceneRef.current && cameraRef.current) {
-      rendererRef.current.render(sceneRef.current, cameraRef.current);
-    }
+    composerRef.current?.render();
   }, [laserPos, bedW, bedH]);
 
   if (!webglReady) {

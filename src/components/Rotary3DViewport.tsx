@@ -7,9 +7,11 @@ import {
   canUseWebGL,
   createBrushedMetalTexture,
   createLaserGlowTexture,
+  createStudioComposer,
   createStudioEnvironment,
   createStudioRenderer,
   disposeObject3D,
+  StudioPostComposer,
 } from '../core/three/threeUtils';
 import {
   buildRotaryVesselGroup,
@@ -29,6 +31,7 @@ const VESSEL_SHAPES: { id: RotaryVesselShape; label: string }[] = [
   { id: 'thermos', label: 'Termo' },
   { id: 'mate', label: 'Mate' },
   { id: 'bottle', label: 'Botella' },
+  { id: 'can', label: 'Lata' },
 ];
 
 const SURFACE_OPTIONS: {
@@ -44,6 +47,7 @@ const SURFACE_OPTIONS: {
   { id: 'stainless', label: 'Inox', swatch: '#9ca8b8' },
   { id: 'wood', label: 'Madera', swatch: '#8f5b32' },
   { id: 'glass', label: 'Cristal', swatch: '#bae6fd' },
+  { id: 'emerald_glass', label: 'Vidrio Verde', swatch: '#14532d' },
 ];
 
 interface Props {
@@ -69,6 +73,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const composerRef = useRef<StudioPostComposer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
@@ -152,9 +157,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
       ctrls.target.set(-dims.len * 0.42, 0, 0);
     }
     ctrls.update();
-    if (rendererRef.current && sceneRef.current) {
-      rendererRef.current.render(sceneRef.current, cam);
-    }
+    composerRef.current?.render();
   };
 
   useEffect(() => {
@@ -186,6 +189,8 @@ export const Rotary3DViewport: React.FC<Props> = ({
       1,
       4000
     );
+
+    const composer = createStudioComposer(renderer, scene, camera);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -221,6 +226,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
     scene.add(assemblyRoot);
 
     rendererRef.current = renderer;
+    composerRef.current = composer;
     sceneRef.current = scene;
     cameraRef.current = camera;
     controlsRef.current = controls;
@@ -268,7 +274,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
       }
 
       controls.update();
-      renderer.render(scene, camera);
+      composer.render();
     };
     animate();
 
@@ -281,6 +287,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
               camera.aspect = w / h;
               camera.updateProjectionMatrix();
               renderer.setSize(w, h);
+              composer.setSize(w, h);
             }
           })
         : null;
@@ -293,9 +300,11 @@ export const Rotary3DViewport: React.FC<Props> = ({
       ro?.disconnect();
       disposeObject3D(assemblyRoot);
       studioEnv.dispose();
+      composer.dispose();
       controls.dispose();
       renderer.dispose();
       rendererRef.current = null;
+      composerRef.current = null;
       sceneRef.current = null;
       cameraRef.current = null;
       controlsRef.current = null;
@@ -401,6 +410,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
       len,
       brushedTex,
       mouthAtLeft: config.chuckSide === 'left_rim',
+      presetId,
     });
     spindle.add(vesselGroup);
 
@@ -411,7 +421,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
       layout.canvasWidthMm,
       layout.canvasHeightMm,
       appearance.markHex,
-      () => renderer.render(scene, camera)
+      () => composerRef.current?.render()
     );
     const wrapGeo = new THREE.CylinderGeometry(
       r1 + 0.36,
@@ -464,7 +474,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
     if (camera.position.lengthSq() < 1) {
       applyCameraPreset(cameraPreset);
     } else {
-      renderer.render(scene, camera);
+      composerRef.current?.render();
     }
 
     return () => {
@@ -473,6 +483,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
   }, [
     dims,
     appearance,
+    presetId,
     config.rotaryType,
     config.rollerDiameterMm,
     config.arcDeg,
@@ -586,8 +597,8 @@ export const Rotary3DViewport: React.FC<Props> = ({
         />
 
         <div className="absolute bottom-2 left-2 right-2 z-10 pointer-events-none flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
-          <span className="bg-slate-950/80 border border-slate-800 px-2 py-0.5 rounded text-slate-300">
-            🖱 Orbitar · Modelo: {VESSEL_SHAPES.find((s) => s.id === appearance.shape)?.label} ({SURFACE_OPTIONS.find((o) => o.id === appearance.surface)?.label})
+          <span className="bg-slate-950/85 border border-slate-800 px-2 py-0.5 rounded text-cyan-200 font-semibold">
+            {appearance.compositionLabel}
           </span>
           {layout.tapered && (
             <span className="bg-amber-950/85 border border-amber-600/60 px-2 py-0.5 rounded text-amber-300 font-bold">

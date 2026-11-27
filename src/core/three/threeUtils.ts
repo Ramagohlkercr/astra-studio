@@ -1,5 +1,13 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import {
+  BloomEffect,
+  EffectComposer,
+  EffectPass,
+  RenderPass,
+  ToneMappingEffect,
+  ToneMappingMode,
+} from 'postprocessing';
 import { compileLabelGeometry, rasterImageTransform } from '../geometry/geometryEngine';
 import { LabelDesign } from '../types';
 
@@ -49,6 +57,55 @@ export function createStudioRenderer(
   container.innerHTML = '';
   container.appendChild(renderer.domElement);
   return renderer;
+}
+
+export interface StudioPostComposer {
+  render: () => void;
+  setSize: (w: number, h: number) => void;
+  dispose: () => void;
+}
+
+/**
+ * Envuelve EffectComposer (postprocessing) con RenderPass + Bloom sutil en el haz láser/metales + ACES Filmic.
+ * Cae limpiamente a renderer.render si el contexto WebGL no soporta algún pass avanzado.
+ */
+export function createStudioComposer(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  camera: THREE.PerspectiveCamera
+): StudioPostComposer {
+  try {
+    renderer.toneMapping = THREE.NoToneMapping;
+    const composer = new EffectComposer(renderer, {
+      multisampling: Math.min(4, renderer.capabilities.maxSamples || 0),
+    });
+    const renderPass = new RenderPass(scene, camera);
+    const bloom = new BloomEffect({
+      luminanceThreshold: 0.9,
+      luminanceSmoothing: 0.25,
+      mipmapBlur: true,
+      intensity: 0.38,
+    });
+    const toneMapping = new ToneMappingEffect({
+      mode: ToneMappingMode.ACES_FILMIC,
+    });
+    const effectPass = new EffectPass(camera, bloom, toneMapping);
+    composer.addPass(renderPass);
+    composer.addPass(effectPass);
+
+    return {
+      render: () => composer.render(),
+      setSize: (w: number, h: number) => composer.setSize(w, h),
+      dispose: () => composer.dispose(),
+    };
+  } catch {
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    return {
+      render: () => renderer.render(scene, camera),
+      setSize: (w: number, h: number) => renderer.setSize(w, h),
+      dispose: () => {},
+    };
+  }
 }
 
 /**

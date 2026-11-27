@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { Brush, Evaluator, SUBTRACTION } from 'three-bvh-csg';
+import { ClosedContour } from '../types';
 import {
   createChiseledVirolaBumpTexture,
   createHammeredCoatPbrTextures,
@@ -7,7 +10,7 @@ import {
   ProceduralPbrTextures,
 } from './materialTextures';
 
-export type RotaryVesselShape = 'auto' | 'tumbler' | 'thermos' | 'mate' | 'bottle';
+export type RotaryVesselShape = 'auto' | 'tumbler' | 'thermos' | 'mate' | 'bottle' | 'can';
 export type RotarySurfaceMaterialKind =
   | 'auto'
   | 'hammered_green'
@@ -16,7 +19,8 @@ export type RotarySurfaceMaterialKind =
   | 'leather'
   | 'stainless'
   | 'wood'
-  | 'glass';
+  | 'glass'
+  | 'emerald_glass';
 
 export interface ResolvedProductAppearance {
   shape: Exclude<RotaryVesselShape, 'auto'>;
@@ -27,7 +31,11 @@ export interface ResolvedProductAppearance {
   markHex: string;
   markEmissive: string;
   engraveIsAblatedMetal: boolean;
+  compositionLabel: string;
 }
+
+const csgEvaluator = new Evaluator();
+csgEvaluator.useGroups = false;
 
 export function resolveRotaryVesselShape(
   requested: RotaryVesselShape,
@@ -40,6 +48,7 @@ export function resolveRotaryVesselShape(
   if (presetId === 'mate_imperial') return 'mate';
   if (presetId === 'termo_stanley' || presetId === 'termo') return 'thermos';
   if (presetId === 'botella') return 'bottle';
+  if (presetId === 'lata') return 'can';
   if (presetId === 'tumbler' || presetId === 'pinta_cerveza' || presetId === 'vaso') {
     return 'tumbler';
   }
@@ -52,7 +61,7 @@ export function resolveRotaryVesselShape(
 }
 
 /**
- * Resuelve el material y textura física realista según el producto elegido o preset manual.
+ * Resuelve la composición material real de cada producto según su naturaleza física.
  */
 export function resolveProductAppearance(
   requestedShape: RotaryVesselShape,
@@ -69,14 +78,16 @@ export function resolveProductAppearance(
     surface = requestedSurface;
   } else if (presetId === 'pinta_cerveza' || presetId === 'vaso') {
     surface = 'glass';
-  } else if (presetId === 'termo') {
+  } else if (presetId === 'botella') {
+    surface = 'emerald_glass';
+  } else if (presetId === 'termo' || presetId === 'lata' || shape === 'can') {
     surface = 'stainless';
   } else if (shape === 'mate') {
     surface = 'leather';
   } else if (shape === 'thermos') {
     surface = 'hammered_green';
   } else if (shape === 'bottle') {
-    surface = 'navy_coat';
+    surface = 'emerald_glass';
   } else {
     surface = 'powder_black';
   }
@@ -87,11 +98,12 @@ export function resolveProductAppearance(
         shape,
         surface,
         color: '#1f4b34',
-        metalness: 0.42,
-        roughness: 0.48,
+        metalness: 0.44,
+        roughness: 0.46,
         markHex: '#f1f5f9',
         markEmissive: '#94a3b8',
         engraveIsAblatedMetal: true,
+        compositionLabel: 'Acero Inox 18/8 · Pintura Martillada',
       };
     case 'navy_coat':
       return {
@@ -103,6 +115,7 @@ export function resolveProductAppearance(
         markHex: '#f8fafc',
         markEmissive: '#cbd5e1',
         engraveIsAblatedMetal: true,
+        compositionLabel: 'Acero Bicapa · Powder Coat Azul',
       };
     case 'leather':
       return {
@@ -114,17 +127,23 @@ export function resolveProductAppearance(
         markHex: '#1c0c04',
         markEmissive: '#000000',
         engraveIsAblatedMetal: false,
+        compositionLabel:
+          shape === 'mate'
+            ? 'Calabaza + Cuero Vacuno + Virola Alpaca'
+            : 'Cuero Vacuno Cosido',
       };
     case 'stainless':
       return {
         shape,
         surface,
-        color: '#9ca8b8',
-        metalness: 0.9,
-        roughness: 0.22,
+        color: shape === 'can' ? '#cdd5df' : '#9ca8b8',
+        metalness: shape === 'can' ? 0.96 : 0.9,
+        roughness: shape === 'can' ? 0.16 : 0.22,
         markHex: '#0f172a',
         markEmissive: '#000000',
         engraveIsAblatedMetal: false,
+        compositionLabel:
+          shape === 'can' ? 'Aluminio Cepillado' : 'Acero Inoxidable 304',
       };
     case 'wood':
       return {
@@ -136,6 +155,19 @@ export function resolveProductAppearance(
         markHex: '#1b0d04',
         markEmissive: '#000000',
         engraveIsAblatedMetal: false,
+        compositionLabel: 'Madera Natural Torneada',
+      };
+    case 'emerald_glass':
+      return {
+        shape,
+        surface,
+        color: '#14532d',
+        metalness: 0.06,
+        roughness: 0.07,
+        markHex: '#ecfdf5',
+        markEmissive: '#d1fae5',
+        engraveIsAblatedMetal: false,
+        compositionLabel: 'Vidrio Esmeralda + Corcho + Cápsula',
       };
     case 'glass':
       return {
@@ -147,6 +179,7 @@ export function resolveProductAppearance(
         markHex: '#f8fafc',
         markEmissive: '#e2e8f0',
         engraveIsAblatedMetal: false,
+        compositionLabel: 'Vidrio Cristal Soda-Cálcico',
       };
     case 'powder_black':
     default:
@@ -159,6 +192,7 @@ export function resolveProductAppearance(
         markHex: '#f1f5f9',
         markEmissive: '#94a3b8',
         engraveIsAblatedMetal: true,
+        compositionLabel: 'Acero Inox 18/8 · Powder Coat + Tapa CSG',
       };
   }
 }
@@ -170,30 +204,84 @@ export interface VesselModelParams {
   len: number;
   brushedTex: THREE.Texture;
   mouthAtLeft: boolean;
+  presetId?: string;
 }
 
 /**
- * Construye el modelo 3D fotorrealista del producto rotativo (Mate de Cuero y Alpaca,
- * Termo Stanley Martillado, Tumbler con tapa acrílica, Botella o Vaso de Cristal).
+ * Construye una tapa acrílica booleana real (ranura de sorbo + hueco de sorbete) usando three-bvh-csg.
+ */
+function buildTumblerCsgAcrylicLid(
+  rMouth: number,
+  xLidCenter: number,
+  dir: number,
+  lidMat: THREE.Material
+): THREE.Mesh {
+  const outerGeo = new THREE.CylinderGeometry(rMouth + 0.8, rMouth + 0.4, 5.5, 48);
+  outerGeo.rotateZ(-Math.PI / 2);
+  const lidBrush = new Brush(outerGeo);
+  lidBrush.updateMatrixWorld();
+
+  // Ranura ovalada de sorbo perforada en el borde superior de la tapa
+  const sipCutGeo = new THREE.BoxGeometry(8, 5, 11);
+  sipCutGeo.translate(0, rMouth * 0.64, 0);
+  const sipBrush = new Brush(sipCutGeo);
+  sipBrush.updateMatrixWorld();
+
+  // Orificio circular central para sorbete térmico
+  const strawGeo = new THREE.CylinderGeometry(3.8, 3.8, 8, 20);
+  strawGeo.rotateZ(-Math.PI / 2);
+  const strawBrush = new Brush(strawGeo);
+  strawBrush.updateMatrixWorld();
+
+  try {
+    const afterSip = csgEvaluator.evaluate(lidBrush, sipBrush, SUBTRACTION);
+    afterSip.updateMatrixWorld();
+    const afterStraw = csgEvaluator.evaluate(afterSip, strawBrush, SUBTRACTION);
+    outerGeo.dispose();
+    sipCutGeo.dispose();
+    strawGeo.dispose();
+    afterSip.geometry.dispose();
+
+    const mesh = new THREE.Mesh(afterStraw.geometry, lidMat);
+    mesh.position.x = xLidCenter + dir * 2.7;
+    return mesh;
+  } catch {
+    outerGeo.dispose();
+    sipCutGeo.dispose();
+    strawGeo.dispose();
+    const fallback = new THREE.Mesh(
+      new THREE.CylinderGeometry(rMouth + 0.8, rMouth + 0.4, 5.5, 48),
+      lidMat
+    );
+    fallback.rotation.z = -Math.PI / 2;
+    fallback.position.x = xLidCenter + dir * 2.7;
+    return fallback;
+  }
+}
+
+/**
+ * Construye el modelo 3D fotorrealista multi-material de cada producto respetando su composición real.
  */
 export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
-  const { appearance, r0, r1, len, brushedTex, mouthAtLeft } = params;
+  const { appearance, r0, r1, len, brushedTex, mouthAtLeft, presetId } = params;
   const { shape, surface, color, metalness, roughness } = appearance;
   const group = new THREE.Group();
+  const isGlass = surface === 'glass' || surface === 'emerald_glass';
 
   let pbrTex: ProceduralPbrTextures | null = null;
   let bodyMat: THREE.Material;
 
-  if (surface === 'glass') {
+  if (isGlass) {
     bodyMat = new THREE.MeshPhysicalMaterial({
       color,
       metalness: 0.05,
-      roughness: 0.08,
+      roughness: 0.06,
       transparent: true,
-      opacity: 0.38,
+      opacity: surface === 'emerald_glass' ? 0.68 : 0.34,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.06,
-      reflectivity: 0.94,
+      clearcoatRoughness: 0.04,
+      reflectivity: 0.96,
+      ior: 1.52,
       side: THREE.DoubleSide,
     });
   } else if (surface === 'leather') {
@@ -224,7 +312,6 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
       roughnessMap: brushedTex.clone(),
     });
   } else {
-    // Verde Stanley martillado / Negro Coat / Azul Termo
     pbrTex = createHammeredCoatPbrTextures(color, [4, 3]);
     bodyMat = new THREE.MeshStandardMaterial({
       map: pbrTex.map,
@@ -247,12 +334,6 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
     metalness: 0.25,
     roughness: 0.55,
   });
-  const innerDarkMat = new THREE.MeshStandardMaterial({
-    color: surface === 'leather' ? '#2c180c' : '#090d14',
-    metalness: 0.25,
-    roughness: 0.78,
-    side: THREE.DoubleSide,
-  });
 
   const dir = mouthAtLeft ? -1 : 1;
   const xBase = -dir * (len / 2);
@@ -265,26 +346,43 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
     const geo = new THREE.LatheGeometry(vecs, segs);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.rotation.z = -Math.PI / 2;
-    mesh.castShadow = surface !== 'glass';
+    mesh.castShadow = !isGlass;
     mesh.receiveShadow = true;
     group.add(mesh);
     return mesh;
   };
 
   // 1. Barril principal grabable exacto [-len/2 .. +len/2]
-  addLathePart(
-    [
-      [0.01, xBase - dir * 2],
-      [Math.max(4, rBase - 3), xBase - dir * 2],
-      [rBase, xBase],
-      [rMouth, xMouth],
-      [Math.max(3, rMouth - 3.2), xMouth],
-    ],
-    bodyMat
-  );
+  if (isGlass) {
+    // Vaso/botella de vidrio con espesor real hueco + base maciza pesada de vidrio
+    const wallThick = Math.min(3.5, Math.max(2.2, Math.min(rBase, rMouth) * 0.08));
+    addLathePart(
+      [
+        [0.01, xBase - dir * 5],
+        [Math.max(4, rBase - 3), xBase - dir * 5],
+        [rBase, xBase],
+        [rMouth, xMouth],
+        [rMouth - wallThick, xMouth],
+        [Math.max(3, rBase - wallThick - 1.2), xBase + dir * 12],
+        [0.01, xBase + dir * 12],
+      ],
+      bodyMat
+    );
+  } else {
+    addLathePart(
+      [
+        [0.01, xBase - dir * 2],
+        [Math.max(4, rBase - 3), xBase - dir * 2],
+        [rBase, xBase],
+        [rMouth, xMouth],
+        [Math.max(3, rMouth - 3.2), xMouth],
+      ],
+      bodyMat
+    );
+  }
 
-  // Talón / base inferior (inoxidable en términos metálicos, vidrio sólido en vasos de vidrio, cuero redondeado en mate)
-  if (surface !== 'leather') {
+  // Talón / base inferior auténtico según composición
+  if (!isGlass && surface !== 'leather') {
     addLathePart(
       [
         [0.01, xBase - dir * 5.5],
@@ -292,10 +390,10 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
         [rBase - 0.3, xBase - dir * 2.5],
         [rBase, xBase],
       ],
-      surface === 'glass' ? bodyMat : stainlessMat
+      stainlessMat
     );
-  } else {
-    // Base redondeada de cuero para Mate
+  } else if (surface === 'leather') {
+    // Base cosida de cuero curvado + 4 tiras/costuras longitudinales reales
     addLathePart(
       [
         [0.01, xBase - dir * 6],
@@ -305,24 +403,27 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
       ],
       bodyMat
     );
+    const ribMat = new THREE.MeshStandardMaterial({
+      color: '#4a260f',
+      metalness: 0.05,
+      roughness: 0.85,
+    });
+    for (const deg of [45, 135, 225, 315]) {
+      const rad = (deg * Math.PI) / 180;
+      const midR = (r0 + r1) / 2;
+      const rib = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.65, 0.65, len * 0.96, 8),
+        ribMat
+      );
+      rib.rotation.z = -Math.PI / 2;
+      rib.position.set(0, Math.cos(rad) * (midR + 0.15), Math.sin(rad) * (midR + 0.15));
+      group.add(rib);
+    }
   }
 
+  // 2. Anatomía superior específica por producto
   if (shape === 'tumbler') {
-    if (surface === 'glass') {
-      // Vaso cervecero/cristal hueco con espesor real de pared de vidrio
-      const innerR = Math.max(4, rMouth - 3);
-      addLathePart(
-        [
-          [rMouth, xMouth],
-          [rMouth, xMouth + dir * 4],
-          [innerR, xMouth + dir * 4],
-          [Math.max(3, rBase - 3.5), xBase + dir * 8],
-          [0.01, xBase + dir * 8],
-        ],
-        bodyMat
-      );
-    } else {
-      // Labio inoxidable expuesto + tapa acrílica ahumada translúcida + burlete negro
+    if (!isGlass) {
       const lipLen = Math.min(13, len * 0.11);
       const innerR = Math.max(4, rMouth - 3.5);
       addLathePart(
@@ -331,21 +432,15 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
           [rMouth + 0.5, xMouth + dir * (lipLen * 0.65)],
           [rMouth - 0.4, xMouth + dir * lipLen],
           [innerR, xMouth + dir * lipLen],
-          [innerR - 0.8, xMouth - dir * (len * 0.25)],
+          [innerR - 0.8, xMouth - dir * (len * 0.28)],
+          [0.01, xMouth - dir * (len * 0.28)],
         ],
         stainlessMat
       );
-      const cavityDisk = new THREE.Mesh(
-        new THREE.CircleGeometry(innerR - 0.8, 48),
-        innerDarkMat
-      );
-      cavityDisk.rotation.y = mouthAtLeft ? -Math.PI / 2 : Math.PI / 2;
-      cavityDisk.position.x = xMouth - dir * (len * 0.2);
-      group.add(cavityDisk);
 
-      // Burlete de silicona negra + Tapa acrílica translúcida
+      // Junta silicona negra + Tapa acrílica booleana CSG real (ranura sorbo + orificio sorbete)
       const gasket = new THREE.Mesh(
-        new THREE.TorusGeometry(rMouth - 0.6, 1.5, 10, 56),
+        new THREE.TorusGeometry(rMouth - 0.6, 1.4, 10, 56),
         capMat
       );
       gasket.rotation.y = Math.PI / 2;
@@ -354,21 +449,14 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
 
       const lidMat = new THREE.MeshPhysicalMaterial({
         color: '#334155',
-        roughness: 0.14,
+        roughness: 0.12,
         metalness: 0.05,
         transparent: true,
-        opacity: 0.48,
+        opacity: 0.52,
         clearcoat: 1,
+        ior: 1.49,
       });
-      addLathePart(
-        [
-          [rMouth + 0.8, xMouth + dir * (lipLen + 1)],
-          [rMouth + 1.0, xMouth + dir * (lipLen + 5)],
-          [rMouth - 2.5, xMouth + dir * (lipLen + 6)],
-          [0.01, xMouth + dir * (lipLen + 6)],
-        ],
-        lidMat
-      );
+      group.add(buildTumblerCsgAcrylicLid(rMouth, xMouth + dir * lipLen, dir, lidMat));
     }
   } else if (shape === 'thermos') {
     const shoulderLen = Math.min(26, len * 0.16);
@@ -379,25 +467,54 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
         [rMouth * 0.94, xMouth + dir * (shoulderLen * 0.35)],
         [neckR * 1.12, xMouth + dir * (shoulderLen * 0.72)],
         [neckR, xMouth + dir * shoulderLen],
-        [neckR, xMouth + dir * (shoulderLen + 8)],
+        [neckR, xMouth + dir * (shoulderLen + 9)],
       ],
       stainlessMat
     );
-    // Tapón / vaso-tapa Stanley con acanaladuras de agarre y aro metálico
+
+    // Rosca helicoidal física real alrededor del cuello de acero inoxidable
+    const threadPts: THREE.Vector3[] = [];
+    const turns = 2.2;
+    for (let i = 0; i <= 48; i++) {
+      const t = i / 48;
+      const a = t * turns * Math.PI * 2;
+      const ax = xMouth + dir * (shoulderLen + 1.5 + t * 6.5);
+      threadPts.push(new THREE.Vector3(ax, Math.cos(a) * (neckR + 0.9), Math.sin(a) * (neckR + 0.9)));
+    }
+    const threadGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(threadPts), 48, 0.75, 8, false);
+    group.add(new THREE.Mesh(threadGeo, stainlessMat));
+
+    // Manija ergonómica lateral si corresponde al preset Termo Media Manija
+    if (presetId === 'termo') {
+      const handleCurve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(xMouth - dir * 24, rMouth - 1, 0),
+        new THREE.Vector3(xMouth - dir * 32, rMouth + 18, 0),
+        new THREE.Vector3(xBase + dir * 32, rBase + 18, 0),
+        new THREE.Vector3(xBase + dir * 24, rBase - 1, 0),
+      ]);
+      const handleMesh = new THREE.Mesh(
+        new THREE.TubeGeometry(handleCurve, 28, 3.6, 12, false),
+        capMat
+      );
+      handleMesh.castShadow = true;
+      group.add(handleMesh);
+    }
+
+    // Tapón / vaso-tapa térmico oscuro con acanaladuras de agarre y aro superior inox
     addLathePart(
       [
-        [neckR + 2.2, xMouth + dir * (shoulderLen + 4)],
-        [neckR + 3.0, xMouth + dir * (shoulderLen + 11)],
-        [neckR + 2.0, xMouth + dir * (shoulderLen + 14)],
-        [neckR + 3.0, xMouth + dir * (shoulderLen + 19)],
-        [neckR + 1.8, xMouth + dir * (shoulderLen + 28)],
-        [neckR * 0.72, xMouth + dir * (shoulderLen + 30)],
-        [0.01, xMouth + dir * (shoulderLen + 30)],
+        [neckR + 2.2, xMouth + dir * (shoulderLen + 5)],
+        [neckR + 3.1, xMouth + dir * (shoulderLen + 12)],
+        [neckR + 2.0, xMouth + dir * (shoulderLen + 15)],
+        [neckR + 3.1, xMouth + dir * (shoulderLen + 20)],
+        [neckR + 1.8, xMouth + dir * (shoulderLen + 29)],
+        [neckR * 0.72, xMouth + dir * (shoulderLen + 31)],
+        [0.01, xMouth + dir * (shoulderLen + 31)],
       ],
       capMat
     );
   } else if (shape === 'mate') {
-    // Virola cincelada de alpaca/acero inoxidable argentina en la boca
+    // Virola de alpaca/acero cincelada
     const virolaBump = createChiseledVirolaBumpTexture();
     const virolaMat = new THREE.MeshStandardMaterial({
       color: '#e5ecf5',
@@ -414,54 +531,190 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
         [rMouth + 2.4, xMouth + dir * (virolaLen * 0.45)],
         [rMouth + 1.8, xMouth + dir * virolaLen],
         [innerR, xMouth + dir * virolaLen],
-        [innerR * 0.72, xMouth - dir * (len * 0.2)],
       ],
       virolaMat
     );
-    const collar = new THREE.Mesh(
-      new THREE.TorusGeometry(rMouth + 0.9, 1.4, 12, 64),
-      virolaMat
-    );
+    const collar = new THREE.Mesh(new THREE.TorusGeometry(rMouth + 0.9, 1.4, 12, 64), virolaMat);
     collar.rotation.y = Math.PI / 2;
     collar.position.x = xMouth;
     group.add(collar);
 
-    const cavityDisk = new THREE.Mesh(
-      new THREE.CircleGeometry(innerR * 0.74, 48),
-      innerDarkMat
+    // Interior real de calabaza natural curada / algarrobo hueco por LatheGeometry
+    const gourdWood = createWoodPbrTextures('#5c381c', [2, 2]);
+    const gourdMat = new THREE.MeshStandardMaterial({
+      map: gourdWood.map,
+      bumpMap: gourdWood.bumpMap,
+      bumpScale: 1.1,
+      roughnessMap: gourdWood.roughnessMap,
+      roughness: 0.88,
+      metalness: 0.02,
+      side: THREE.DoubleSide,
+    });
+    addLathePart(
+      [
+        [innerR, xMouth + dir * virolaLen],
+        [innerR + 2.5, xMouth + dir * 2],
+        [innerR * 0.88, xBase + dir * 14],
+        [0.01, xBase + dir * 10],
+      ],
+      gourdMat
     );
-    cavityDisk.rotation.y = mouthAtLeft ? -Math.PI / 2 : Math.PI / 2;
-    cavityDisk.position.x = xMouth - dir * (len * 0.16);
-    group.add(cavityDisk);
+  } else if (shape === 'can') {
+    // Lata 330 ml de aluminio con cuello cónico superior y anilla pull-tab
+    const neckR = Math.max(10, rMouth * 0.84);
+    addLathePart(
+      [
+        [rMouth, xMouth],
+        [neckR, xMouth + dir * 10],
+        [neckR + 0.8, xMouth + dir * 12],
+        [neckR - 1.8, xMouth + dir * 12],
+        [0.01, xMouth + dir * 10.5],
+      ],
+      stainlessMat
+    );
+    const pullTab = new THREE.Mesh(new THREE.TorusGeometry(5.5, 1.0, 8, 24), stainlessMat);
+    pullTab.rotation.y = Math.PI / 2;
+    pullTab.position.set(xMouth + dir * 11.4, neckR * 0.35, 0);
+    group.add(pullTab);
   } else {
-    // Botella con hombro curvo, tapón roscado y argolla deportiva superior
+    // Botella (Vidrio Esmeralda con cápsula mate + corcho natural OR deportiva con argolla)
     const shoulderLen = Math.min(34, len * 0.22);
-    const neckR = Math.max(10, rMouth * 0.42);
+    const neckR = Math.max(10, rMouth * 0.4);
     addLathePart(
       [
         [rMouth, xMouth],
         [rMouth * 0.86, xMouth + dir * (shoulderLen * 0.3)],
         [neckR * 1.25, xMouth + dir * (shoulderLen * 0.7)],
         [neckR, xMouth + dir * shoulderLen],
-        [neckR, xMouth + dir * (shoulderLen + 10)],
+        [neckR, xMouth + dir * (shoulderLen + 14)],
       ],
-      surface === 'glass' ? bodyMat : bodyMat
+      bodyMat
     );
-    addLathePart(
-      [
-        [neckR + 1.6, xMouth + dir * (shoulderLen + 6)],
-        [neckR + 2.2, xMouth + dir * (shoulderLen + 14)],
-        [neckR + 1.6, xMouth + dir * (shoulderLen + 20)],
-        [0.01, xMouth + dir * (shoulderLen + 20)],
-      ],
-      capMat
-    );
-    const bail = new THREE.Mesh(new THREE.TorusGeometry(neckR * 0.72, 1.8, 10, 32), capMat);
-    bail.position.x = xMouth + dir * (shoulderLen + 24);
-    group.add(bail);
+    if (isGlass) {
+      // Cápsula metálica oscura + corcho de madera natural asomando
+      const capsuleMat = new THREE.MeshStandardMaterial({
+        color: '#1e1b24',
+        metalness: 0.45,
+        roughness: 0.42,
+      });
+      const corkTex = createWoodPbrTextures('#b58454', [2, 1]);
+      const corkMat = new THREE.MeshStandardMaterial({
+        map: corkTex.map,
+        bumpMap: corkTex.bumpMap,
+        bumpScale: 1.2,
+        roughness: 0.9,
+      });
+      addLathePart(
+        [
+          [neckR + 1.1, xMouth + dir * (shoulderLen + 4)],
+          [neckR + 1.2, xMouth + dir * (shoulderLen + 15)],
+          [neckR - 1.5, xMouth + dir * (shoulderLen + 15)],
+        ],
+        capsuleMat
+      );
+      addLathePart(
+        [
+          [neckR - 1.6, xMouth + dir * (shoulderLen + 14)],
+          [neckR - 1.6, xMouth + dir * (shoulderLen + 23)],
+          [0.01, xMouth + dir * (shoulderLen + 23)],
+        ],
+        corkMat
+      );
+    } else {
+      addLathePart(
+        [
+          [neckR + 1.6, xMouth + dir * (shoulderLen + 6)],
+          [neckR + 2.2, xMouth + dir * (shoulderLen + 14)],
+          [neckR + 1.6, xMouth + dir * (shoulderLen + 20)],
+          [0.01, xMouth + dir * (shoulderLen + 20)],
+        ],
+        capMat
+      );
+      const bail = new THREE.Mesh(new THREE.TorusGeometry(neckR * 0.72, 1.8, 10, 32), capMat);
+      bail.position.x = xMouth + dir * (shoulderLen + 24);
+      group.add(bail);
+    }
   }
 
   return group;
+}
+
+/**
+ * Extrude una etiqueta física biselada con sus agujeros C01 perforados realmente mediante three-bvh-csg (SUBTRACTION).
+ */
+export function buildPhysicalCutLabelGeometry(
+  cutContour: ClosedContour,
+  holeContours: ClosedContour[],
+  thicknessMm: number
+): THREE.BufferGeometry {
+  const pts = cutContour.points;
+  const shape = new THREE.Shape();
+  if (pts.length >= 3) {
+    // Centrar localmente respecto al centro del contorno para facilitar InstancedMesh
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of pts) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    shape.moveTo(pts[0].x - cx, -(pts[0].y - cy));
+    for (let i = 1; i < pts.length; i++) {
+      shape.lineTo(pts[i].x - cx, -(pts[i].y - cy));
+    }
+    shape.closePath();
+
+    const baseGeo = new THREE.ExtrudeGeometry(shape, {
+      depth: Math.max(0.6, thicknessMm),
+      bevelEnabled: true,
+      bevelThickness: 0.16,
+      bevelSize: 0.14,
+      bevelSegments: 2,
+    });
+    baseGeo.rotateX(-Math.PI / 2);
+
+    if (!holeContours?.length) return baseGeo;
+
+    // Perforar cada orificio C01 mediante CSG booleano real
+    let currentBrush = new Brush(baseGeo);
+    currentBrush.updateMatrixWorld();
+    const toDispose: THREE.BufferGeometry[] = [];
+
+    for (const hole of holeContours) {
+      if (!hole.points || hole.points.length < 3) continue;
+      let hMinX = Infinity, hMaxX = -Infinity, hMinY = Infinity, hMaxY = -Infinity;
+      for (const hp of hole.points) {
+        if (hp.x < hMinX) hMinX = hp.x;
+        if (hp.x > hMaxX) hMaxX = hp.x;
+        if (hp.y < hMinY) hMinY = hp.y;
+        if (hp.y > hMaxY) hMaxY = hp.y;
+      }
+      const hRadius = Math.max(0.35, Math.max(hMaxX - hMinX, hMaxY - hMinY) / 2);
+      const hx = (hMinX + hMaxX) / 2 - cx;
+      const hz = (hMinY + hMaxY) / 2 - cy;
+
+      const drillGeo = new THREE.CylinderGeometry(hRadius, hRadius, thicknessMm + 4, 16);
+      drillGeo.translate(hx, thicknessMm / 2, hz);
+      const drillBrush = new Brush(drillGeo);
+      drillBrush.updateMatrixWorld();
+
+      try {
+        const nextBrush = csgEvaluator.evaluate(currentBrush, drillBrush, SUBTRACTION);
+        toDispose.push(currentBrush.geometry, drillGeo);
+        currentBrush = nextBrush;
+        currentBrush.updateMatrixWorld();
+      } catch {
+        drillGeo.dispose();
+      }
+    }
+
+    for (const g of toDispose) g.dispose();
+    return currentBrush.geometry;
+  }
+
+  return new THREE.BoxGeometry(10, Math.max(0.6, thicknessMm), 10);
 }
 
 export function buildSanouChuckModels(
@@ -494,13 +747,20 @@ export function buildSanouChuckModels(
     roughness: 0.26,
   });
 
-  const motorCore = new THREE.Mesh(new THREE.BoxGeometry(40, 58, 58), housingMat);
+  // Motor NEMA biselado con RoundedBoxGeometry
+  const motorCore = new THREE.Mesh(
+    new RoundedBoxGeometry(40, 58, 58, 3, 4),
+    housingMat
+  );
   motorCore.position.set(chuckX - 36, 0, 0);
   motorCore.castShadow = true;
   staticMotorGroup.add(motorCore);
 
   for (let i = -2; i <= 2; i++) {
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(34, 62, 3), housingMat);
+    const fin = new THREE.Mesh(
+      new RoundedBoxGeometry(34, 62, 3, 2, 0.8),
+      housingMat
+    );
     fin.position.set(chuckX - 36, 0, i * 11);
     staticMotorGroup.add(fin);
   }
@@ -521,8 +781,7 @@ export function buildSanouChuckModels(
     new THREE.Vector2(44, 12.5),
     new THREE.Vector2(10, 12.5),
   ];
-  const platoGeo = new THREE.LatheGeometry(platoPts, 64);
-  const platoMesh = new THREE.Mesh(platoGeo, steelMat);
+  const platoMesh = new THREE.Mesh(new THREE.LatheGeometry(platoPts, 64), steelMat);
   platoMesh.rotation.z = -Math.PI / 2;
   platoMesh.position.set(chuckX, 0, 0);
   platoMesh.castShadow = true;
@@ -592,7 +851,10 @@ export function buildTailstockSupportAssembly(
   });
 
   const height = Math.max(10, undersideY - bedY);
-  const basePlate = new THREE.Mesh(new THREE.BoxGeometry(28, 6, 42), baseMat);
+  const basePlate = new THREE.Mesh(
+    new RoundedBoxGeometry(28, 6, 42, 2, 1.5),
+    baseMat
+  );
   basePlate.position.set(xPos, bedY + 3, 0);
   basePlate.castShadow = true;
   g.add(basePlate);
@@ -607,7 +869,10 @@ export function buildTailstockSupportAssembly(
   knob.position.set(xPos, bedY + 12, 0);
   g.add(knob);
 
-  const cradle = new THREE.Mesh(new THREE.BoxGeometry(16, 6, 30), baseMat);
+  const cradle = new THREE.Mesh(
+    new RoundedBoxGeometry(16, 6, 30, 2, 1.5),
+    baseMat
+  );
   cradle.position.set(xPos, undersideY - 7, 0);
   g.add(cradle);
 
@@ -643,11 +908,17 @@ export function buildVankLaserHeadMeshGroup(
     roughness: 0.22,
   });
 
-  const carriage = new THREE.Mesh(new THREE.BoxGeometry(28, 18, 26), bodyMat);
+  const carriage = new THREE.Mesh(
+    new RoundedBoxGeometry(28, 18, 26, 3, 2.5),
+    bodyMat
+  );
   carriage.castShadow = true;
   headGroup.add(carriage);
 
-  const mirrorCube = new THREE.Mesh(new THREE.BoxGeometry(18, 16, 18), blueAnodizedMat);
+  const mirrorCube = new THREE.Mesh(
+    new RoundedBoxGeometry(18, 16, 18, 2, 2),
+    blueAnodizedMat
+  );
   mirrorCube.position.set(0, -1, 16);
   mirrorCube.castShadow = true;
   headGroup.add(mirrorCube);
@@ -690,7 +961,7 @@ export function buildVankLaserHeadMeshGroup(
     new THREE.MeshBasicMaterial({
       color: '#ef4444',
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.95,
     })
   );
   beam.position.y = rayStartY - beamLength / 2;
