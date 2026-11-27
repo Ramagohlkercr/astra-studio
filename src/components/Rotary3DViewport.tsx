@@ -26,7 +26,7 @@ import {
 
 type CameraPreset = 'iso' | 'front' | 'top' | 'chuck';
 
-const VESSEL_SHAPES: { id: RotaryVesselShape; label: string }[] = [
+export const ROTARY_VESSEL_SHAPES: { id: RotaryVesselShape; label: string }[] = [
   { id: 'auto', label: 'Auto' },
   { id: 'tumbler', label: 'Tumbler' },
   { id: 'thermos', label: 'Termo' },
@@ -35,7 +35,7 @@ const VESSEL_SHAPES: { id: RotaryVesselShape; label: string }[] = [
   { id: 'can', label: 'Lata' },
 ];
 
-const SURFACE_OPTIONS: {
+export const ROTARY_SURFACE_OPTIONS: {
   id: RotarySurfaceMaterialKind;
   label: string;
   swatch: string;
@@ -59,6 +59,10 @@ interface Props {
   previewRotationDeg: number;
   isAutoRotating?: boolean;
   presetId?: string;
+  vesselShape?: RotaryVesselShape;
+  onVesselShapeChange?: (shape: RotaryVesselShape) => void;
+  vesselSurface?: RotarySurfaceMaterialKind;
+  onVesselSurfaceChange?: (surface: RotarySurfaceMaterialKind) => void;
   fallbackSvgContent?: React.ReactNode;
 }
 
@@ -70,6 +74,10 @@ export const Rotary3DViewport: React.FC<Props> = ({
   previewRotationDeg,
   isAutoRotating = false,
   presetId,
+  vesselShape: controlledShape,
+  onVesselShapeChange,
+  vesselSurface: controlledSurface,
+  onVesselSurfaceChange,
   fallbackSvgContent,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -94,10 +102,21 @@ export const Rotary3DViewport: React.FC<Props> = ({
   });
 
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('iso');
-  const [vesselSurface, setVesselSurface] =
+  const [internalSurface, setInternalSurface] =
     useState<RotarySurfaceMaterialKind>('auto');
-  const [vesselShape, setVesselShape] = useState<RotaryVesselShape>('auto');
+  const [internalShape, setInternalShape] = useState<RotaryVesselShape>('auto');
+  const vesselShape = controlledShape ?? internalShape;
+  const vesselSurface = controlledSurface ?? internalSurface;
+  const setVesselShape = (next: RotaryVesselShape) => {
+    setInternalShape(next);
+    onVesselShapeChange?.(next);
+  };
+  const setVesselSurface = (next: RotarySurfaceMaterialKind) => {
+    setInternalSurface(next);
+    onVesselSurfaceChange?.(next);
+  };
   const [webglReady, setWebglReady] = useState<boolean>(() => canUseWebGL());
+  const lastCameraExtentRef = useRef<number>(0);
 
   const dims = useMemo(() => {
     const len = Math.max(20, Math.min(900, config.usefulLengthMm || 120));
@@ -535,10 +554,23 @@ export const Rotary3DViewport: React.FC<Props> = ({
   }, [previewRotationDeg]);
 
   useEffect(() => {
-    if (webglReady) {
+    if (!webglReady) return;
+    const maxExtent = Math.max(dims.len, dims.d0, dims.d1, 90);
+    const prev = lastCameraExtentRef.current;
+    // Solo re-encuadrar automáticamente al iniciar o ante saltos grandes de escala (>1.7x);
+    // al arrastrar sliders o ajustar medidas en vivo, conservar la vista actual para ver crecer/achicar el modelo 3D.
+    if (prev === 0 || maxExtent / prev > 1.7 || prev / maxExtent > 1.7) {
+      lastCameraExtentRef.current = maxExtent;
       applyCameraPreset(cameraPreset);
     }
   }, [dims.len, dims.d0, dims.d1, webglReady]);
+
+  useEffect(() => {
+    if (webglReady && (presetId || vesselShape !== 'auto')) {
+      lastCameraExtentRef.current = Math.max(dims.len, dims.d0, dims.d1, 90);
+      applyCameraPreset(cameraPreset);
+    }
+  }, [presetId, vesselShape]);
 
   if (!webglReady) {
     return <>{fallbackSvgContent}</>;
@@ -576,7 +608,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
 
           <div className="flex flex-wrap items-center gap-1">
             <span className="text-slate-400 font-semibold">Pieza:</span>
-            {VESSEL_SHAPES.map((s) => {
+            {ROTARY_VESSEL_SHAPES.map((s) => {
               const active = vesselShape === s.id;
               return (
                 <button
@@ -598,7 +630,7 @@ export const Rotary3DViewport: React.FC<Props> = ({
 
         <div className="flex flex-wrap items-center gap-1 pt-0.5 border-t border-slate-800/80">
           <span className="text-slate-400 font-semibold mr-0.5">Textura:</span>
-          {SURFACE_OPTIONS.map((opt) => {
+          {ROTARY_SURFACE_OPTIONS.map((opt) => {
             const active = vesselSurface === opt.id;
             return (
               <button
@@ -633,11 +665,18 @@ export const Rotary3DViewport: React.FC<Props> = ({
           <span className="bg-slate-950/85 border border-slate-800 px-2 py-0.5 rounded text-cyan-200 font-semibold">
             {appearance.compositionLabel}
           </span>
-          {layout.tapered && (
-            <span className="bg-amber-950/85 border border-amber-600/60 px-2 py-0.5 rounded text-amber-300 font-bold">
-              ▲ Suplementar +{physicalSetup.tailstockLiftMm} mm ({physicalSetup.wallTiltAngleDeg}°)
+          <div className="flex items-center gap-1.5">
+            <span className="bg-slate-950/85 border border-emerald-500/40 px-2 py-0.5 rounded text-emerald-300 font-semibold">
+              {layout.tapered
+                ? `Ø ${dims.d0}→${dims.d1} × ${dims.len} mm`
+                : `Ø ${dims.d0} × ${dims.len} mm`}
             </span>
-          )}
+            {layout.tapered && (
+              <span className="bg-amber-950/85 border border-amber-600/60 px-2 py-0.5 rounded text-amber-300 font-bold">
+                ▲ +{physicalSetup.tailstockLiftMm} mm ({physicalSetup.wallTiltAngleDeg}°)
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>

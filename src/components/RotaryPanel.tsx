@@ -75,7 +75,15 @@ import { VANK_9060_DEFAULT_IP } from '../core/workbench/workbenchTypes';
 import { LogoOutputFile } from '../core/exporters/logoFolder';
 import { roundMm } from '../core/geometry/geometryEngine';
 import { LabelDesign } from '../core/types';
-import { Rotary3DViewport } from './Rotary3DViewport';
+import {
+  ROTARY_SURFACE_OPTIONS,
+  ROTARY_VESSEL_SHAPES,
+  Rotary3DViewport,
+} from './Rotary3DViewport';
+import {
+  RotarySurfaceMaterialKind,
+  RotaryVesselShape,
+} from '../core/three/cadModels';
 
 interface Props {
   design: LabelDesign;
@@ -302,6 +310,9 @@ export function RotaryPanel({
     'webgl' | 'schematic'
   >('webgl');
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
+  const [vesselShape, setVesselShape] = useState<RotaryVesselShape>('auto');
+  const [vesselSurface, setVesselSurface] =
+    useState<RotarySurfaceMaterialKind>('auto');
   const [productionBatchQty, setProductionBatchQty] = useState<number>(1);
 
   // Ángulo de rotación interactivo para girar el vaso/termo 360° (215° muestra el logo frente a cámara e iluminado)
@@ -1642,6 +1653,10 @@ export function RotaryPanel({
                       previewRotationDeg={previewRotationDeg}
                       isAutoRotating={isAutoRotating}
                       presetId={selectedPresetId}
+                      vesselShape={vesselShape}
+                      onVesselShapeChange={setVesselShape}
+                      vesselSurface={vesselSurface}
+                      onVesselSurfaceChange={setVesselSurface}
                       fallbackSvgContent={schematicView}
                     />
                   ) : (
@@ -1875,6 +1890,8 @@ export function RotaryPanel({
                         );
                         if (p) {
                           setSelectedPresetId(p.id);
+                          setVesselShape('auto');
+                          setVesselSurface('auto');
                           if (
                             p.patch.rotaryType &&
                             p.patch.rotaryType !== config.rotaryType
@@ -1895,84 +1912,242 @@ export function RotaryPanel({
                       ))}
                     </select>
                   </label>
+
+                  {/* Selector directo de Tipo de Producto y Material sincronizado en vivo con el Render 3D */}
+                  <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-cyan-300">
+                        Tipo de Producto (Render 3D en vivo)
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-400">
+                        {vesselShape === 'auto' ? 'Detección auto' : vesselShape.toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {ROTARY_VESSEL_SHAPES.map((s) => {
+                        const active = vesselShape === s.id;
+                        return (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => {
+                              setVesselShape(s.id);
+                              if (s.id !== 'auto') setSelectedPresetId('');
+                            }}
+                            className={`py-1 px-1.5 rounded-lg text-[10px] font-bold border transition ${
+                              active
+                                ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/60'
+                                : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                            }`}
+                          >
+                            {s.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[10px] text-slate-400 block">
+                        Material / Acabado del producto:
+                      </span>
+                      <div className="flex flex-wrap gap-1">
+                        {ROTARY_SURFACE_OPTIONS.map((opt) => {
+                          const active = vesselSurface === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setVesselSurface(opt.id)}
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-medium border flex items-center gap-1 transition ${
+                                active
+                                  ? 'bg-slate-800 text-white border-cyan-500/60'
+                                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+                              }`}
+                            >
+                              <span
+                                className="w-2 h-2 rounded-full border border-white/30"
+                                style={{ backgroundColor: opt.swatch }}
+                              />
+                              <span>{opt.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* 1.2 Medidas principales del objeto (Grilla limpia 2x3) */}
+              {/* 1.2 Medidas principales del objeto con Sliders en tiempo real para generar el Render 3D */}
               <div className="bg-slate-900/75 p-3.5 rounded-xl border border-slate-800 space-y-3">
-                <div className="font-bold text-white text-xs">
-                  Medidas del Objeto Cilíndrico o Cónico
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="space-y-1">
-                    <span className="text-[11px] text-emerald-300 font-semibold">
-                      Diámetro inicial X=0 (mm)
-                    </span>
-                    <input
-                      className={field}
-                      type="number"
-                      min={5}
-                      max={300}
-                      step="0.1"
-                      value={val(config.objectDiameterMm)}
-                      onChange={num('objectDiameterMm')}
-                    />
-                  </label>
-
-                  <label className="space-y-1">
-                    <span className="text-[11px] text-amber-300 font-semibold">
-                      Diámetro final X=largo (mm)
-                    </span>
-                    <input
-                      className={field}
-                      type="number"
-                      min={5}
-                      max={300}
-                      step="0.1"
-                      placeholder="Igual = cilindro recto"
-                      value={val(config.endDiameterMm)}
-                      onChange={(e) =>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-white text-xs">
+                    Medidas del Producto (mm)
+                  </span>
+                  <div className="grid grid-cols-2 gap-1 bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfig((c) => ({ ...c, endDiameterMm: undefined }))
+                      }
+                      className={`px-2 py-0.5 rounded font-bold transition ${
+                        !isTapered(config)
+                          ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-500/50'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Recto
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
                         setConfig((c) => ({
                           ...c,
                           endDiameterMm:
-                            e.target.value === ''
-                              ? undefined
-                              : Number(e.target.value),
+                            c.endDiameterMm ??
+                            Math.max(15, roundMm((c.objectDiameterMm || 80) * 0.78, 1)),
                         }))
                       }
-                    />
-                  </label>
+                      className={`px-2 py-0.5 rounded font-bold transition ${
+                        isTapered(config)
+                          ? 'bg-amber-500/20 text-amber-200 border border-amber-500/50'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Cónico
+                    </button>
+                  </div>
+                </div>
 
-                  <label className="space-y-1">
-                    <span className="text-[11px] text-slate-300">
-                      Largo útil axial X (mm)
-                    </span>
+                <div className="space-y-2.5">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-emerald-300 font-semibold">
+                        {isTapered(config)
+                          ? 'Diámetro Base / Inicio X=0 (mm)'
+                          : 'Diámetro del Producto (mm)'}
+                      </span>
+                      <input
+                        aria-label="Diámetro inicial X=0 (mm)"
+                        className="w-20 bg-slate-950 border border-slate-700 px-2 py-1 rounded text-xs font-mono text-white text-right focus:border-cyan-500 focus:outline-none"
+                        type="number"
+                        min={5}
+                        max={300}
+                        step="0.5"
+                        value={val(config.objectDiameterMm)}
+                        onChange={num('objectDiameterMm')}
+                      />
+                    </div>
                     <input
-                      className={field}
-                      type="number"
-                      min={1}
-                      max={900}
-                      step="0.5"
-                      value={val(config.usefulLengthMm)}
-                      onChange={num('usefulLengthMm')}
+                      type="range"
+                      aria-label="Slider diámetro inicial (mm)"
+                      min={20}
+                      max={160}
+                      step={1}
+                      value={Math.max(20, Math.min(160, config.objectDiameterMm || 75))}
+                      onChange={(e) =>
+                        setConfig((c) => ({
+                          ...c,
+                          objectDiameterMm: Number(e.target.value),
+                        }))
+                      }
+                      className="w-full accent-emerald-400 cursor-pointer h-1.5"
                     />
-                  </label>
+                  </div>
 
-                  <label className="space-y-1">
-                    <span className="text-[11px] text-cyan-300 font-semibold">
-                      Copias alrededor (1..36)
-                    </span>
-                    <input
-                      className={field}
-                      type="number"
-                      min={1}
-                      max={36}
-                      step="1"
-                      value={val(config.repeatCount, 1)}
-                      onChange={num('repeatCount')}
-                    />
-                  </label>
+                  {isTapered(config) && (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-amber-300 font-semibold">
+                          Diámetro Boca / Fin X=largo (mm)
+                        </span>
+                        <input
+                          aria-label="Diámetro final X=largo (mm)"
+                          className="w-20 bg-slate-950 border border-slate-700 px-2 py-1 rounded text-xs font-mono text-white text-right focus:border-cyan-500 focus:outline-none"
+                          type="number"
+                          min={5}
+                          max={300}
+                          step="0.5"
+                          value={val(config.endDiameterMm)}
+                          onChange={(e) =>
+                            setConfig((c) => ({
+                              ...c,
+                              endDiameterMm:
+                                e.target.value === ''
+                                  ? undefined
+                                  : Number(e.target.value),
+                            }))
+                          }
+                        />
+                      </div>
+                      <input
+                        type="range"
+                        aria-label="Slider diámetro final (mm)"
+                        min={20}
+                        max={160}
+                        step={1}
+                        value={Math.max(20, Math.min(160, config.endDiameterMm || 65))}
+                        onChange={(e) =>
+                          setConfig((c) => ({
+                            ...c,
+                            endDiameterMm: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-amber-400 cursor-pointer h-1.5"
+                      />
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-2 items-end">
+                    <div className="col-span-2 space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-slate-300 font-semibold">
+                          Largo útil X (mm)
+                        </span>
+                        <input
+                          aria-label="Largo útil axial X (mm)"
+                          className="w-20 bg-slate-950 border border-slate-700 px-2 py-1 rounded text-xs font-mono text-white text-right focus:border-cyan-500 focus:outline-none"
+                          type="number"
+                          min={10}
+                          max={900}
+                          step="1"
+                          value={val(config.usefulLengthMm)}
+                          onChange={num('usefulLengthMm')}
+                        />
+                      </div>
+                      <input
+                        type="range"
+                        aria-label="Slider largo útil axial (mm)"
+                        min={30}
+                        max={260}
+                        step={1}
+                        value={Math.max(30, Math.min(260, config.usefulLengthMm || 100))}
+                        onChange={(e) =>
+                          setConfig((c) => ({
+                            ...c,
+                            usefulLengthMm: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full accent-cyan-400 cursor-pointer h-1.5"
+                      />
+                    </div>
+
+                    <label className="space-y-1">
+                      <span className="text-[10px] text-cyan-300 font-semibold block">
+                        Copias (1..36)
+                      </span>
+                      <input
+                        aria-label="Copias alrededor (1..36)"
+                        className={field}
+                        type="number"
+                        min={1}
+                        max={36}
+                        step="1"
+                        value={val(config.repeatCount, 1)}
+                        onChange={num('repeatCount')}
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 {/* Orientación rápida del logo y lado agarrado por el mandril */}
