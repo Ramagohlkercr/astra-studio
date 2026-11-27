@@ -77,6 +77,32 @@ pub struct RuidaMachineStatus {
     pub latency_ms: Option<u64>,
 }
 
+#[derive(Serialize)]
+pub struct RuidaControllerFile {
+    pub index: u32,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub struct RuidaFilesListResponse {
+    pub reachable: bool,
+    pub files: Vec<RuidaControllerFile>,
+}
+
+#[derive(Serialize)]
+pub struct RuidaMotionParamsResponse {
+    pub calibrated: bool,
+    pub idle_speed_mm_s: Option<f64>,
+    pub idle_accel_mm_s2: Option<f64>,
+    pub max_speed_x_mm_s: Option<f64>,
+    pub max_speed_y_mm_s: Option<f64>,
+    pub cut_accel_x_mm_s2: Option<f64>,
+    pub cut_accel_y_mm_s2: Option<f64>,
+    pub scan_accel_x_mm_s2: Option<f64>,
+    pub scan_accel_y_mm_s2: Option<f64>,
+    pub speed_factor: Option<f64>,
+}
+
 fn parse_ipv4(ip_str: &str) -> Result<Ipv4Addr, String> {
     ip_str
         .trim()
@@ -96,9 +122,14 @@ fn unscramble_ruida_byte(scrambled: u8, magic: u8) -> u8 {
     (xored & 0x7e) | ((xored >> 7) & 0x01) | ((xored & 0x01) << 7)
 }
 
-/// Decodifica la respuesta `GetStates` (`DA 01 04 00 b4 b5 b6 b7 b8`) de Ruida RDC8445S
-/// (ya sea directa o precedida por ACK 0xC6/0xCC y/o checksum UDP de 2 bytes).
-fn decode_ruida_states_reply(raw_wire: &[u8], magic: u8) -> Option<u32> {
+/// Decodifica una respuesta Ruida `DA 01 <reg_hi> <reg_lo> b4 b5 b6 b7 b8` (entero 35-bit Big-Endian),
+/// tolerando ACK inicial (0xC6/0xCC) y/o checksum UDP de 2 bytes.
+fn decode_ruida_da01_register_reply(
+    raw_wire: &[u8],
+    reg_hi: u8,
+    reg_lo: u8,
+    magic: u8,
+) -> Option<u32> {
     let mut candidates: Vec<&[u8]> = Vec::new();
     candidates.push(raw_wire);
     if raw_wire.len() > 1 && is_ruida_ack(raw_wire[0]) {
@@ -122,8 +153,8 @@ fn decode_ruida_states_reply(raw_wire: &[u8], magic: u8) -> Option<u32> {
                 .collect();
             if unscrambled[0] == 0xDA
                 && unscrambled[1] == 0x01
-                && unscrambled[2] == 0x04
-                && unscrambled[3] == 0x00
+                && unscrambled[2] == reg_hi
+                && unscrambled[3] == reg_lo
             {
                 let b4 = (unscrambled[4] & 0x7f) as u32;
                 let b5 = (unscrambled[5] & 0x7f) as u32;
@@ -135,6 +166,62 @@ fn decode_ruida_states_reply(raw_wire: &[u8], magic: u8) -> Option<u32> {
         }
     }
     None
+}
+
+fn decode_ruida_states_reply(raw_wire: &[u8], magic: u8) -> Option<u32> {
+    decode_ruida_da01_register_reply(raw_wire, 0x04, 0x00, magic)
+}
+
+/// Parsea nombres ASCII de archivos desde un bloque de respuesta `E5 0A` (records de 32 bytes tras cabecera de 2 bytes).
+fn parse_ruida_e50a_file_records(raw_wire: &[u8], start_index: u32, magic: u8) -> Vec<RuidaControllerFile> {
+    let mut start_off = 0usize;
+    if raw_wire.len() > 1 && is_ruida_ack(raw_wire[0]) {
+        start_off = 1;
+    }
+    let payload = &raw_wire[start_off..];
+    if payload.len() < 4 {
+        return Vec::new();
+    }
+    let mut unscrambled: Vec<u8> = payload
+        .iter()
+        .map(|&b| unscramble_ruida_byte(b, magic))
+        .collect();
+    // Cabecera estándar LightBurn GetResponseFilename remueve 2 bytes (`E5 0A` o similar) si está presente
+    if unscrambled.len() > 2 && (unscrambled[0] == 0xE5 || unscrambled[0] == 0xDA) {
+        unscrambled.drain(0..2);
+    }
+
+    let mut files = Vec::new();
+    for (idx_offset, chunk) in unscrambled.chunks(32).enumerate() {
+        if chunk.len() < 16 {
+            continue;
+        }
+        // Extraer nombre C-string limpio dentro de los primeros ~20..32 bytes del registro
+        let candidate_slice = if chunk.len() > 12 { &chunk[..] } else { chunk };
+        let mut best_name = String::new();
+        let mut cur = String::new();
+        for &b in candidate_slice {
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.' {
+                cur.push(b as char);
+            } else {
+                if cur.len() > best_name.len() && cur.chars().any(|c| c.is_ascii_alphabetic()) {
+                    best_name = cur.clone();
+                }
+                cur.clear();
+            }
+        }
+        if cur.len() > best_name.len() && cur.chars().any(|c| c.is_ascii_alphabetic()) {
+            best_name = cur;
+        }
+        let trimmed = best_name.trim().to_string();
+        if !trimmed.is_empty() {
+            files.push(RuidaControllerFile {
+                index: start_index + idx_offset as u32,
+                name: trimmed,
+            });
+        }
+    }
+    files
 }
 
 fn build_checksum_udp_packet(scrambled_payload: &[u8]) -> Vec<u8> {
@@ -1054,6 +1141,169 @@ pub async fn query_ruida_machine_status(ip: String, port: u16) -> Result<RuidaMa
     .map_err(|e| format!("Error interno al consultar estado Ruida: {e}"))?
 }
 
+fn query_tcp_da00_register(
+    stream: &mut TcpStream,
+    reg_hi: u8,
+    reg_lo: u8,
+    magic: u8,
+) -> Option<u32> {
+    let payload = build_safe_tcp_probe_payload(&[0xDA, 0x00, reg_hi, reg_lo], magic);
+    stream.write_all(&payload).ok()?;
+    stream.flush().ok()?;
+    let mut buf = [0u8; 64];
+    let mut total_n = 0usize;
+    for _ in 0..3 {
+        match stream.read(&mut buf[total_n..]) {
+            Ok(n) if n > 0 => {
+                total_n += n;
+                if let Some(val) =
+                    decode_ruida_da01_register_reply(&buf[..total_n], reg_hi, reg_lo, magic)
+                {
+                    return Some(val);
+                }
+                if total_n >= 12 {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    None
+}
+
+/// Consulta automáticamente en la Vank 9060 (`ReadSimulationValues` de LightBurn)
+/// las aceleraciones y velocidades máximas reales de la controladora para calibrar tiempos 1:1.
+#[tauri::command]
+pub async fn query_ruida_motion_params(
+    ip: String,
+    port: u16,
+) -> Result<RuidaMotionParamsResponse, String> {
+    let target_ip = parse_ipv4(&ip)?;
+    if port == 0 {
+        return Err("Puerto Ruida inválido.".into());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut resp = RuidaMotionParamsResponse {
+            calibrated: false,
+            idle_speed_mm_s: None,
+            idle_accel_mm_s2: None,
+            max_speed_x_mm_s: None,
+            max_speed_y_mm_s: None,
+            cut_accel_x_mm_s2: None,
+            cut_accel_y_mm_s2: None,
+            scan_accel_x_mm_s2: None,
+            scan_accel_y_mm_s2: None,
+            speed_factor: None,
+        };
+
+        if let Ok(mut stream) = try_connect_ruida_tcp(target_ip, port, 900) {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(450)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(450)));
+
+            let read_scaled = |s: &mut TcpStream, hi: u8, lo: u8, div: f64| -> Option<f64> {
+                query_tcp_da00_register(s, hi, lo, RUIDA_MAGIC).map(|v| (v as f64) / div)
+            };
+
+            resp.idle_speed_mm_s = read_scaled(&mut stream, 0x00, 0x05, 1000.0);
+            resp.max_speed_x_mm_s = read_scaled(&mut stream, 0x00, 0x23, 1000.0);
+            resp.max_speed_y_mm_s = read_scaled(&mut stream, 0x00, 0x33, 1000.0);
+            resp.cut_accel_x_mm_s2 = read_scaled(&mut stream, 0x00, 0x25, 1000.0);
+            resp.cut_accel_y_mm_s2 = read_scaled(&mut stream, 0x00, 0x35, 1000.0);
+            resp.idle_accel_mm_s2 = read_scaled(&mut stream, 0x02, 0x02, 1000.0);
+            resp.speed_factor = read_scaled(&mut stream, 0x02, 0x1A, 100.0);
+            resp.scan_accel_x_mm_s2 = read_scaled(&mut stream, 0x02, 0x25, 1000.0);
+            resp.scan_accel_y_mm_s2 = read_scaled(&mut stream, 0x02, 0x35, 1000.0);
+
+            resp.calibrated = resp.idle_speed_mm_s.is_some()
+                || resp.cut_accel_x_mm_s2.is_some()
+                || resp.scan_accel_x_mm_s2.is_some();
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+
+        Ok(resp)
+    })
+    .await
+    .map_err(|e| format!("Error interno al leer parámetros de movimiento Ruida: {e}"))?
+}
+
+/// Consulta los archivos almacenados en memoria de la controladora Ruida Vank 9060 (`DA 00 04 05` + `E5 0A`).
+#[tauri::command]
+pub async fn list_ruida_files(ip: String, port: u16) -> Result<RuidaFilesListResponse, String> {
+    let target_ip = parse_ipv4(&ip)?;
+    if port == 0 {
+        return Err("Puerto Ruida inválido.".into());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut files: Vec<RuidaControllerFile> = Vec::new();
+        let Ok(mut stream) = try_connect_ruida_tcp(target_ip, port, 900) else {
+            return Ok(RuidaFilesListResponse {
+                reachable: false,
+                files,
+            });
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(650)));
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(450)));
+
+        let Some(total_count_raw) = query_tcp_da00_register(&mut stream, 0x04, 0x05, RUIDA_MAGIC) else {
+            let _ = stream.shutdown(Shutdown::Both);
+            return Ok(RuidaFilesListResponse {
+                reachable: true,
+                files,
+            });
+        };
+
+        let count = total_count_raw.min(40);
+        let mut start = 0u32;
+        while start < count {
+            let end = (start + 9).min(count);
+            let cmd = [
+                0xE5,
+                0x0A,
+                ((start >> 7) & 0x7f) as u8,
+                (start & 0x7f) as u8,
+                ((end >> 7) & 0x7f) as u8,
+                (end & 0x7f) as u8,
+            ];
+            let payload = build_safe_tcp_probe_payload(&cmd, RUIDA_MAGIC);
+            if stream.write_all(&payload).and_then(|_| stream.flush()).is_err() {
+                break;
+            }
+            let mut buf = [0u8; 512];
+            let mut total_n = 0usize;
+            for _ in 0..3 {
+                match stream.read(&mut buf[total_n..]) {
+                    Ok(n) if n > 0 => {
+                        total_n += n;
+                        if total_n >= 34 {
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(80)));
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(650)));
+            if total_n > 0 {
+                files.extend(parse_ruida_e50a_file_records(
+                    &buf[..total_n],
+                    start,
+                    RUIDA_MAGIC,
+                ));
+            }
+            start += 10;
+        }
+
+        let _ = stream.shutdown(Shutdown::Both);
+        Ok(RuidaFilesListResponse {
+            reachable: true,
+            files,
+        })
+    })
+    .await
+    .map_err(|e| format!("Error interno al listar archivos de Vank 9060: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1320,5 +1570,42 @@ mod tests {
         let idle_wire = make_wire(0x00, true);
         let bits_idle = decode_ruida_states_reply(&idle_wire, RUIDA_MAGIC).unwrap();
         assert_eq!(bits_idle, 0);
+    }
+
+    #[test]
+    fn decodes_ruida_vendor_registers_and_file_records() {
+        // Simula registro 0x0225 = 3,000,000 (3000 mm/s^2)
+        let val: u32 = 3_000_000;
+        let raw = [
+            0xDA,
+            0x01,
+            0x02,
+            0x25,
+            ((val >> 28) & 0x7f) as u8,
+            ((val >> 21) & 0x7f) as u8,
+            ((val >> 14) & 0x7f) as u8,
+            ((val >> 7) & 0x7f) as u8,
+            (val & 0x7f) as u8,
+        ];
+        let wire: Vec<u8> = raw
+            .iter()
+            .map(|&b| scramble_ruida_byte(b, RUIDA_MAGIC))
+            .collect();
+        let decoded = decode_ruida_da01_register_reply(&wire, 0x02, 0x25, RUIDA_MAGIC).unwrap();
+        assert_eq!(decoded, 3_000_000);
+
+        // Simula cabecera E5 0A + 1 registro de 32 bytes con nombre "ASTRA01"
+        let mut rec_raw = vec![0xE5, 0x0A];
+        let mut rec1 = vec![0u8; 32];
+        rec1[0] = 0x01;
+        rec1[8..15].copy_from_slice(b"ASTRA01");
+        rec_raw.extend_from_slice(&rec1);
+        let rec_wire: Vec<u8> = rec_raw
+            .iter()
+            .map(|&b| scramble_ruida_byte(b, RUIDA_MAGIC))
+            .collect();
+        let files = parse_ruida_e50a_file_records(&rec_wire, 0, RUIDA_MAGIC);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "ASTRA01");
     }
 }

@@ -8,7 +8,9 @@ pub fn run() {
       ruida_transport::upload_rd_to_ruida,
       ruida_transport::open_lbrn2_in_lightburn,
       ruida_transport::probe_ruida_connection,
-      ruida_transport::query_ruida_machine_status
+      ruida_transport::query_ruida_machine_status,
+      ruida_transport::query_ruida_motion_params,
+      ruida_transport::list_ruida_files
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {

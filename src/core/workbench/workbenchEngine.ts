@@ -27,6 +27,19 @@ import {
   NestingResult,
 } from '../types';
 import {
+  computePolylineCutDurationSec,
+  computeRasterBandScanDurationSec,
+  computeTrapezoidMoveTimeSec,
+  DEFAULT_RUIDA_MOTION_CALIBRATION,
+  extractActiveRowWidthsMmFromMask,
+  MotionPlannerCalibration,
+} from './motionTiming';
+import {
+  buildRasterMaskCacheKey,
+  getCachedRasterScanlineMask,
+  RasterScanlineMask,
+} from './rasterScanlines';
+import {
   ECOCUERO_ROLL_TOTAL_LENGTH_MM,
   ECOCUERO_ROLL_WIDTH_MM,
   EcocueroRollMetrics,
@@ -2166,10 +2179,15 @@ function polylineLengthMm(pts: { x: Millimeters; y: Millimeters }[]): Millimeter
  */
 export function simulateWorkbenchToolpath(
   jobs: WorkbenchJobItem[],
-  config: WorkbenchConfig
+  config: WorkbenchConfig,
+  motionCalibration?: MotionPlannerCalibration,
+  rasterMasks?: Map<string, RasterScanlineMask>
 ): WorkbenchSimulationResult {
   const visibleJobs = jobs.filter((j) => j.visible && j.instances.length > 0);
   const segments: ToolpathSegment[] = [];
+
+  const motion = motionCalibration ?? DEFAULT_RUIDA_MOTION_CALIBRATION;
+  const empiricalScale = Math.max(0.65, Math.min(1.55, motion.empiricalTimeMultiplier || 1.0));
 
   const bounds = computeWorkbenchOccupiedBounds(visibleJobs);
   const origin = computeJobOriginPointMm(bounds, config);
@@ -2186,8 +2204,6 @@ export function simulateWorkbenchToolpath(
   let holesDurationSec = 0;
   let outerCutDurationSec = 0;
   let rapidDurationSec = 0;
-
-  const RAPID_SPEED_MM_S = 250;
 
   const sortedLayers = [...config.layers]
     .filter((l) => l.outputEnabled)
@@ -2208,7 +2224,14 @@ export function simulateWorkbenchToolpath(
       headY = targetY;
       return;
     }
-    const dur = Math.max(0.01, dist / RAPID_SPEED_MM_S);
+    const baseRapidDur = computeTrapezoidMoveTimeSec(
+      dist,
+      motion.idleSpeedMmPerSec,
+      0,
+      0,
+      motion.idleAccelMmPerSec2
+    );
+    const dur = Math.max(0.01, baseRapidDur * empiricalScale);
     segCounter++;
     segments.push({
       id: `seg-rapid-${segCounter}`,
@@ -2252,30 +2275,161 @@ export function simulateWorkbenchToolpath(
     if (layer.role === 'ENGRAVE') {
       const speed =
         layer.speedMmPerSec && layer.speedMmPerSec > 0 ? layer.speedMmPerSec : 200;
-      const interval = Math.max(0.04, layer.lineIntervalMm || 0.1);
+      const interval = Math.max(0.025, layer.lineIntervalMm || 0.08);
+      const bidirectional = layer.bidirectional !== false;
 
-      const boxItems: Array<{ minX: number; maxX: number; minY: number; maxY: number }> = [];
+      if (layer.mode === 'line') {
+        for (const inst of orderedInstances) {
+          for (const eng of inst.engraveItems) {
+            if (eng.kind === 'vector_path' && eng.polylines && eng.polylines.length > 0) {
+              for (const poly of eng.polylines) {
+                if (poly.points.length < 2) continue;
+                const absPts = poly.points.map((p) => ({
+                  x: roundMm(job.xMm + p.x),
+                  y: roundMm(job.yMm + p.y),
+                }));
+                if (poly.closed) absPts.push({ ...absPts[0] });
+                pushRapidMove(absPts[0].x, absPts[0].y, jobMeta);
+                const len = roundMm(polylineLengthMm(absPts) * passes);
+                const dur = Math.max(
+                  0.03,
+                  computePolylineCutDurationSec(absPts, !!poly.closed, speed, passes, motion) *
+                    empiricalScale
+                );
+                const lastPt = absPts[absPts.length - 1];
+                segCounter++;
+                segments.push({
+                  id: `seg-eng-${segCounter}`,
+                  kind: 'engrave_scan',
+                  layerCode: layer.code,
+                  hexColor: layer.hexColor,
+                  ...jobMeta,
+                  fromX: absPts[0].x,
+                  fromY: absPts[0].y,
+                  toX: lastPt.x,
+                  toY: lastPt.y,
+                  points: absPts,
+                  distanceMm: len,
+                  durationSec: dur,
+                  startTimeSec: elapsedSec,
+                  endTimeSec: elapsedSec + dur,
+                });
+                headX = lastPt.x;
+                headY = lastPt.y;
+                elapsedSec += dur;
+                engraveDistanceMm = roundMm(engraveDistanceMm + len);
+                engraveDurationSec += dur;
+              }
+            } else {
+              const bb = eng.boundingBox;
+              const minX = roundMm(job.xMm + bb.minX);
+              const maxX = roundMm(job.xMm + bb.maxX);
+              const minY = roundMm(job.yMm + bb.minY);
+              const maxY = roundMm(job.yMm + bb.maxY);
+              const rectPts = [
+                { x: minX, y: minY },
+                { x: maxX, y: minY },
+                { x: maxX, y: maxY },
+                { x: minX, y: maxY },
+                { x: minX, y: minY },
+              ];
+              pushRapidMove(minX, minY, jobMeta);
+              const len = roundMm(polylineLengthMm(rectPts) * passes);
+              const dur = Math.max(
+                0.03,
+                computePolylineCutDurationSec(rectPts, true, speed, passes, motion) *
+                  empiricalScale
+              );
+              segCounter++;
+              segments.push({
+                id: `seg-eng-${segCounter}`,
+                kind: 'engrave_scan',
+                layerCode: layer.code,
+                hexColor: layer.hexColor,
+                ...jobMeta,
+                fromX: minX,
+                fromY: minY,
+                toX: minX,
+                toY: minY,
+                points: rectPts,
+                distanceMm: len,
+                durationSec: dur,
+                startTimeSec: elapsedSec,
+                endTimeSec: elapsedSec + dur,
+              });
+              headX = minX;
+              headY = minY;
+              elapsedSec += dur;
+              engraveDistanceMm = roundMm(engraveDistanceMm + len);
+              engraveDurationSec += dur;
+            }
+          }
+        }
+        return;
+      }
+
+      const boxItems: Array<{
+        minX: number;
+        maxX: number;
+        minY: number;
+        maxY: number;
+        activeRowWidthsMm?: number[];
+      }> = [];
       for (const inst of orderedInstances) {
         if (inst.engraveItems.length === 0) continue;
         let minX = Infinity;
         let minY = Infinity;
         let maxX = -Infinity;
         let maxY = -Infinity;
+        let singleRasterWidths: number[] | undefined;
         for (const item of inst.engraveItems) {
-          minX = Math.min(minX, job.xMm + item.boundingBox.minX);
-          minY = Math.min(minY, job.yMm + item.boundingBox.minY);
-          maxX = Math.max(maxX, job.xMm + item.boundingBox.maxX);
-          maxY = Math.max(maxY, job.yMm + item.boundingBox.maxY);
+          const itemMinX = job.xMm + item.boundingBox.minX;
+          const itemMinY = job.yMm + item.boundingBox.minY;
+          const itemMaxX = job.xMm + item.boundingBox.maxX;
+          const itemMaxY = job.yMm + item.boundingBox.maxY;
+          minX = Math.min(minX, itemMinX);
+          minY = Math.min(minY, itemMinY);
+          maxX = Math.max(maxX, itemMaxX);
+          maxY = Math.max(maxY, itemMaxY);
+
+          if (inst.engraveItems.length === 1 && item.kind === 'raster_image' && item.dataUrl) {
+            const key = buildRasterMaskCacheKey({
+              dataUrl: item.dataUrl,
+              bboxWidthMm: Math.max(0.5, item.boundingBox.width || item.widthMm || 10),
+              bboxHeightMm: Math.max(0.5, item.boundingBox.height || item.heightMm || 10),
+              rotationDeg: item.rotationDeg ?? 0,
+              mirrored: !!item.mirrored,
+              lineIntervalMm: interval,
+              ditherMode: layer.imageDitherMode ?? 'threshold',
+            });
+            const mask = rasterMasks?.get(key) ?? getCachedRasterScanlineMask(key);
+            if (mask) {
+              const widths = extractActiveRowWidthsMmFromMask(
+                mask,
+                Math.max(0.5, itemMaxX - itemMinX)
+              );
+              if (widths.length > 0) singleRasterWidths = widths;
+            }
+          }
         }
         if (Number.isFinite(minX)) {
-          boxItems.push({ minX, maxX, minY, maxY });
+          boxItems.push({ minX, maxX, minY, maxY, activeRowWidthsMm: singleRasterWidths });
         }
       }
 
-      const bandsToEmit: Array<{ minX: number; maxX: number; minY: number; maxY: number }> = [];
-      if (engraveGrouping === 'all_at_once' && layer.mode !== 'line' && boxItems.length > 0) {
+      const bandsToEmit: Array<{
+        minX: number;
+        maxX: number;
+        minY: number;
+        maxY: number;
+        activeRowWidthsMm?: number[];
+      }> = [];
+      if (engraveGrouping === 'all_at_once' && boxItems.length > 0) {
         // Agrupar todas las etiquetas que comparten fila horizontal Y para simular barrido continuo de toda la fila
-        const byRow = new Map<number, { minX: number; maxX: number; minY: number; maxY: number }>();
+        const byRow = new Map<
+          number,
+          { minX: number; maxX: number; minY: number; maxY: number; activeRowWidthsMm?: number[] }
+        >();
         const sortedBoxes = [...boxItems].sort((a, b) => a.minY - b.minY);
         for (const box of sortedBoxes) {
           const rowKey = Math.round(box.minY * 10);
@@ -2285,6 +2439,8 @@ export function simulateWorkbenchToolpath(
             existing.maxX = Math.max(existing.maxX, box.maxX);
             existing.minY = Math.min(existing.minY, box.minY);
             existing.maxY = Math.max(existing.maxY, box.maxY);
+            // Al agrupar varias piezas horizontalmente, la cabeza barre todo el ancho combinado de la banda
+            existing.activeRowWidthsMm = undefined;
           } else {
             byRow.set(rowKey, { ...box });
           }
@@ -2299,12 +2455,24 @@ export function simulateWorkbenchToolpath(
         const maxX = band.maxX;
         const minY = band.minY;
         const maxY = band.maxY;
-        const scanWidth = Math.max(1, roundMm(maxX - minX));
         const scanHeight = Math.max(0.5, roundMm(maxY - minY));
-        const realScanLines = Math.max(1, Math.ceil(scanHeight / interval));
-        const totalScanDist = roundMm(scanWidth * realScanLines * passes);
-        const turnaroundTime = realScanLines * 0.018 * passes;
-        const totalScanDur = Math.max(0.05, totalScanDist / speed + turnaroundTime);
+
+        const scanStats = computeRasterBandScanDurationSec(
+          {
+            minX,
+            maxX,
+            minY,
+            maxY,
+            speedMmPerSec: speed,
+            lineIntervalMm: interval,
+            bidirectional,
+            passes,
+            activeRowWidthsMm: band.activeRowWidthsMm,
+          },
+          motion
+        );
+        const totalScanDist = roundMm(scanStats.totalScanDistanceMm);
+        const totalScanDur = Math.max(0.05, scanStats.durationSec * empiricalScale);
 
         pushRapidMove(roundMm(minX), roundMm(minY), jobMeta);
 
@@ -2362,7 +2530,10 @@ export function simulateWorkbenchToolpath(
           pushRapidMove(absPts[0].x, absPts[0].y, jobMeta);
 
           const len = roundMm(polylineLengthMm(absPts) * passes);
-          const dur = Math.max(0.03, len / speed);
+          const dur = Math.max(
+            0.03,
+            computePolylineCutDurationSec(absPts, true, speed, passes, motion) * empiricalScale
+          );
           segCounter++;
           segments.push({
             id: `seg-hole-${segCounter}`,
@@ -2403,7 +2574,10 @@ export function simulateWorkbenchToolpath(
         pushRapidMove(absPts[0].x, absPts[0].y, jobMeta);
 
         const len = roundMm(polylineLengthMm(absPts) * passes);
-        const dur = Math.max(0.05, len / speed);
+        const dur = Math.max(
+          0.05,
+          computePolylineCutDurationSec(absPts, true, speed, passes, motion) * empiricalScale
+        );
         segCounter++;
         segments.push({
           id: `seg-cut-${segCounter}`,

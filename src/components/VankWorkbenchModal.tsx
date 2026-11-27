@@ -82,16 +82,29 @@ import {
 } from '../core/workbench/materialCalibrationEngine';
 import {
   prepareWorkbenchRasterMasks,
+  RasterScanlineMask,
 } from '../core/workbench/rasterScanlines';
 import {
   compileWorkbenchToRuidaRd,
   RuidaUploadProgress,
 } from '../core/workbench/ruidaCompiler';
 import {
+  listVankRuidaFiles,
   probeVankRuidaConnection,
   queryVankRuidaMachineStatus,
+  queryVankRuidaMotionParams,
+  RuidaControllerFile,
   uploadRdBytesToVankRuida,
 } from '../core/workbench/ruidaTransportClient';
+import {
+  learnEmpiricalDurationRatio,
+  loadRememberedFileEstimates,
+  loadStoredMotionCalibration,
+  mergeControllerMotionParams,
+  MotionPlannerCalibration,
+  rememberRuidaFileEstimate,
+  RememberedRuidaFileEstimate,
+} from '../core/workbench/motionTiming';
 import {
   armJobTimerWatch,
   computeLiveTimerSnapshot,
@@ -279,8 +292,21 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     reachable: boolean;
     latencyMs?: number | null;
   } | null>(null);
+  const [motionCalibration, setMotionCalibration] = useState<MotionPlannerCalibration>(() =>
+    loadStoredMotionCalibration()
+  );
+  const [ruidaControllerFiles, setRuidaControllerFiles] = useState<RuidaControllerFile[]>([]);
+  const [rememberedFileEstimates, setRememberedFileEstimates] = useState<
+    Record<string, RememberedRuidaFileEstimate>
+  >(() => loadRememberedFileEstimates());
+  const [activeVankFileName, setActiveVankFileName] = useState<string>('');
+  const rasterMasksRef = useRef<Map<string, RasterScanlineMask>>(new Map());
+  const [preparedRasterVersion, setPreparedRasterVersion] = useState<number>(0);
+
   const consecutiveIdlePollsRef = useRef<number>(0);
   const alertedCompletionRef = useRef<boolean>(false);
+  const hardwareRunWasPausedRef = useRef<boolean>(false);
+  const hardwareSyncedKeyRef = useRef<string>('');
 
   const multiLogoInputRef = useRef<HTMLInputElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -371,15 +397,78 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     [workbenchJobs, workbenchConfig]
   );
 
+  // Preparación automática de máscaras ráster en segundo plano para calcular anchos reales de escaneo
+  useEffect(() => {
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      void prepareWorkbenchRasterMasks(workbenchJobs, workbenchConfig)
+        .then((masks) => {
+          if (cancelled) return;
+          rasterMasksRef.current = masks;
+          setPreparedRasterVersion((v) => v + 1);
+        })
+        .catch(() => {
+          // Mantener simulación geométrica de respaldo si una imagen está en tránsito
+        });
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [workbenchJobs, workbenchConfig]);
+
   const simulation = useMemo(
-    () => simulateWorkbenchToolpath(workbenchJobs, workbenchConfig),
-    [workbenchJobs, workbenchConfig]
+    () =>
+      simulateWorkbenchToolpath(
+        workbenchJobs,
+        workbenchConfig,
+        motionCalibration,
+        rasterMasksRef.current
+      ),
+    [workbenchJobs, workbenchConfig, motionCalibration, preparedRasterVersion]
   );
 
   const rollMetrics = useMemo(
     () => computeEcocueroRollMetrics(workbenchJobs, workbenchConfig),
     [workbenchJobs, workbenchConfig]
   );
+
+  const validationRef = useRef(validation);
+  validationRef.current = validation;
+  const simulationRef = useRef(simulation);
+  simulationRef.current = simulation;
+  const activeVankFileNameRef = useRef(activeVankFileName);
+  activeVankFileNameRef.current = activeVankFileName;
+  const rememberedEstimatesRef = useRef(rememberedFileEstimates);
+  rememberedEstimatesRef.current = rememberedFileEstimates;
+  const ruidaControllerFilesRef = useRef(ruidaControllerFiles);
+  ruidaControllerFilesRef.current = ruidaControllerFiles;
+  const projectNameRef = useRef(projectName);
+  projectNameRef.current = projectName;
+  const ruidaJobNameRef = useRef(workbenchConfig.ruidaJobName);
+  ruidaJobNameRef.current = workbenchConfig.ruidaJobName;
+
+  const syncHardwareCalibrationAndFiles = async (ip: string, port: number) => {
+    if (!isTauri() || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip.trim())) return;
+    try {
+      const [motionHw, filesRes] = await Promise.all([
+        queryVankRuidaMotionParams({ ip, port }),
+        listVankRuidaFiles({ ip, port }),
+      ]);
+      if (motionHw.calibrated) {
+        setMotionCalibration((prev) => mergeControllerMotionParams(prev, motionHw));
+      }
+      if (filesRes.reachable && filesRes.files.length > 0) {
+        setRuidaControllerFiles(filesRes.files);
+        setActiveVankFileName((prev) => {
+          if (prev && filesRes.files.some((f) => f.name === prev)) return prev;
+          return prev || filesRes.files[filesRes.files.length - 1].name;
+        });
+      }
+    } catch {
+      // Silenciar si la controladora está ocupada
+    }
+  };
 
   // Reproductor de animación de trayectoria láser
   useEffect(() => {
@@ -422,7 +511,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     return () => window.clearInterval(id);
   }, [machineTimer.phase]);
 
-  // Disparo único de alerta sonora y notificación macOS al finalizar el trabajo
+  // Disparo único de alerta sonora, notificación macOS y auto-aprendizaje empírico de tiempo
   useEffect(() => {
     if (machineTimer.phase !== 'finished') {
       alertedCompletionRef.current = false;
@@ -435,6 +524,28 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       machineTimer,
       machineTimer.finishedAtMs ?? Date.now()
     );
+
+    if (
+      machineTimer.source === 'hardware' &&
+      !hardwareRunWasPausedRef.current &&
+      snap.elapsedSec >= 8 &&
+      machineTimer.estimatedTotalSec >= 8
+    ) {
+      setMotionCalibration((prev) =>
+        learnEmpiricalDurationRatio(prev, snap.elapsedSec, machineTimer.estimatedTotalSec)
+      );
+      if (machineTimer.jobName) {
+        const key = machineTimer.jobName.trim().toUpperCase();
+        rememberRuidaFileEstimate({
+          fileName: key,
+          totalPieces: machineTimer.totalPieces || validationRef.current.totalPieces,
+          estimatedTotalSec: Math.round(snap.elapsedSec),
+          updatedAtMs: Date.now(),
+        });
+        setRememberedFileEstimates(loadRememberedFileEstimates());
+      }
+    }
+
     const elapsedText = formatDurationTimer(snap.elapsedSec);
     if (machineTimer.soundEnabled) {
       playWorkshopCompletionAlertChime();
@@ -449,23 +560,19 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     );
   }, [machineTimer, onNotify]);
 
-  // Monitor de estado real de la controladora Ruida RDC8445S (detecta Start físico y Fin automático)
+  // Monitor SIEMPRE ACTIVO de la controladora Ruida RDC8445S:
+  // Detecta cualquier START físico (incluso tras Stop, desde LightBurn o USB, enviado o no desde Astra)
+  // abre automáticamente el pop-up de cronómetro, sincroniza aceleraciones reales y detecta cuando termina.
   useEffect(() => {
-    if (
-      !isTauri() ||
-      (machineTimer.phase !== 'armed' &&
-        machineTimer.phase !== 'running' &&
-        machineTimer.phase !== 'paused')
-    ) {
+    const ip = workbenchConfig.ruidaIpAddress.trim();
+    const port = workbenchConfig.ruidaPort;
+    if (!isTauri() || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
       return;
     }
 
     let cancelled = false;
     const poll = async () => {
-      const st = await queryVankRuidaMachineStatus({
-        ip: workbenchConfig.ruidaIpAddress,
-        port: workbenchConfig.ruidaPort,
-      });
+      const st = await queryVankRuidaMachineStatus({ ip, port });
       if (cancelled) return;
       setMachineLiveStatus({
         reachable: st.reachable,
@@ -473,57 +580,128 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       });
       if (!st.reachable) return;
 
+      const syncKey = `${ip}:${port}`;
+      if (hardwareSyncedKeyRef.current !== syncKey) {
+        hardwareSyncedKeyRef.current = syncKey;
+        void syncHardwareCalibrationAndFiles(ip, port);
+      }
+
       const now = Date.now();
-      setMachineTimer((prev) => {
-        if (prev.phase === 'armed') {
-          if (st.is_running) {
+
+      // Ignorar pulsaciones de FRAME/Encuadre: solo iniciar cronómetro en corte/grabado real
+      const isExecutingLaserJob = st.is_running && !st.is_framing && !st.is_paused;
+
+      if (isExecutingLaserJob) {
+        // Si venimos de idle/armed/finished, refrescar archivos en memoria de la controladora sin bloquear el pop-up
+        const currentFiles = ruidaControllerFilesRef.current;
+        const candidateName = (
+          activeVankFileNameRef.current ||
+          (currentFiles.length > 0 ? currentFiles[currentFiles.length - 1].name : '') ||
+          ruidaJobNameRef.current ||
+          projectNameRef.current ||
+          'Vank 9060'
+        )
+          .trim()
+          .toUpperCase();
+
+        setMachineTimer((prev) => {
+          if (prev.phase === 'idle' || prev.phase === 'armed' || prev.phase === 'finished') {
             consecutiveIdlePollsRef.current = 0;
-            return startJobTimerExecution(prev, { source: 'hardware' }, now);
+            hardwareRunWasPausedRef.current = false;
+
+            const remembered = candidateName
+              ? rememberedEstimatesRef.current[candidateName]
+              : undefined;
+            const simTotal = Math.max(
+              10,
+              Math.round(simulationRef.current.totalDurationSec)
+            );
+            const resolvedName =
+              prev.phase === 'armed'
+                ? prev.jobName
+                : remembered?.fileName || candidateName || prev.jobName;
+            const resolvedPieces =
+              prev.phase === 'armed' && prev.totalPieces > 0
+                ? prev.totalPieces
+                : remembered?.totalPieces || validationRef.current.totalPieces;
+            const resolvedEstSec =
+              prev.phase === 'armed' && prev.estimatedTotalSec > 0
+                ? prev.estimatedTotalSec
+                : remembered?.estimatedTotalSec || simTotal;
+
+            // Consultar archivos recientes en segundo plano por si otro archivo fue elegido en panel/USB
+            void listVankRuidaFiles({ ip, port }).then((filesRes) => {
+              if (cancelled || !filesRes.reachable || filesRes.files.length === 0) return;
+              setRuidaControllerFiles(filesRes.files);
+              const latestName =
+                filesRes.files[filesRes.files.length - 1].name.trim().toUpperCase();
+              if (!activeVankFileNameRef.current && latestName) {
+                setActiveVankFileName(latestName);
+              }
+            });
+
+            return startJobTimerExecution(
+              prev,
+              {
+                source: 'hardware',
+                jobName: resolvedName,
+                totalPieces: resolvedPieces,
+                estimatedTotalSec: resolvedEstSec,
+              },
+              now
+            );
+          }
+          if (prev.phase === 'paused') {
+            consecutiveIdlePollsRef.current = 0;
+            return resumeJobTimerExecution(prev, now);
+          }
+          if (prev.phase === 'running') {
+            consecutiveIdlePollsRef.current = 0;
           }
           return prev;
-        }
-        if (prev.phase === 'running') {
-          if (st.is_paused) {
+        });
+        return;
+      }
+
+      if (st.is_paused) {
+        setMachineTimer((prev) => {
+          if (prev.phase === 'running') {
             consecutiveIdlePollsRef.current = 0;
+            hardwareRunWasPausedRef.current = true;
             return pauseJobTimerExecution(prev, now);
           }
-          if (prev.source === 'hardware' && !st.is_running && !st.is_framing) {
-            const elapsed = prev.startedAtMs ? now - prev.startedAtMs : 0;
-            if (elapsed >= 2500) {
+          return prev;
+        });
+        return;
+      }
+
+      // Máquina inactiva (terminó o se presionó STOP)
+      if (!st.is_running && !st.is_framing) {
+        setMachineTimer((prev) => {
+          if (
+            prev.source === 'hardware' &&
+            (prev.phase === 'running' || prev.phase === 'paused')
+          ) {
+            const elapsedMs = prev.startedAtMs ? now - prev.startedAtMs : 0;
+            if (elapsedMs >= 2500) {
               consecutiveIdlePollsRef.current += 1;
               if (consecutiveIdlePollsRef.current >= 2) {
                 return finishJobTimerExecution(prev, now);
               }
             }
-          } else if (st.is_running) {
-            consecutiveIdlePollsRef.current = 0;
           }
           return prev;
-        }
-        if (prev.phase === 'paused') {
-          if (st.is_running && !st.is_paused) {
-            consecutiveIdlePollsRef.current = 0;
-            return resumeJobTimerExecution(prev, now);
-          }
-          if (prev.source === 'hardware' && !st.is_running && !st.is_paused && !st.is_framing) {
-            consecutiveIdlePollsRef.current += 1;
-            if (consecutiveIdlePollsRef.current >= 2) {
-              return finishJobTimerExecution(prev, now);
-            }
-          }
-          return prev;
-        }
-        return prev;
-      });
+        });
+      }
     };
 
     void poll();
-    const id = window.setInterval(() => void poll(), 1500);
+    const id = window.setInterval(() => void poll(), 1200);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [machineTimer.phase, workbenchConfig.ruidaIpAddress, workbenchConfig.ruidaPort]);
+  }, [workbenchConfig.ruidaIpAddress, workbenchConfig.ruidaPort]);
 
   const liveTimerSnapshot = useMemo(
     () => computeLiveTimerSnapshot(machineTimer, timerNowMs),
@@ -1338,11 +1516,31 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         workbenchJobs,
         workbenchConfig
       );
+      rasterMasksRef.current = rasterMasks;
+      setPreparedRasterVersion((v) => v + 1);
+      const exactSim = simulateWorkbenchToolpath(
+        workbenchJobs,
+        workbenchConfig,
+        motionCalibration,
+        rasterMasks
+      );
+      const exactEstSec = Math.max(10, Math.round(exactSim.totalDurationSec));
       const compiled = compileWorkbenchToRuidaRd(
         workbenchJobs,
         workbenchConfig,
         rasterMasks
       );
+      const jobKey = (compiled.ruidaJobName || projectName || 'ASTRA01')
+        .trim()
+        .toUpperCase();
+      setActiveVankFileName(jobKey);
+      rememberRuidaFileEstimate({
+        fileName: jobKey,
+        totalPieces: compiled.totalPieces,
+        estimatedTotalSec: exactEstSec,
+        updatedAtMs: Date.now(),
+      });
+      setRememberedFileEstimates(loadRememberedFileEstimates());
 
       if (!isTauri()) {
         setIsSendingToRuida(false);
@@ -1357,9 +1555,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         setMachineTimer((prev) =>
           armJobTimerWatch(prev, {
-            jobName: compiled.ruidaJobName || projectName,
+            jobName: jobKey,
             totalPieces: compiled.totalPieces,
-            estimatedTotalSec: Math.max(10, Math.round(simulation.totalDurationSec)),
+            estimatedTotalSec: exactEstSec,
           })
         );
         setRuidaStatusMsg({
@@ -1378,11 +1576,16 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         onProgress: setRuidaUploadProgress,
       });
 
+      void syncHardwareCalibrationAndFiles(
+        workbenchConfig.ruidaIpAddress,
+        workbenchConfig.ruidaPort
+      );
+
       setMachineTimer((prev) =>
         armJobTimerWatch(prev, {
-          jobName: compiled.ruidaJobName || projectName,
+          jobName: jobKey,
           totalPieces: compiled.totalPieces,
-          estimatedTotalSec: Math.max(10, Math.round(simulation.totalDurationSec)),
+          estimatedTotalSec: exactEstSec,
         })
       );
       setRuidaStatusMsg({
@@ -1409,11 +1612,30 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         workbenchJobs,
         workbenchConfig
       );
+      rasterMasksRef.current = rasterMasks;
+      setPreparedRasterVersion((v) => v + 1);
+      const exactSim = simulateWorkbenchToolpath(
+        workbenchJobs,
+        workbenchConfig,
+        motionCalibration,
+        rasterMasks
+      );
       const compiled = compileWorkbenchToRuidaRd(
         workbenchJobs,
         workbenchConfig,
         rasterMasks
       );
+      const jobKey = (compiled.ruidaJobName || projectName || 'ASTRA01')
+        .trim()
+        .toUpperCase();
+      setActiveVankFileName(jobKey);
+      rememberRuidaFileEstimate({
+        fileName: jobKey,
+        totalPieces: compiled.totalPieces,
+        estimatedTotalSec: Math.max(10, Math.round(exactSim.totalDurationSec)),
+        updatedAtMs: Date.now(),
+      });
+      setRememberedFileEstimates(loadRememberedFileEstimates());
       const blob = new Blob([compiled.rdBytes], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1566,6 +1788,12 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         latencyMs: res.latency_ms,
         message: res.message,
       });
+      if (res.reachable) {
+        void syncHardwareCalibrationAndFiles(
+          workbenchConfig.ruidaIpAddress,
+          workbenchConfig.ruidaPort
+        );
+      }
       setRuidaStatusMsg({
         type: res.udp_handshake_ok
           ? 'success'
@@ -1727,15 +1955,28 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
           <button
             type="button"
             onClick={() => {
+              const targetKey = (
+                activeVankFileName ||
+                workbenchConfig.ruidaJobName ||
+                projectName ||
+                'ASTRA01'
+              )
+                .trim()
+                .toUpperCase();
+              const estSec = Math.max(10, Math.round(simulation.totalDurationSec));
+              rememberRuidaFileEstimate({
+                fileName: targetKey,
+                totalPieces: validation.totalPieces,
+                estimatedTotalSec: estSec,
+                updatedAtMs: Date.now(),
+              });
+              setRememberedFileEstimates(loadRememberedFileEstimates());
               if (machineTimer.phase === 'idle') {
                 setMachineTimer((prev) =>
                   armJobTimerWatch(prev, {
-                    jobName: workbenchConfig.ruidaJobName || projectName,
+                    jobName: targetKey,
                     totalPieces: validation.totalPieces,
-                    estimatedTotalSec: Math.max(
-                      10,
-                      Math.round(simulation.totalDurationSec)
-                    ),
+                    estimatedTotalSec: estSec,
                   })
                 );
               } else {
@@ -1762,6 +2003,12 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               <Bell className="w-3.5 h-3.5 shrink-0" />
             ) : (
               <Clock className="w-3.5 h-3.5 shrink-0" />
+            )}
+            {machineLiveStatus?.reachable && machineTimer.phase === 'idle' && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"
+                title="Monitor automático conectado a Vank 9060"
+              />
             )}
             <span>
               {machineTimer.phase === 'idle'
@@ -5525,11 +5772,67 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             </div>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] text-slate-300 space-y-1 mb-3">
+          <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] text-slate-300 space-y-2 mb-3">
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <span
+                className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${
+                  motionCalibration.source === 'controller'
+                    ? 'bg-emerald-950/60 border-emerald-600/60 text-emerald-300'
+                    : motionCalibration.source === 'empirical'
+                      ? 'bg-cyan-950/60 border-cyan-600/60 text-cyan-300'
+                      : 'bg-slate-900 border-slate-700 text-slate-300'
+                }`}
+              >
+                {motionCalibration.source === 'controller'
+                  ? '✓ Calibrado Automático Vank 9060'
+                  : motionCalibration.source === 'empirical'
+                    ? '🧠 Auto-calibrado Vank'
+                    : '⚡ Física Ruida RDC8445S'}
+              </span>
+              <span className="text-[10px] font-mono text-slate-400">
+                Rampa {Math.round(motionCalibration.scanAccelMmPerSec2)} mm/s² · ×
+                {motionCalibration.empiricalTimeMultiplier.toFixed(2)}
+              </span>
+            </div>
+            {ruidaControllerFiles.length > 0 && (
+              <label className="flex items-center justify-between gap-2 text-[10px] text-slate-300">
+                <span className="font-semibold text-slate-400 shrink-0">
+                  Archivo en máquina:
+                </span>
+                <select
+                  value={activeVankFileName || machineTimer.jobName}
+                  onChange={(e) => {
+                    const chosen = e.target.value.trim().toUpperCase();
+                    setActiveVankFileName(chosen);
+                    const rem = rememberedFileEstimates[chosen];
+                    setMachineTimer((prev) => ({
+                      ...prev,
+                      jobName: chosen,
+                      totalPieces: rem?.totalPieces || prev.totalPieces,
+                      estimatedTotalSec: rem?.estimatedTotalSec || prev.estimatedTotalSec,
+                    }));
+                  }}
+                  className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] font-mono text-cyan-200 max-w-[200px]"
+                >
+                  {!ruidaControllerFiles.some(
+                    (f) => f.name === (activeVankFileName || machineTimer.jobName)
+                  ) && (
+                    <option value={activeVankFileName || machineTimer.jobName}>
+                      {activeVankFileName || machineTimer.jobName}
+                    </option>
+                  )}
+                  {ruidaControllerFiles.map((f) => (
+                    <option key={f.index} value={f.name}>
+                      #{f.index + 1} · {f.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <div>
               {isTauri()
                 ? machineLiveStatus?.reachable
-                  ? '● Escuchando controladora Ruida en vivo: al presionar START en la máquina aparecerá automáticamente el cronómetro y luego la alerta de fin.'
+                  ? '● Monitor continuo activo: detecta cualquier START en la Vank 9060 (enviado desde Astra, LightBurn o USB) incluso tras Stop/reinicio.'
                   : '⏳ Buscando estado de la Vank 9060 en red local... Cuando presiones START podés activar el cronómetro abajo si no responde.'
                 : 'Cuando presiones START en la máquina hacé clic abajo para abrir el cronómetro con cuenta regresiva y alerta al finalizar.'}
             </div>
@@ -5606,9 +5909,60 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                         ? '● Grabando / Cortando en Vank 9060'
                         : '● Cronómetro Activo — Pedido en Curso'}
                   </div>
-                  <div className="text-xs font-bold text-white">
-                    {machineTimer.jobName} · {machineTimer.totalPieces} etiquetas
+                  <div className="text-xs font-bold text-white flex flex-wrap items-center gap-1.5">
+                    <span>
+                      {machineTimer.jobName} · {machineTimer.totalPieces} etiquetas
+                    </span>
+                    <span
+                      className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${
+                        motionCalibration.source === 'controller'
+                          ? 'bg-emerald-950/70 border-emerald-600/60 text-emerald-300'
+                          : motionCalibration.source === 'empirical'
+                            ? 'bg-cyan-950/70 border-cyan-600/60 text-cyan-300'
+                            : 'bg-slate-900 border-slate-700 text-slate-300'
+                      }`}
+                    >
+                      {motionCalibration.source === 'controller'
+                        ? '✓ Calibrado Vank'
+                        : motionCalibration.source === 'empirical'
+                          ? '🧠 Auto-ajustado'
+                          : '⚡ Física Ruida'}
+                    </span>
                   </div>
+                  {ruidaControllerFiles.length > 0 && (
+                    <div className="mt-1 flex items-center gap-1.5">
+                      <span className="text-[10px] text-slate-400">Archivo:</span>
+                      <select
+                        value={machineTimer.jobName}
+                        onChange={(e) => {
+                          const chosen = e.target.value.trim().toUpperCase();
+                          setActiveVankFileName(chosen);
+                          const rem = rememberedFileEstimates[chosen];
+                          setMachineTimer((prev) => ({
+                            ...prev,
+                            jobName: chosen,
+                            totalPieces: rem?.totalPieces || prev.totalPieces,
+                            estimatedTotalSec:
+                              rem?.estimatedTotalSec || prev.estimatedTotalSec,
+                          }));
+                        }}
+                        className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] font-mono text-cyan-200 max-w-[190px]"
+                      >
+                        {!ruidaControllerFiles.some(
+                          (f) => f.name === machineTimer.jobName
+                        ) && (
+                          <option value={machineTimer.jobName}>
+                            {machineTimer.jobName}
+                          </option>
+                        )}
+                        {ruidaControllerFiles.map((f) => (
+                          <option key={f.index} value={f.name}>
+                            #{f.index + 1} · {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-1">

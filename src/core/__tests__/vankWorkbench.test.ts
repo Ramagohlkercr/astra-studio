@@ -53,6 +53,14 @@ import {
   uploadRdBytesToVankRuida,
 } from '../workbench/ruidaTransportClient';
 import {
+  computePolylineCutDurationSec,
+  computeRasterBandScanDurationSec,
+  computeTrapezoidMoveTimeSec,
+  DEFAULT_RUIDA_MOTION_CALIBRATION,
+  learnEmpiricalDurationRatio,
+  mergeControllerMotionParams,
+} from '../workbench/motionTiming';
+import {
   armJobTimerWatch,
   computeLiveTimerSnapshot,
   createInitialJobTimerState,
@@ -1647,5 +1655,134 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(snapFinal.elapsedSec).toBe(140);
     expect(snapFinal.progressPercent).toBe(100);
     expect(formatDurationTimer(3665)).toBe('01:01:05');
+
+    // Reinicio tras Stop/Fin (START nuevamente en panel físico): limpia estado previo y vuelve a abrir pop-up
+    const restarted = startJobTimerExecution(
+      finished,
+      { source: 'hardware', jobName: 'ASTRA01', totalPieces: 200, estimatedTotalSec: 135 },
+      t0 + 210_000
+    );
+    expect(restarted.phase).toBe('running');
+    expect(restarted.finishedAtMs).toBeNull();
+    expect(restarted.pausedAccumMs).toBe(0);
+    expect(restarted.popupMinimized).toBe(false);
+    expect(computeLiveTimerSnapshot(restarted, t0 + 225_000).elapsedSec).toBe(15);
+  });
+
+  it('24. Calibración cinemática exacta Vank 9060: aceleración trapezoidal, unidireccional, intervalo, registros Ruida y aprendizaje empírico', () => {
+    // Perfil triangular (corto) vs trapezoidal (largo)
+    const tTri = computeTrapezoidMoveTimeSec(10, 400, 0, 0, 2000);
+    // d = 10 < v^2/a = 80 => 2 * sqrt(d/a) = 2 * sqrt(0.005) ≈ 0.1414s
+    expect(tTri).toBeCloseTo(2 * Math.sqrt(10 / 2000), 4);
+    const tTrap = computeTrapezoidMoveTimeSec(200, 400, 0, 0, 2000);
+    // tAccel(0.2) + tDecel(0.2) + (200 - 80)/400 (0.3) = 0.7s
+    expect(tTrap).toBeCloseTo(0.7, 4);
+
+    // Polilínea con esquinas a 90° toma más tiempo por desaceleración que un único tramo recto equivalente
+    const squarePts = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+      { x: 0, y: 10 },
+    ];
+    const tSquare = computePolylineCutDurationSec(squarePts, true, 100, 1);
+    expect(tSquare).toBeGreaterThan(40 / 100);
+
+    // Unidireccional tarda más que bidireccional, e intervalo más fino aumenta el tiempo proporcionalmente
+    const bidi = computeRasterBandScanDurationSec({
+      minX: 0,
+      maxX: 50,
+      minY: 0,
+      maxY: 10,
+      speedMmPerSec: 300,
+      lineIntervalMm: 0.1,
+      bidirectional: true,
+      passes: 1,
+    });
+    const uni = computeRasterBandScanDurationSec({
+      minX: 0,
+      maxX: 50,
+      minY: 0,
+      maxY: 10,
+      speedMmPerSec: 300,
+      lineIntervalMm: 0.1,
+      bidirectional: false,
+      passes: 1,
+    });
+    const dense = computeRasterBandScanDurationSec({
+      minX: 0,
+      maxX: 50,
+      minY: 0,
+      maxY: 10,
+      speedMmPerSec: 300,
+      lineIntervalMm: 0.05,
+      bidirectional: true,
+      passes: 1,
+    });
+    expect(uni.durationSec).toBeGreaterThan(bidi.durationSec);
+    expect(dense.durationSec).toBeGreaterThan(bidi.durationSec * 1.9);
+
+    // Fusión de parámetros reales leídos de la controladora Ruida RDC8445S
+    const hwCal = mergeControllerMotionParams(DEFAULT_RUIDA_MOTION_CALIBRATION, {
+      idle_speed_mm_s: 350,
+      idle_accel_mm_s2: 2400,
+      max_speed_x_mm_s: 500,
+      max_speed_y_mm_s: 400,
+      cut_accel_x_mm_s2: 1800,
+      cut_accel_y_mm_s2: 1600,
+      scan_accel_x_mm_s2: 4200,
+      scan_accel_y_mm_s2: 2500,
+      speed_factor: 1.0,
+      calibrated: true,
+    });
+    expect(hwCal.source).toBe('controller');
+    expect(hwCal.idleSpeedMmPerSec).toBe(350);
+    expect(hwCal.cutAccelMmPerSec2).toBe(1600);
+    expect(hwCal.scanAccelMmPerSec2).toBe(2500);
+
+    // Auto-aprendizaje empírico converge suavemente y descarta cortes manuales prematuros (<40%)
+    const stoppedEarly = learnEmpiricalDurationRatio(hwCal, 12, 120);
+    expect(stoppedEarly.empiricalTimeMultiplier).toBe(1.0);
+    const realFinish = learnEmpiricalDurationRatio(hwCal, 110, 100);
+    expect(realFinish.empiricalTimeMultiplier).toBeCloseTo(1.035, 3);
+
+    // Simulación integral de workbench incorpora todos los parámetros de configuración
+    const order = createInitialOrdersCatalog()[0];
+    const cfgFast = createDefaultWorkbenchConfig(600, 400);
+    const job = createWorkbenchJobFromOrder({
+      design: order.labelDesign,
+      nesting: computeNestingLayout(order.labelDesign, {
+        ...order.nestingConfig,
+        sheetWidthMm: cfgFast.sheetWidthMm,
+        sheetHeightMm: cfgFast.sheetHeightMm,
+      }),
+      mode: 'custom_grid',
+      customColumns: 4,
+      customRows: 3,
+      projectName: order.projectName,
+      clientName: order.clientName,
+      orderId: order.id,
+      existingJobs: [],
+      config: cfgFast,
+    });
+    cfgFast.layers = cfgFast.layers.map((l) =>
+      l.role === 'ENGRAVE'
+        ? { ...l, bidirectional: true, lineIntervalMm: 0.12, passes: 1 }
+        : l
+    );
+    const simFast = simulateWorkbenchToolpath([job], cfgFast, hwCal);
+
+    const cfgSlow = {
+      ...cfgFast,
+      engraveGrouping: 'per_piece' as const,
+      layers: cfgFast.layers.map((l) =>
+        l.role === 'ENGRAVE'
+          ? { ...l, bidirectional: false, lineIntervalMm: 0.06, passes: 2 }
+          : l
+      ),
+    };
+    const simSlow = simulateWorkbenchToolpath([job], cfgSlow, hwCal);
+    expect(simFast.totalDurationSec).toBeGreaterThan(0);
+    expect(simSlow.engraveDurationSec).toBeGreaterThan(simFast.engraveDurationSec * 3);
   });
 });

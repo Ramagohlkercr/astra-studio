@@ -22,6 +22,29 @@ export interface RuidaMachineStatus {
   latency_ms?: number | null;
 }
 
+export interface RuidaControllerFile {
+  index: number;
+  name: string;
+}
+
+export interface RuidaFilesListResponse {
+  reachable: boolean;
+  files: RuidaControllerFile[];
+}
+
+export interface RuidaMotionParamsResponse {
+  calibrated: boolean;
+  idle_speed_mm_s: number | null;
+  idle_accel_mm_s2: number | null;
+  max_speed_x_mm_s: number | null;
+  max_speed_y_mm_s: number | null;
+  cut_accel_x_mm_s2: number | null;
+  cut_accel_y_mm_s2: number | null;
+  scan_accel_x_mm_s2: number | null;
+  scan_accel_y_mm_s2: number | null;
+  speed_factor: number | null;
+}
+
 /**
  * Consulta en tiempo real (solo lectura) los flags de ejecución de la Ruida RDC8445S
  * (`running`, `paused`, `framing`) para disparar cronómetro y alerta automática de fin.
@@ -53,6 +76,66 @@ export async function queryVankRuidaMachineStatus(params: {
       is_framing: false,
       state_bits: 0,
     };
+  }
+}
+
+/** Lee los parámetros reales de aceleración/velocidad de la controladora Ruida para calibración automática 1:1 de tiempo. */
+export async function queryVankRuidaMotionParams(params: {
+  ip: string;
+  port: number;
+}): Promise<RuidaMotionParamsResponse> {
+  const cleanIp = params.ip.trim();
+  if (!isValidIpv4Address(cleanIp) || !isTauri()) {
+    return {
+      calibrated: false,
+      idle_speed_mm_s: null,
+      idle_accel_mm_s2: null,
+      max_speed_x_mm_s: null,
+      max_speed_y_mm_s: null,
+      cut_accel_x_mm_s2: null,
+      cut_accel_y_mm_s2: null,
+      scan_accel_x_mm_s2: null,
+      scan_accel_y_mm_s2: null,
+      speed_factor: null,
+    };
+  }
+  try {
+    return await invoke<RuidaMotionParamsResponse>('query_ruida_motion_params', {
+      ip: cleanIp,
+      port: params.port,
+    });
+  } catch {
+    return {
+      calibrated: false,
+      idle_speed_mm_s: null,
+      idle_accel_mm_s2: null,
+      max_speed_x_mm_s: null,
+      max_speed_y_mm_s: null,
+      cut_accel_x_mm_s2: null,
+      cut_accel_y_mm_s2: null,
+      scan_accel_x_mm_s2: null,
+      scan_accel_y_mm_s2: null,
+      speed_factor: null,
+    };
+  }
+}
+
+/** Lista los archivos almacenados actualmente en memoria de la Vank 9060. */
+export async function listVankRuidaFiles(params: {
+  ip: string;
+  port: number;
+}): Promise<RuidaFilesListResponse> {
+  const cleanIp = params.ip.trim();
+  if (!isValidIpv4Address(cleanIp) || !isTauri()) {
+    return { reachable: false, files: [] };
+  }
+  try {
+    return await invoke<RuidaFilesListResponse>('list_ruida_files', {
+      ip: cleanIp,
+      port: params.port,
+    });
+  } catch {
+    return { reachable: false, files: [] };
   }
 }
 
