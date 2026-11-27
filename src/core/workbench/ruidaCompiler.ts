@@ -187,22 +187,128 @@ export function verifyRuidaUdpPacketChecksums(packets: Uint8Array[]): boolean {
   return true;
 }
 
+/** Normaliza un nombre de archivo compatible con pantalla Ruida (ASCII mayúsculas, máx. 8 chars). */
+export function sanitizeRuidaJobName(rawName?: string, fallback = 'ASTRA01'): string {
+  const cleanFallback =
+    fallback
+      .toUpperCase()
+      .replace(/[^A-Z0-9_-]/g, '')
+      .slice(0, 8) || 'ASTRA01';
+  if (!rawName) return cleanFallback;
+  const cleaned = rawName
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, '')
+    .slice(0, 8);
+  return cleaned || cleanFallback;
+}
+
+/** Construye los bytes crudos del preámbulo de carga con nombre (`E8 02` + `E7 01 <NOMBRE> 00`) usado por LightBurn antes de transmitir un archivo `.RD`. */
+export function buildRuidaFileUploadHeaderBytes(jobName: string, magic = 0x88): Uint8Array {
+  const cleanName = sanitizeRuidaJobName(jobName);
+  const nameBytes = Array.from(cleanName).map((ch) => ch.charCodeAt(0) & 0x7f);
+  const raw = [0xe8, 0x02, 0xe7, 0x01, ...nameBytes, 0x00];
+  const scrambled = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    scrambled[i] = scrambleRuidaByte(raw[i], magic);
+  }
+  return scrambled;
+}
+
+/** Codifica un entero sin signo de hasta 35 bits en 5 bytes de 7 bits Big-Endian (checksum/métrica Ruida). */
+export function encodeRuidaUnsigned35(value: number): number[] {
+  const v = Math.max(0, Math.floor(value));
+  const b0 = Math.floor(v / 0x10000000) & 0x7f;
+  const b1 = Math.floor(v / 0x200000) & 0x7f;
+  const b2 = Math.floor(v / 0x4000) & 0x7f;
+  const b3 = Math.floor(v / 0x80) & 0x7f;
+  const b4 = v & 0x7f;
+  return [b0, b1, b2, b3, b4];
+}
+
 /**
- * Emite las etiquetas de envolvente Ruida estándar (`E7 03`/`E7 07` y `E7 50`/`E7 51`)
- * usadas por la controladora para `FRAME` y verificación de límites.
+ * Emite las etiquetas de envolvente Ruida estándar (`E7 06`, `E7 38`, `E7 03`/`E7 07`, `E7 50`/`E7 51`, `E7 04`, `E7 05`)
+ * idénticas a LightBurn `OutputRDBoundsInfo` para `FRAME` y verificación de límites sin Boundary Error.
  */
-export function buildRuidaEnvelopeBoundsCommands(bounds: {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}): number[][] {
+export function buildRuidaEnvelopeBoundsCommands(
+  bounds: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  },
+  options?: { isRotary?: boolean }
+): number[][] {
+  const minX = Math.min(bounds.minX, bounds.maxX);
+  const maxX = Math.max(bounds.minX, bounds.maxX);
+  const minY = Math.min(bounds.minY, bounds.maxY);
+  const maxY = Math.max(bounds.minY, bounds.maxY);
+  const zero5 = [0, 0, 0, 0, 0];
   return [
-    [0xe7, 0x03, ...encodeRuidaAbsCoordMm(bounds.minX), ...encodeRuidaAbsCoordMm(bounds.minY)],
-    [0xe7, 0x07, ...encodeRuidaAbsCoordMm(bounds.maxX), ...encodeRuidaAbsCoordMm(bounds.maxY)],
-    [0xe7, 0x50, ...encodeRuidaAbsCoordMm(bounds.minX), ...encodeRuidaAbsCoordMm(bounds.minY)],
-    [0xe7, 0x51, ...encodeRuidaAbsCoordMm(bounds.maxX), ...encodeRuidaAbsCoordMm(bounds.maxY)],
+    [0xe7, 0x06, ...zero5, ...zero5],
+    [0xe7, 0x38, options?.isRotary ? 0x01 : 0x00],
+    [0xe7, 0x03, ...encodeRuidaAbsCoordMm(minX), ...encodeRuidaAbsCoordMm(minY)],
+    [0xe7, 0x07, ...encodeRuidaAbsCoordMm(maxX), ...encodeRuidaAbsCoordMm(maxY)],
+    [0xe7, 0x50, ...encodeRuidaAbsCoordMm(minX), ...encodeRuidaAbsCoordMm(minY)],
+    [0xe7, 0x51, ...encodeRuidaAbsCoordMm(maxX), ...encodeRuidaAbsCoordMm(maxY)],
+    [0xe7, 0x04, 0x00, 0x01, 0x00, 0x01, ...zero5, ...zero5],
+    [0xe7, 0x05, 0x00],
   ];
+}
+
+/**
+ * Emite el encabezado estándar Ruida RDC8445S (`OutputRDHeader` LightBurn):
+ * selector de modo de origen (`D8 10` / `D8 11` / `D8 12`), flags `F0 F1 02 00`, `E7 3B 41`, `D8 00` y nombre `E7 01`.
+ */
+export function buildRuidaProgramHeaderCommands(params: {
+  startFromMode: 'absolute_coords' | 'user_origin' | 'current_position';
+  jobName: string;
+  isRotary?: boolean;
+}): number[][] {
+  const refByte =
+    params.startFromMode === 'absolute_coords'
+      ? 0x10
+      : params.startFromMode === 'current_position'
+        ? 0x12
+        : 0x11;
+  const cmds: number[][] = [[0xd8, refByte]];
+  if (params.startFromMode === 'absolute_coords') {
+    cmds.push([0xe6, 0x01]);
+  }
+  cmds.push([0xf0]);
+  cmds.push([0xf1, 0x02, 0x00]);
+  if (params.isRotary) {
+    cmds.push([0xf1, 0x04, 0x00]);
+  }
+  cmds.push([0xe7, 0x3b, 0x41]);
+  cmds.push([0xd8, 0x00]);
+
+  const cleanJobName = sanitizeRuidaJobName(params.jobName);
+  const nameBytes = Array.from(cleanJobName).map((ch) => ch.charCodeAt(0) & 0x7f);
+  cmds.push([0xe7, 0x01, ...nameBytes, 0x00]);
+  return cmds;
+}
+
+/**
+ * Emite el pie estándar Ruida (`OutputFooter` LightBurn):
+ * `E7 00` (fin de bloque), métrica `DA 01 06 20`, checksum de archivo `E5 05` y `D7` (EOF).
+ */
+export function appendRuidaProgramFooter(
+  raw: number[],
+  emit: (bytes: number[]) => void,
+  cutDistanceScaled = 0
+): void {
+  emit([0xe7, 0x00]);
+  const metric = encodeRuidaUnsigned35(cutDistanceScaled);
+  emit([0xda, 0x01, 0x06, 0x20, ...metric, ...metric]);
+  let byteSum = 0;
+  for (let i = 0; i < raw.length; i++) {
+    byteSum = (byteSum + (raw[i] & 0xff)) >>> 0;
+  }
+  const fileSum = (byteSum + 0xd7) >>> 0;
+  emit([0xe5, 0x05, ...encodeRuidaUnsigned35(fileSum)]);
+  emit([0xd7]);
 }
 
 export interface CompiledRuidaRdArtifact {
@@ -250,19 +356,25 @@ export function compileWorkbenchToRuidaRd(
 
   const bounds = report.occupiedBoundsMm;
   const origin = report.jobOriginPointMm;
-  // En Origen del Usuario o Posición Actual trasladamos toda la geometría respecto al punto ancla elegido
-  // para que dicho ancla sea (0, 0) al apretar ORIGIN + FRAME/START en la Vank 9060.
+  // Vank 9060 / Ruida RDC8445S hace Home físico en Superior Derecha (0, 0), aumentando +X hacia la IZQUIERDA y +Y hacia el FRENTE.
+  // Por eso en modo relativo al origen (Superior Derecha) X_ruida = origin.x - bedX (todo el trabajo hacia la izquierda es >= 0, sin chocar con límite < 0),
+  // y en coordenadas absolutas X_ruida = bedWidthMm - bedX dentro de [0..900].
   const useRelativeOrigin = config.startFromMode !== 'absolute_coords';
-  const offsetX = useRelativeOrigin ? origin.x : 0;
-  const offsetY = useRelativeOrigin ? origin.y : 0;
-  const toRuidaX = (bedX: number) => roundMm(bedX - offsetX, 3);
-  const toRuidaY = (bedY: number) => roundMm(bedY - offsetY, 3);
+  const toRuidaX = (bedX: number) =>
+    roundMm(useRelativeOrigin ? origin.x - bedX : config.machineBedWidthMm - bedX, 3);
+  const toRuidaY = (bedY: number) =>
+    roundMm(useRelativeOrigin ? bedY - origin.y : bedY, 3);
+
+  const rx1 = toRuidaX(bounds.minX);
+  const rx2 = toRuidaX(bounds.maxX);
+  const ry1 = toRuidaY(bounds.minY);
+  const ry2 = toRuidaY(bounds.maxY);
 
   const emittedBounds = {
-    minX: toRuidaX(bounds.minX),
-    minY: toRuidaY(bounds.minY),
-    maxX: toRuidaX(bounds.maxX),
-    maxY: toRuidaY(bounds.maxY),
+    minX: Math.min(rx1, rx2),
+    minY: Math.min(ry1, ry2),
+    maxX: Math.max(rx1, rx2),
+    maxY: Math.max(ry1, ry2),
   };
 
   const visibleJobs = jobs.filter((j) => j.visible && j.instances.length > 0);
@@ -278,20 +390,17 @@ export function compileWorkbenchToRuidaRd(
     commandCount++;
   };
 
-  // 1. Cabecera de inicio de trabajo Ruida y caja envolvente global
-  // D8 00: Start Job / Reset state
-  emit([0xd8, 0x00]);
-  // E7 01 + nombre del archivo en ASCII 7-bit (hasta 8 caracteres en mayúsculas)
-  const cleanJobName =
-    (config.ruidaJobName || 'ASTRA01')
-      .toUpperCase()
-      .replace(/[^A-Z0-9_-]/g, '')
-      .slice(0, 8) || 'ASTRA01';
-  const nameBytes = Array.from(cleanJobName).map((ch) => ch.charCodeAt(0) & 0x7f);
-  emit([0xe7, 0x01, ...nameBytes, 0x00]);
+  // 1. Cabecera estándar LightBurn RDC8445S (`D8 11` User Origin / `F0 F1` / `E7 3B 41` / `D8 00` / `E7 01`) + límites
+  const cleanJobName = sanitizeRuidaJobName(config.ruidaJobName, 'ASTRA01');
+  for (const cmd of buildRuidaProgramHeaderCommands({
+    startFromMode: config.startFromMode,
+    jobName: cleanJobName,
+    isRotary: false,
+  })) {
+    emit(cmd);
+  }
 
-  // E7 03 / E7 07 + E7 50 / E7 51 (Límites de encuadre Frame en el origen elegido)
-  for (const cmd of buildRuidaEnvelopeBoundsCommands(emittedBounds)) {
+  for (const cmd of buildRuidaEnvelopeBoundsCommands(emittedBounds, { isRotary: false })) {
     emit(cmd);
   }
 
@@ -471,9 +580,9 @@ export function compileWorkbenchToRuidaRd(
 
   const activeLayersCount = emittedLayerCutIndices.size;
 
-  // Retornar cabezal al origen del trabajo y cerrar trama Ruida (D7 = EOF)
+  // Retornar cabezal al origen del trabajo y cerrar trama Ruida (`E7 00`, `DA 01 06 20`, `E5 05`, `D7`)
   emitMoveAbs(origin.x, origin.y);
-  emit([0xd7]);
+  appendRuidaProgramFooter(raw, emit, 0);
 
   const rawUnscrambledBytes = new Uint8Array(raw);
   const rdBytes = new Uint8Array(raw.length);

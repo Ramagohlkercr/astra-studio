@@ -995,6 +995,7 @@ export function RotaryPanel({
         ip: ruidaIp,
         port: ruidaPort,
         rdBytes: compiled.rdBytes,
+        jobName: compiled.ruidaJobName,
         onProgress: (progress) =>
           setRuidaStatus((prev) => ({
             ...prev,

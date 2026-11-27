@@ -1,11 +1,13 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
+  buildRuidaFileUploadHeaderBytes,
   buildRuidaUdpPackets,
   isValidIpv4Address,
   RuidaProbeResponse,
   RuidaUploadProgress,
   RuidaUploadResponse,
+  sanitizeRuidaJobName,
   verifyRuidaUdpPacketChecksums,
 } from './ruidaCompiler';
 
@@ -70,6 +72,7 @@ export async function uploadRdBytesToVankRuida(params: {
   ip: string;
   port: number;
   rdBytes: Uint8Array;
+  jobName?: string;
   onProgress?: (progress: RuidaUploadProgress) => void;
 }): Promise<RuidaUploadResponse> {
   const cleanIp = params.ip.trim();
@@ -82,7 +85,10 @@ export async function uploadRdBytesToVankRuida(params: {
     throw new Error(`Puerto UDP inválido (${params.port}). Estándar Ruida: 50200.`);
   }
 
-  const packets = buildRuidaUdpPackets(params.rdBytes);
+  const headerPackets = params.jobName
+    ? buildRuidaUdpPackets(buildRuidaFileUploadHeaderBytes(sanitizeRuidaJobName(params.jobName)))
+    : [];
+  const packets = [...headerPackets, ...buildRuidaUdpPackets(params.rdBytes)];
   if (!verifyRuidaUdpPacketChecksums(packets)) {
     throw new Error(
       'Error interno de integridad: los paquetes UDP Ruida generados no pasaron la verificación de checksum 16-bit.'

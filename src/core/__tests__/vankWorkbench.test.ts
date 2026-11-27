@@ -19,6 +19,7 @@ import {
   saveMaterialLibraryEntry,
 } from '../workbench/materialCalibrationEngine';
 import {
+  buildRuidaFileUploadHeaderBytes,
   buildRuidaUdpPackets,
   compileWorkbenchToRuidaRd,
   decodeRuidaAbsCoordMm,
@@ -26,6 +27,7 @@ import {
   encodeRuidaAbsCoordMm,
   encodeRuidaPowerPercent,
   isValidIpv4Address,
+  sanitizeRuidaJobName,
   scrambleRuidaByte,
   unscrambleRuidaByte,
   verifyRuidaUdpPacketChecksums,
@@ -371,9 +373,17 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(rdArtifact.ruidaJobName).toBe('VANK01');
     expect(rdArtifact.filenameSuggested).toBe('VANK01_Vank9060.rd');
     expect(rdArtifact.rdBytes.length).toBeGreaterThan(40);
-    // Verificar inicio D8 00 y fin D7 en bytes sin ofuscar
+    // Verificar selector de modo de origen LightBurn (`D8 11` user_origin) + bandera RDC8445S (`E7 3B 41`) + pie `E5 05` y fin `D7`
     expect(rdArtifact.rawUnscrambledBytes[0]).toBe(0xd8);
-    expect(rdArtifact.rawUnscrambledBytes[1]).toBe(0x00);
+    expect(rdArtifact.rawUnscrambledBytes[1]).toBe(0x11);
+    const hasRdc8445Tag = rdArtifact.rawUnscrambledBytes.some(
+      (b, idx, arr) => b === 0xe7 && arr[idx + 1] === 0x3b && arr[idx + 2] === 0x41
+    );
+    expect(hasRdc8445Tag).toBe(true);
+    const hasFileSumTag = rdArtifact.rawUnscrambledBytes.some(
+      (b, idx, arr) => b === 0xe5 && arr[idx + 1] === 0x05
+    );
+    expect(hasFileSumTag).toBe(true);
     expect(
       rdArtifact.rawUnscrambledBytes[rdArtifact.rawUnscrambledBytes.length - 1]
     ).toBe(0xd7);
@@ -988,8 +998,9 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     const maxXRel = decodeRuidaAbsCoordMm(
       Array.from(rdUser.rawUnscrambledBytes.slice(e707Idx + 2, e707Idx + 7))
     );
-    expect(minXRel).toBeLessThan(0); // Extensión hacia la izquierda del origen derecho
-    expect(maxXRel).toBeCloseTo(0, 2); // Ancla top_right en X = 0
+    // En Vank 9060 (Home físico Superior Derecha, +X hacia la izquierda), el ancla top_right está en X = 0 y el trabajo se extiende hacia X > 0
+    expect(minXRel).toBeCloseTo(0, 2);
+    expect(maxXRel).toBeGreaterThan(0);
 
     // 3. Verificación estricta de checksum UDP e IPv4 sin transmitir paquetes reales
     const packets = buildRuidaUdpPackets(rdUser.rdBytes);
@@ -1000,6 +1011,13 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
 
     expect(isValidIpv4Address('192.168.0.195')).toBe(true);
     expect(isValidIpv4Address('999.168.0.1')).toBe(false);
+
+    // 4. Preámbulo de carga con nombre (`E8 02 E7 01 <NOMBRE> 00`) para pantalla Vank 9060
+    expect(sanitizeRuidaJobName('Churitas 2026')).toBe('CHURITAS');
+    const hdr = Array.from(buildRuidaFileUploadHeaderBytes('Churitas 2026')).map((b) =>
+      unscrambleRuidaByte(b)
+    );
+    expect(hdr).toEqual([0xe8, 0x02, 0xe7, 0x01, 67, 72, 85, 82, 73, 84, 65, 83, 0x00]);
 
     // En navegador (sin Tauri), probeVankRuidaConnection NO simula falso online (reachable === false)
     const probeBadIp = await probeVankRuidaConnection({ ip: 'bad-ip', port: 50200 });

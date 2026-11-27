@@ -1018,6 +1018,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         ip: workbenchConfig.ruidaIpAddress,
         port: workbenchConfig.ruidaPort,
         rdBytes: compiled.rdBytes,
+        jobName: compiled.ruidaJobName,
         onProgress: setRuidaUploadProgress,
       });
       onNotify(response.message);
@@ -1152,6 +1153,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         ip: workbenchConfig.ruidaIpAddress,
         port: workbenchConfig.ruidaPort,
         rdBytes: compiled.rdBytes,
+        jobName: compiled.ruidaJobName,
         onProgress: setRuidaUploadProgress,
       });
 
@@ -4189,6 +4191,32 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     Ajustar Origen
                   </button>
                 </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 bg-slate-900/90 border border-slate-800 rounded-md px-2 py-1">
+                <span className="text-[10px] text-slate-400 shrink-0 font-semibold">
+                  Nombre archivo en Vank:
+                </span>
+                <input
+                  type="text"
+                  maxLength={8}
+                  aria-label="Nombre archivo en Vank"
+                  placeholder="EJ: CHURITAS"
+                  value={workbenchConfig.ruidaJobName}
+                  onChange={(e) =>
+                    onUpdateConfig({
+                      ...workbenchConfig,
+                      ruidaJobName: e.target.value
+                        .toUpperCase()
+                        .replace(/[^A-Z0-9_-]/g, '')
+                        .slice(0, 8),
+                    })
+                  }
+                  className="flex-1 min-w-0 bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded px-2 py-0.5 font-mono text-[11px] font-bold text-amber-200 uppercase focus:outline-none"
+                />
+                <span className="text-[9px] text-slate-500 font-mono shrink-0">
+                  máx 8
+                </span>
               </div>
 
               {ruidaStatusMsg && (

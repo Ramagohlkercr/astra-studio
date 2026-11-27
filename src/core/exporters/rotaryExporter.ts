@@ -10,11 +10,14 @@ import {
   warpPointForTaper,
 } from '../rotary/rotaryEngine';
 import {
+  appendRuidaProgramFooter,
   buildRuidaEnvelopeBoundsCommands,
+  buildRuidaProgramHeaderCommands,
   CompiledRuidaRdArtifact,
   encodeRuidaAbsCoordMm,
   encodeRuidaPowerPercent,
   encodeRuidaSpeedMmPerSec,
+  sanitizeRuidaJobName,
   scrambleRuidaByte,
 } from '../workbench/ruidaCompiler';
 import {EngravedItemGeometry, LabelDesign, LIGHTBURN_LAYERS, Point2D} from '../types';
@@ -823,20 +826,22 @@ export function compileRotaryToRuidaRd(
     commandCount++;
   };
 
-  const cleanName =
-    ruidaJobName
-      .toUpperCase()
-      .replace(/[^A-Z0-9_-]/g, '')
-      .slice(0, 8) || 'ROTAT01';
+  const cleanName = sanitizeRuidaJobName(ruidaJobName, 'ROTAT01');
+  const normBounds = {
+    minX: 0,
+    minY: 0,
+    maxX: roundMm(maxX - minX, 3),
+    maxY: roundMm(maxY - minY, 3),
+  };
 
-  emit([0xd8, 0x00]);
-  emit([
-    0xe7,
-    0x01,
-    ...Array.from(cleanName).map((ch) => ch.charCodeAt(0) & 0x7f),
-    0x00,
-  ]);
-  for (const cmd of buildRuidaEnvelopeBoundsCommands(bounds)) {
+  for (const cmd of buildRuidaProgramHeaderCommands({
+    startFromMode: 'user_origin',
+    jobName: cleanName,
+    isRotary: true,
+  })) {
+    emit(cmd);
+  }
+  for (const cmd of buildRuidaEnvelopeBoundsCommands(normBounds, { isRotary: true })) {
     emit(cmd);
   }
 
@@ -859,39 +864,42 @@ export function compileRotaryToRuidaRd(
   emit([0xc6, 0x01, ...encodeRuidaPowerPercent(minP)]);
   emit([0xc6, 0x02, ...encodeRuidaPowerPercent(maxP)]);
 
+  const toRotX = (x: number) => roundMm(x - bounds.minX, 3);
+  const toRotY = (y: number) => roundMm(y - bounds.minY, 3);
+
   const passes = Math.max(1, Math.min(10, Math.round(layerParams.passes || 1)));
   for (let pass = 0; pass < passes; pass++) {
     for (const pl of polylinesToEmit) {
       const start = pl.points[0];
       emit([
         0x88,
-        ...encodeRuidaAbsCoordMm(start.x),
-        ...encodeRuidaAbsCoordMm(start.y),
+        ...encodeRuidaAbsCoordMm(toRotX(start.x)),
+        ...encodeRuidaAbsCoordMm(toRotY(start.y)),
       ]);
       for (let i = 1; i < pl.points.length; i++) {
         emit([
           0xa8,
-          ...encodeRuidaAbsCoordMm(pl.points[i].x),
-          ...encodeRuidaAbsCoordMm(pl.points[i].y),
+          ...encodeRuidaAbsCoordMm(toRotX(pl.points[i].x)),
+          ...encodeRuidaAbsCoordMm(toRotY(pl.points[i].y)),
         ]);
       }
       if (pl.closed) {
         emit([
           0xa8,
-          ...encodeRuidaAbsCoordMm(start.x),
-          ...encodeRuidaAbsCoordMm(start.y),
+          ...encodeRuidaAbsCoordMm(toRotX(start.x)),
+          ...encodeRuidaAbsCoordMm(toRotY(start.y)),
         ]);
       }
     }
   }
 
-  // Fin de trabajo: retornar al origen inicial del rotativo antes de EOF (D7)
+  // Fin de trabajo: retornar a (0,0) del origen rotativo y cerrar trama Ruida estándar
   emit([
     0x88,
-    ...encodeRuidaAbsCoordMm(bounds.minX),
-    ...encodeRuidaAbsCoordMm(bounds.minY),
+    ...encodeRuidaAbsCoordMm(0),
+    ...encodeRuidaAbsCoordMm(0),
   ]);
-  emit([0xd7]);
+  appendRuidaProgramFooter(raw, emit, 0);
 
   const rawUnscrambledBytes = Uint8Array.from(raw);
   const rdBytes = new Uint8Array(rawUnscrambledBytes.length);
