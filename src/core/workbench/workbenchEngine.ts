@@ -600,6 +600,7 @@ export function updateWorkbenchJobDesignAndQuantity(
     gapYMm?: Millimeters;
     blockRotationDeg?: 0 | 90;
     autoFitColumnsToRoll?: boolean;
+    preservePieceCount?: boolean;
     firstRowIndentMm?: Millimeters;
     firstRowShelfHeightMm?: Millimeters;
   },
@@ -675,18 +676,26 @@ export function updateWorkbenchJobDesignAndQuantity(
     rows = opt.rows;
   } else if (updates.columns !== undefined && updates.rows === undefined) {
     rows = Math.max(1, Math.ceil(targetPieces / cols));
+  } else if (updates.rows !== undefined && updates.columns === undefined && updates.preservePieceCount) {
+    cols = Math.max(1, Math.ceil(targetPieces / rows));
   }
 
   const maxCapacity = cols * rows;
   const effectivePieces =
     updates.pieceCount !== undefined
       ? targetPieces
-      : updates.columns !== undefined || updates.rows !== undefined
-        ? maxCapacity
-        : Math.min(targetPieces, maxCapacity);
+      : updates.preservePieceCount
+        ? targetPieces
+        : updates.columns !== undefined || updates.rows !== undefined
+          ? maxCapacity
+          : Math.min(targetPieces, maxCapacity);
 
   if (effectivePieces > cols * rows) {
-    rows = Math.ceil(effectivePieces / cols);
+    if (updates.rows !== undefined && updates.columns === undefined) {
+      cols = Math.ceil(effectivePieces / rows);
+    } else {
+      rows = Math.ceil(effectivePieces / cols);
+    }
   }
 
   const usableSheetWidthMm = config
@@ -749,6 +758,7 @@ export function updateWorkbenchJobGrid(
     gapYMm?: Millimeters;
     blockRotationDeg?: 0 | 90;
     pieceCount?: number;
+    preservePieceCount?: boolean;
   }
 ): WorkbenchJobItem {
   return updateWorkbenchJobDesignAndQuantity(job, updates);

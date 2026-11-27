@@ -169,6 +169,36 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(expanded.columns).toBe(5);
     expect(expanded.rows).toBe(3);
 
+    // Editar columnas manteniendo cantidad exacta (reflow 15 u. -> 3 columnas x 5 filas)
+    const reflowCols = updateWorkbenchJobGrid(expanded, {
+      columns: 3,
+      preservePieceCount: true,
+    });
+    expect(reflowCols.pieceCount).toBe(15);
+    expect(reflowCols.columns).toBe(3);
+    expect(reflowCols.rows).toBe(5);
+
+    // Editar filas manteniendo cantidad exacta (reflow 15 u. -> 3 filas -> 5 columnas)
+    const reflowRows = updateWorkbenchJobGrid(reflowCols, {
+      rows: 3,
+      preservePieceCount: true,
+    });
+    expect(reflowRows.pieceCount).toBe(15);
+    expect(reflowRows.rows).toBe(3);
+    expect(reflowRows.columns).toBe(5);
+
+    // Separación X/Y recalcula ancho y alto total sin alterar cantidad
+    const spaced = updateWorkbenchJobGrid(reflowRows, {
+      gapXMm: 4,
+      gapYMm: 3,
+      preservePieceCount: true,
+    });
+    expect(spaced.pieceCount).toBe(15);
+    expect(spaced.gapXMm).toBe(4);
+    expect(spaced.gapYMm).toBe(3);
+    expect(spaced.widthMm).toBeGreaterThan(reflowRows.widthMm);
+    expect(spaced.heightMm).toBeGreaterThan(reflowRows.heightMm);
+
     const rotated = updateWorkbenchJobGrid(expanded, {
       blockRotationDeg: 90,
     });

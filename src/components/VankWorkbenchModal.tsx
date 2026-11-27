@@ -265,25 +265,50 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     [workbenchJobs, selectedJobId]
   );
 
-  // Estado editable para dimensiones de etiqueta/trabajo sin rebotes al borrar dígitos
+  // Estado editable para dimensiones y distribución en mesa sin rebotes al borrar dígitos
   const [jobWidthStr, setJobWidthStr] = useState<string>('');
   const [jobHeightStr, setJobHeightStr] = useState<string>('');
+  const [jobColsStr, setJobColsStr] = useState<string>('');
+  const [jobRowsStr, setJobRowsStr] = useState<string>('');
+  const [jobGapXStr, setJobGapXStr] = useState<string>('');
+  const [jobGapYStr, setJobGapYStr] = useState<string>('');
   const editingJobSizeRef = useRef<boolean>(false);
+  const editingJobGridFieldRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!selectedJob) {
       setJobWidthStr('');
       setJobHeightStr('');
+      setJobColsStr('');
+      setJobRowsStr('');
+      setJobGapXStr('');
+      setJobGapYStr('');
       return;
     }
     if (!editingJobSizeRef.current) {
       setJobWidthStr(String(selectedJob.labelDesign.widthMm));
       setJobHeightStr(String(selectedJob.labelDesign.heightMm));
     }
+    if (editingJobGridFieldRef.current !== 'cols') {
+      setJobColsStr(String(selectedJob.columns));
+    }
+    if (editingJobGridFieldRef.current !== 'rows') {
+      setJobRowsStr(String(selectedJob.rows));
+    }
+    if (editingJobGridFieldRef.current !== 'gapX') {
+      setJobGapXStr(String(selectedJob.gapXMm));
+    }
+    if (editingJobGridFieldRef.current !== 'gapY') {
+      setJobGapYStr(String(selectedJob.gapYMm));
+    }
   }, [
     selectedJob?.id,
     selectedJob?.labelDesign.widthMm,
     selectedJob?.labelDesign.heightMm,
+    selectedJob?.columns,
+    selectedJob?.rows,
+    selectedJob?.gapXMm,
+    selectedJob?.gapYMm,
   ]);
 
   const handleScaleSelectedJobArtwork = (factor: number) => {
@@ -689,6 +714,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     gapYMm?: number;
     blockRotationDeg?: 0 | 90;
     autoFitColumnsToRoll?: boolean;
+    preservePieceCount?: boolean;
   }) => {
     if (!selectedJob) return;
     const rebuilt = updateWorkbenchJobDesignAndQuantity(
@@ -699,7 +725,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     const updatedList = workbenchJobs.map((j) =>
       j.id === selectedJob.id ? rebuilt : j
     );
-    // Mantener el flujo continuo y sin desperdicio al cambiar medidas o cantidad
+    // Mantener el flujo continuo cuando cambian medidas/cantidad, o preservar columnas/filas manuales evitando solapamientos
     if (
       updates.pieceCount !== undefined ||
       updates.widthMm !== undefined ||
@@ -717,6 +743,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
           workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
           useZeroWaste
         )
+      );
+    } else if (updatedList.length > 1) {
+      onUpdateJobs(
+        autoArrangeWorkbenchJobs(updatedList, workbenchConfig, 2, false)
       );
     } else {
       onUpdateJobs(updatedList);
@@ -3340,9 +3370,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                                 selectedJob.blockRotationDeg === 90 ? 0 : 90,
                             })
                           }
-                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-200 flex items-center gap-1"
+                          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-200 flex items-center gap-1 whitespace-nowrap shrink-0"
                         >
-                          <RotateCw className="w-3 h-3 text-cyan-400" />
+                          <RotateCw className="w-3 h-3 text-cyan-400 shrink-0" />
                           <span>Rotar 90°</span>
                         </button>
                         <button
@@ -3506,6 +3536,240 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                           className="px-2 py-0.5 rounded bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-700/50 text-[10px] text-cyan-200 font-bold"
                         >
                           Ajustar
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Distribución editable en mesa: Columnas, Filas y Separación X/Y */}
+                    <div className="p-2 rounded-lg bg-slate-950/75 border border-slate-800 space-y-1.5">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[10px] font-bold text-amber-300 flex items-center gap-1">
+                          <Grid className="w-3 h-3" />
+                          <span>Distribución en Mesa</span>
+                        </span>
+                        <span className="text-[10px] font-mono text-slate-400">
+                          {selectedJob.columns} col × {selectedJob.rows} fil ·{' '}
+                          {roundMm(selectedJob.widthMm / 10, 1)}×
+                          {roundMm(selectedJob.heightMm / 10, 1)} cm
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-4 gap-1.5">
+                        <label>
+                          <span className="text-[10px] text-cyan-300 block mb-0.5">
+                            Columnas
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={300}
+                            step={1}
+                            aria-label="Columnas en mesa del trabajo seleccionado"
+                            value={jobColsStr}
+                            onFocus={() => {
+                              editingJobGridFieldRef.current = 'cols';
+                            }}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setJobColsStr(raw);
+                              const v = Math.round(Number(raw));
+                              if (Number.isFinite(v) && v >= 1 && v <= 300 && raw.trim() !== '') {
+                                handleUpdateSelectedJobDesignOrQty({
+                                  columns: v,
+                                  preservePieceCount: true,
+                                });
+                              }
+                            }}
+                            onBlur={() => {
+                              editingJobGridFieldRef.current = null;
+                              if (selectedJob) {
+                                setJobColsStr(String(selectedJob.columns));
+                              }
+                            }}
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 font-mono text-white"
+                          />
+                        </label>
+                        <label>
+                          <span className="text-[10px] text-cyan-300 block mb-0.5">
+                            Filas
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={300}
+                            step={1}
+                            aria-label="Filas en mesa del trabajo seleccionado"
+                            value={jobRowsStr}
+                            onFocus={() => {
+                              editingJobGridFieldRef.current = 'rows';
+                            }}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setJobRowsStr(raw);
+                              const v = Math.round(Number(raw));
+                              if (Number.isFinite(v) && v >= 1 && v <= 300 && raw.trim() !== '') {
+                                handleUpdateSelectedJobDesignOrQty({
+                                  rows: v,
+                                  preservePieceCount: true,
+                                });
+                              }
+                            }}
+                            onBlur={() => {
+                              editingJobGridFieldRef.current = null;
+                              if (selectedJob) {
+                                setJobRowsStr(String(selectedJob.rows));
+                              }
+                            }}
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 font-mono text-white"
+                          />
+                        </label>
+                        <label>
+                          <span className="text-[10px] text-slate-300 block mb-0.5">
+                            Gap X (mm)
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={50}
+                            step={0.5}
+                            aria-label="Separación horizontal entre etiquetas en mm"
+                            value={jobGapXStr}
+                            onFocus={() => {
+                              editingJobGridFieldRef.current = 'gapX';
+                            }}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setJobGapXStr(raw);
+                              const v = Number(raw.replace(',', '.'));
+                              if (Number.isFinite(v) && v >= 0 && v <= 50 && raw.trim() !== '') {
+                                handleUpdateSelectedJobDesignOrQty({
+                                  gapXMm: roundMm(v, 2),
+                                  preservePieceCount: true,
+                                });
+                              }
+                            }}
+                            onBlur={() => {
+                              editingJobGridFieldRef.current = null;
+                              if (selectedJob) {
+                                setJobGapXStr(String(selectedJob.gapXMm));
+                              }
+                            }}
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 font-mono text-white"
+                          />
+                        </label>
+                        <label>
+                          <span className="text-[10px] text-slate-300 block mb-0.5">
+                            Gap Y (mm)
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={50}
+                            step={0.5}
+                            aria-label="Separación vertical entre etiquetas en mm"
+                            value={jobGapYStr}
+                            onFocus={() => {
+                              editingJobGridFieldRef.current = 'gapY';
+                            }}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setJobGapYStr(raw);
+                              const v = Number(raw.replace(',', '.'));
+                              if (Number.isFinite(v) && v >= 0 && v <= 50 && raw.trim() !== '') {
+                                handleUpdateSelectedJobDesignOrQty({
+                                  gapYMm: roundMm(v, 2),
+                                  preservePieceCount: true,
+                                });
+                              }
+                            }}
+                            onBlur={() => {
+                              editingJobGridFieldRef.current = null;
+                              if (selectedJob) {
+                                setJobGapYStr(String(selectedJob.gapYMm));
+                              }
+                            }}
+                            className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 font-mono text-white"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              autoFitColumnsToRoll: true,
+                            })
+                          }
+                          className="px-2 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-[10px] text-amber-200 font-semibold"
+                        >
+                          Max. Columnas
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              columns: 1,
+                              preservePieceCount: true,
+                            })
+                          }
+                          className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-200 font-semibold"
+                        >
+                          1 Columna
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleUpdateSelectedJobDesignOrQty({
+                              rows: 1,
+                              preservePieceCount: true,
+                            })
+                          }
+                          className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-slate-200 font-semibold"
+                        >
+                          1 Fila
+                        </button>
+                        {selectedJob.pieceCount !==
+                          selectedJob.columns * selectedJob.rows && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleUpdateSelectedJobDesignOrQty({
+                                pieceCount:
+                                  selectedJob.columns * selectedJob.rows,
+                              })
+                            }
+                            className="px-2 py-0.5 rounded bg-emerald-950/60 hover:bg-emerald-900/60 border border-emerald-600/50 text-[10px] text-emerald-300 font-semibold"
+                          >
+                            Llenar ({selectedJob.columns * selectedJob.rows} u.)
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const margin = Math.max(
+                              0,
+                              workbenchConfig.sheetSafetyMarginMm
+                            );
+                            if (workbenchJobs.length > 1) {
+                              onUpdateJobs(
+                                autoArrangeWorkbenchJobs(
+                                  workbenchJobs,
+                                  workbenchConfig,
+                                  2,
+                                  false
+                                )
+                              );
+                            } else {
+                              handleUpdateSelectedJob({
+                                xMm: roundMm(workbenchConfig.sheetOffsetXMm + margin),
+                                yMm: roundMm(workbenchConfig.sheetOffsetYMm + margin),
+                              });
+                            }
+                          }}
+                          className="px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[10px] text-cyan-300 font-semibold"
+                        >
+                          Alinear en mesa
                         </button>
                       </div>
                     </div>
