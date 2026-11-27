@@ -353,8 +353,88 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
   };
 
   // 1. Barril principal grabable exacto [-len/2 .. +len/2]
-  if (isGlass) {
-    // Vaso/botella de vidrio con espesor real hueco + base maciza pesada de vidrio
+  if (isGlass && shape === 'bottle') {
+    // Perfil continuo de botella de vino (picada cóncava inferior -> barril -> hombro Bordeaux suave -> cuello largo -> gollete)
+    const shoulderLen = Math.max(34, Math.min(52, len * 0.34));
+    const neckLen = Math.max(46, Math.min(68, len * 0.44));
+    const neckR = Math.max(9.5, Math.min(14.5, rMouth * 0.37));
+    const wallT = 2.6;
+
+    // Curva suave del hombro Bordeaux (cubic spline puntos)
+    const shoulderPts: Array<[number, number]> = [];
+    for (let i = 0; i <= 14; i++) {
+      const t = i / 14;
+      const smooth = t * t * (3 - 2 * t);
+      const rad = rMouth + (neckR - rMouth) * smooth;
+      const ax = xMouth + dir * (shoulderLen * t);
+      shoulderPts.push([rad, ax]);
+    }
+    const xNeckStart = xMouth + dir * shoulderLen;
+    const xNeckTop = xNeckStart + dir * neckLen;
+
+    const glassBottleMat = new THREE.MeshPhysicalMaterial({
+      color: surface === 'emerald_glass' ? '#174d2c' : color,
+      metalness: 0.04,
+      roughness: 0.05,
+      transparent: true,
+      opacity: surface === 'emerald_glass' ? 0.74 : 0.42,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.03,
+      reflectivity: 0.98,
+      ior: 1.52,
+      side: THREE.DoubleSide,
+    });
+
+    addLathePart(
+      [
+        // Picada cóncava clásica del fondo de botella de vino
+        [0.01, xBase + dir * 16],
+        [rBase * 0.36, xBase + dir * 11],
+        [rBase * 0.62, xBase - dir * 3],
+        [rBase * 0.88, xBase - dir * 5],
+        [rBase, xBase],
+        // Cuerpo cilíndrico grabable exacto
+        [rMouth, xMouth],
+        // Hombro Bordeaux
+        ...shoulderPts.slice(1),
+        // Cuello esbelto
+        [neckR - 0.3, xNeckTop - dir * 9],
+        // Gollete (aro grueso clásico de boca de botella de vino)
+        [neckR + 2.1, xNeckTop - dir * 7],
+        [neckR + 2.3, xNeckTop - dir * 1.5],
+        [neckR + 0.6, xNeckTop],
+        [neckR - wallT, xNeckTop],
+        [neckR - wallT, xNeckStart],
+      ],
+      glassBottleMat,
+      96
+    );
+
+    // Vino tinto Malbec / Cabernet interior (desde el fondo hasta el inicio del hombro)
+    const wineMat = new THREE.MeshPhysicalMaterial({
+      color: '#450a1a',
+      emissive: '#190208',
+      emissiveIntensity: 0.25,
+      roughness: 0.08,
+      metalness: 0.02,
+      transparent: true,
+      opacity: 0.92,
+      clearcoat: 0.9,
+    });
+    const innerWineR0 = Math.max(4, rBase - wallT - 0.8);
+    const innerWineR1 = Math.max(4, rMouth - wallT - 0.8);
+    addLathePart(
+      [
+        [0.01, xBase + dir * 17],
+        [rBase * 0.38, xBase + dir * 12],
+        [innerWineR0, xBase + dir * 3],
+        [innerWineR1, xMouth + dir * 6],
+        [0.01, xMouth + dir * 6],
+      ],
+      wineMat
+    );
+  } else if (isGlass) {
+    // Vaso/pinta de vidrio con espesor real hueco + base maciza pesada de vidrio
     const wallThick = Math.min(3.5, Math.max(2.2, Math.min(rBase, rMouth) * 0.08));
     addLathePart(
       [
@@ -577,61 +657,94 @@ export function buildRotaryVesselGroup(params: VesselModelParams): THREE.Group {
     pullTab.position.set(xMouth + dir * 11.4, neckR * 0.35, 0);
     group.add(pullTab);
   } else {
-    // Botella (Vidrio Esmeralda con cápsula mate + corcho natural OR deportiva con argolla)
-    const shoulderLen = Math.min(34, len * 0.22);
-    const neckR = Math.max(10, rMouth * 0.4);
-    addLathePart(
-      [
-        [rMouth, xMouth],
-        [rMouth * 0.86, xMouth + dir * (shoulderLen * 0.3)],
-        [neckR * 1.25, xMouth + dir * (shoulderLen * 0.7)],
-        [neckR, xMouth + dir * shoulderLen],
-        [neckR, xMouth + dir * (shoulderLen + 14)],
-      ],
-      bodyMat
-    );
+    // Botella de Vino Bordeaux (Vidrio Esmeralda/Cristal con picada cóncava, vino interior, hombro suave, cuello largo, gollete, cápsula y corcho)
+    // o botella térmica pintada con cuello largo y tapa deportiva.
+    const shoulderLen = isGlass
+      ? Math.max(34, Math.min(52, len * 0.34))
+      : Math.max(28, Math.min(44, len * 0.28));
+    const neckLen = isGlass
+      ? Math.max(46, Math.min(68, len * 0.44))
+      : Math.max(26, Math.min(40, len * 0.26));
+    const neckR = isGlass
+      ? Math.max(9.5, Math.min(14.5, rMouth * 0.37))
+      : Math.max(10, Math.min(16, rMouth * 0.42));
+    const xNeckStart = xMouth + dir * shoulderLen;
+    const xNeckTop = xNeckStart + dir * neckLen;
+
     if (isGlass) {
-      // Cápsula metálica oscura + corcho de madera natural asomando
+      // Cápsula bordó satinada con banda dorada y corcho natural asomando
       const capsuleMat = new THREE.MeshStandardMaterial({
-        color: '#1e1b24',
-        metalness: 0.45,
-        roughness: 0.42,
+        color: '#6b1222',
+        metalness: 0.42,
+        roughness: 0.38,
       });
-      const corkTex = createWoodPbrTextures('#b58454', [2, 1]);
+      const goldBandMat = new THREE.MeshStandardMaterial({
+        color: '#eab308',
+        metalness: 0.88,
+        roughness: 0.24,
+      });
+      const corkTex = createWoodPbrTextures('#c2915c', [2, 1]);
       const corkMat = new THREE.MeshStandardMaterial({
         map: corkTex.map,
         bumpMap: corkTex.bumpMap,
-        bumpScale: 1.2,
-        roughness: 0.9,
+        bumpScale: 1.4,
+        roughness: 0.92,
       });
+      const xCapStart = xNeckTop - dir * Math.min(34, neckLen * 0.58);
       addLathePart(
         [
-          [neckR + 1.1, xMouth + dir * (shoulderLen + 4)],
-          [neckR + 1.2, xMouth + dir * (shoulderLen + 15)],
-          [neckR - 1.5, xMouth + dir * (shoulderLen + 15)],
+          [neckR + 0.5, xCapStart],
+          [neckR + 0.7, xNeckTop - dir * 8.5],
+          [neckR + 2.5, xNeckTop - dir * 7],
+          [neckR + 2.6, xNeckTop - dir * 1],
+          [neckR - 1.2, xNeckTop],
         ],
         capsuleMat
       );
+      const goldBand = new THREE.Mesh(
+        new THREE.TorusGeometry(neckR + 0.75, 0.75, 10, 48),
+        goldBandMat
+      );
+      goldBand.rotation.y = Math.PI / 2;
+      goldBand.position.x = xCapStart + dir * 2;
+      group.add(goldBand);
+
       addLathePart(
         [
-          [neckR - 1.6, xMouth + dir * (shoulderLen + 14)],
-          [neckR - 1.6, xMouth + dir * (shoulderLen + 23)],
-          [0.01, xMouth + dir * (shoulderLen + 23)],
+          [neckR - 2.4, xNeckTop - dir * 4],
+          [neckR - 2.1, xNeckTop + dir * 5.5],
+          [0.01, xNeckTop + dir * 5.5],
         ],
         corkMat
       );
     } else {
+      const shoulderPts: Array<[number, number]> = [];
+      for (let i = 0; i <= 12; i++) {
+        const t = i / 12;
+        const smooth = t * t * (3 - 2 * t);
+        shoulderPts.push([
+          rMouth + (neckR - rMouth) * smooth,
+          xMouth + dir * (shoulderLen * t),
+        ]);
+      }
       addLathePart(
         [
-          [neckR + 1.6, xMouth + dir * (shoulderLen + 6)],
-          [neckR + 2.2, xMouth + dir * (shoulderLen + 14)],
-          [neckR + 1.6, xMouth + dir * (shoulderLen + 20)],
-          [0.01, xMouth + dir * (shoulderLen + 20)],
+          ...shoulderPts,
+          [neckR, xNeckTop],
+        ],
+        bodyMat
+      );
+      addLathePart(
+        [
+          [neckR + 1.8, xNeckTop - dir * 2],
+          [neckR + 2.4, xNeckTop + dir * 9],
+          [neckR + 1.8, xNeckTop + dir * 15],
+          [0.01, xNeckTop + dir * 15],
         ],
         capMat
       );
       const bail = new THREE.Mesh(new THREE.TorusGeometry(neckR * 0.72, 1.8, 10, 32), capMat);
-      bail.position.x = xMouth + dir * (shoulderLen + 24);
+      bail.position.x = xNeckTop + dir * 19;
       group.add(bail);
     }
   }

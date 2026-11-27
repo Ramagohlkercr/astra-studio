@@ -157,21 +157,25 @@ export const Rotary3DViewport: React.FC<Props> = ({
     const ctrls = controlsRef.current;
     if (!cam || !ctrls) return;
 
-    const maxExtent = Math.max(dims.len, dims.d0, dims.d1, 90);
+    const isBottle = appearance.shape === 'bottle';
+    const maxExtent = Math.max(isBottle ? dims.len * 1.48 : dims.len, dims.d0, dims.d1, 90);
+    const targetShiftX = isBottle
+      ? (config.chuckSide === 'left_rim' ? -dims.len * 0.22 : dims.len * 0.22)
+      : -dims.len * 0.04;
     const aspectPad = Math.max(1, 1.55 / Math.max(0.75, cam.aspect));
     if (preset === 'iso') {
       cam.position.set(
-        -maxExtent * 0.74 * aspectPad,
-        maxExtent * 0.78 * aspectPad,
-        maxExtent * 1.66 * aspectPad
+        -maxExtent * 0.72 * aspectPad + targetShiftX,
+        maxExtent * 0.76 * aspectPad,
+        maxExtent * 1.68 * aspectPad
       );
-      ctrls.target.set(-dims.len * 0.04, 6, 0);
+      ctrls.target.set(targetShiftX, 6, 0);
     } else if (preset === 'front') {
-      cam.position.set(0, 14, maxExtent * 1.82 * aspectPad);
-      ctrls.target.set(-dims.len * 0.02, 6, 0);
+      cam.position.set(targetShiftX, 14, maxExtent * 1.82 * aspectPad);
+      ctrls.target.set(targetShiftX, 6, 0);
     } else if (preset === 'top') {
-      cam.position.set(0, maxExtent * 1.98 * aspectPad, 16);
-      ctrls.target.set(-dims.len * 0.02, 0, 0);
+      cam.position.set(targetShiftX, maxExtent * 1.98 * aspectPad, 16);
+      ctrls.target.set(targetShiftX, 0, 0);
     } else {
       cam.position.set(-dims.len * 0.96, dims.r0 * 1.15, maxExtent * 1.12);
       ctrls.target.set(-dims.len * 0.42, 0, 0);
