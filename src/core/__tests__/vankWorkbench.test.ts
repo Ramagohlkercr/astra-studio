@@ -21,7 +21,12 @@ import {
 import {
   buildRasterMaskCacheKey,
   buildScanlineMaskFromRgba,
+  rasterizePolylinesToHorizontalRuns,
 } from '../workbench/rasterScanlines';
+import {
+  buildRuidaThumbnailsCommands,
+  encodeRuidaThumbnailPackets,
+} from '../workbench/ruidaThumbnail';
 import {
   buildRuidaFileUploadHeaderBytes,
   buildRuidaUdpPackets,
@@ -1137,5 +1142,129 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
         rdBytes: rdUser.rdBytes,
       })
     ).rejects.toThrow('Dirección IP inválida');
+  });
+
+  it('20. Emite CA 41 (Scan vs Cut), CA 01 05, miniaturas LCD LightBurn E7 11/12 y relleno vectorial analítico par-impar', () => {
+    const ecocueroMat = INITIAL_MATERIALS_CATALOG.find(
+      (m) => m.id === 'ECOCUERO_SUELA'
+    )!;
+    const baseCfg = createDefaultWorkbenchConfig(730, 600, ecocueroMat);
+    const cfg = {
+      ...baseCfg,
+      layers: baseCfg.layers.map((l) => ({
+        ...l,
+        speedMmPerSec: l.role === 'ENGRAVE' ? 600 : 100,
+        maxPowerPercent: l.role === 'ENGRAVE' ? 30 : 100,
+        minPowerPercent: l.role === 'ENGRAVE' ? 15 : 80,
+        lineIntervalMm: l.role === 'ENGRAVE' ? 0.073 : l.lineIntervalMm,
+        bidirectional: true,
+      })),
+    };
+
+    const orders = createInitialOrdersCatalog();
+    const order = orders[0];
+    const nesting = computeNestingLayout(order.labelDesign, {
+      ...order.nestingConfig,
+      sheetWidthMm: 730,
+      sheetHeightMm: 600,
+    });
+    const job = createWorkbenchJobFromOrder({
+      design: order.labelDesign,
+      nesting,
+      mode: 'active_batch',
+      projectName: 'Churitas',
+      clientName: 'Cliente',
+      orderId: 'ord-churitas',
+      existingJobs: [],
+      config: cfg,
+    });
+
+    const compiled = compileWorkbenchToRuidaRd([job], cfg);
+    const raw = compiled.rawUnscrambledBytes;
+
+    const findSubseq = (seq: number[]): number => {
+      for (let i = 0; i <= raw.length - seq.length; i++) {
+        let ok = true;
+        for (let j = 0; j < seq.length; j++) {
+          if (raw[i + j] !== seq[j]) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) return i;
+      }
+      return -1;
+    };
+
+    // CA 41: C00 en Scan Bidireccional Horizontal (0x02), C01 y C02 en Línea/Corte (0x00)
+    expect(findSubseq([0xca, 0x41, 0x00, 0x02])).toBeGreaterThan(-1);
+    expect(findSubseq([0xca, 0x41, 0x01, 0x00])).toBeGreaterThan(-1);
+    expect(findSubseq([0xca, 0x41, 0x02, 0x00])).toBeGreaterThan(-1);
+    // CA 22 <maxLayerIndex> y bandera inline Scan CA 01 05 seguido de CA 01 02
+    expect(findSubseq([0xca, 0x22, 0x02])).toBeGreaterThan(-1);
+    expect(findSubseq([0xca, 0x01, 0x05, 0xca, 0x01, 0x02, 0xca, 0x02, 0x00])).toBeGreaterThan(-1);
+
+    // Miniaturas hardware RDC8445S (`E7 11` 144x144 -> 3x1010B, `E7 12` 300x300 -> 15x862B)
+    const thumbs = buildRuidaThumbnailsCommands({
+      visibleJobs: [job],
+      boundsMm: compiled.boundingBoxMm,
+      engraveIntervalMm: 0.073,
+      engraveDitherMode: 'threshold',
+    });
+    const pkts11 = thumbs.filter((p) => p[0] === 0xe7 && p[1] === 0x11);
+    const pkts12 = thumbs.filter((p) => p[0] === 0xe7 && p[1] === 0x12);
+    expect(pkts11).toHaveLength(3);
+    expect(pkts12).toHaveLength(15);
+    expect(pkts11[0]).toHaveLength(1010);
+    expect(pkts12[0]).toHaveLength(862);
+    // Todos los bytes de datos de miniatura deben ser de 7 bits seguros (< 0x80) para nunca confundirse con comandos Ruida (>= 0x80)
+    for (const pkt of [...pkts11, ...pkts12]) {
+      for (const b of pkt.slice(2)) {
+        expect(b).toBeLessThan(0x80);
+      }
+    }
+    // Al menos un paquete de miniatura debe contener bits encendidos
+    expect(
+      pkts12.some((p) => p.slice(2).some((b) => b !== 0))
+    ).toBe(true);
+
+    // Empaquetado exacto bit-0 = pixel(0, H-1) -> bit 6 del primer byte
+    const bmp144 = new Uint8Array(144 * 144);
+    bmp144[143 * 144 + 0] = 1; // fila inferior izquierda
+    const e11 = encodeRuidaThumbnailPackets(bmp144, 144);
+    expect(e11[0][2]).toBe(0x40);
+
+    // Relleno vectorial analítico par-impar: cuadrado exterior 10x10 con hueco interior 4x4
+    const outerPoly = {
+      closed: true,
+      points: [
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+        { x: 10, y: 10 },
+        { x: 0, y: 10 },
+      ],
+    };
+    const innerHole = {
+      closed: true,
+      points: [
+        { x: 3, y: 3 },
+        { x: 7, y: 3 },
+        { x: 7, y: 7 },
+        { x: 3, y: 7 },
+      ],
+    };
+    const fillRows = rasterizePolylinesToHorizontalRuns(
+      [outerPoly, innerHole],
+      0,
+      10,
+      0,
+      10,
+      1
+    );
+    const middleRow = fillRows.find((r) => r.yMm >= 4.4 && r.yMm <= 5.6)!;
+    expect(middleRow.runsMm).toEqual([
+      [0, 3],
+      [7, 10],
+    ]);
   });
 });

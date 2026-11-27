@@ -1,4 +1,5 @@
-import { EngravedItemGeometry } from '../types';
+import { roundMm } from '../geometry/geometryEngine';
+import { EngravedItemGeometry, Point2D } from '../types';
 import {
   LightBurnImageDitherMode,
   WorkbenchConfig,
@@ -13,6 +14,60 @@ export interface RasterScanlineMask {
   cols: number;
   rows: number;
   rowRuns: Array<[number, number][]>;
+}
+
+/**
+ * Rellena polilíneas vectoriales cerradas con corridas horizontales analíticas (regla par-impar)
+ * a resolución exacta de `lineIntervalMm` (sin rejilla de píxeles en X).
+ */
+export function rasterizePolylinesToHorizontalRuns(
+  polylines: Array<{ points: Point2D[]; closed?: boolean }>,
+  minX: number,
+  maxX: number,
+  minY: number,
+  maxY: number,
+  lineIntervalMm: number
+): Array<{ yMm: number; runsMm: Array<[number, number]> }> {
+  const interval = Math.max(0.025, lineIntervalMm || 0.08);
+  const spanY = Math.max(0.01, maxY - minY);
+  const rows = Math.max(2, Math.min(1200, Math.ceil(spanY / interval)));
+  const out: Array<{ yMm: number; runsMm: Array<[number, number]> }> = [];
+
+  for (let r = 0; r < rows; r++) {
+    const y = roundMm(minY + ((r + 0.5) / rows) * spanY, 4);
+    const xs: number[] = [];
+
+    for (const poly of polylines) {
+      const pts = poly.points;
+      if (pts.length < 2) continue;
+      const count = pts.length;
+      const limit = poly.closed === false ? count - 1 : count;
+      for (let i = 0; i < limit; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % count];
+        if ((a.y <= y && b.y > y) || (b.y <= y && a.y > y)) {
+          const t = (y - a.y) / (b.y - a.y);
+          xs.push(a.x + t * (b.x - a.x));
+        }
+      }
+    }
+
+    if (xs.length < 2) continue;
+    xs.sort((a, b) => a - b);
+    const runsMm: Array<[number, number]> = [];
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      const x0 = Math.max(minX, Math.min(maxX, xs[i]));
+      const x1 = Math.max(minX, Math.min(maxX, xs[i + 1]));
+      if (x1 - x0 >= 0.012) {
+        runsMm.push([roundMm(x0, 3), roundMm(x1, 3)]);
+      }
+    }
+    if (runsMm.length > 0) {
+      out.push({ yMm: roundMm(y, 3), runsMm });
+    }
+  }
+
+  return out;
 }
 
 const rasterMaskCache = new Map<string, RasterScanlineMask>();
@@ -155,7 +210,7 @@ export async function resolveRasterEngravingMask(
   eng: EngravedItemGeometry,
   lineIntervalMm: number,
   ditherMode: LightBurnImageDitherMode = 'threshold',
-  totalInstancesOnBed = 1
+  _totalInstancesOnBed = 1
 ): Promise<RasterScanlineMask | null> {
   if (eng.kind !== 'raster_image' || !eng.dataUrl) return null;
   if (typeof document === 'undefined') return null;
@@ -165,11 +220,8 @@ export async function resolveRasterEngravingMask(
   const bboxH = Math.max(0.5, bb.height || eng.heightMm || 10);
   const rotDeg = eng.rotationDeg ?? 0;
   const mirrored = !!eng.mirrored;
-  // Con tiradas grandes (>60 etiquetas), mantenemos un paso eficiente para no inflar innecesariamente la transferencia
-  const effectiveInterval =
-    totalInstancesOnBed > 60
-      ? Math.max(lineIntervalMm, 0.1)
-      : Math.max(0.05, lineIntervalMm);
+  // Respetar exactamente el intervalo vertical configurado (p.ej. 0.073 mm = 348 DPI) sin degradar tiradas grandes
+  const effectiveInterval = Math.max(0.025, lineIntervalMm || 0.08);
 
   const key = buildRasterMaskCacheKey({
     dataUrl: eng.dataUrl,
@@ -187,23 +239,31 @@ export async function resolveRasterEngravingMask(
   const img = await loadImageElement(eng.dataUrl);
   if (!img) return null;
 
-  const rows = Math.max(20, Math.min(240, Math.ceil(bboxH / effectiveInterval)));
-  const cols = Math.max(28, Math.min(360, Math.ceil(bboxW / Math.min(0.085, effectiveInterval))));
+  // Escala isotrópica de alta resolución en X (<= 0.02 mm, hasta 1024 px) para bordes de tipografía sin diente de sierra
+  const xStepMm = Math.min(0.02, effectiveInterval * 0.4);
+  const isoPxPerMm = Math.min(1024 / Math.max(bboxW, bboxH), 1 / xStepMm);
+  const cols = Math.max(96, Math.min(1024, Math.ceil(bboxW * isoPxPerMm)));
+  const isoH = Math.max(16, Math.min(1024, Math.ceil(bboxH * isoPxPerMm)));
+  const rows = Math.max(16, Math.min(900, Math.round(bboxH / effectiveInterval)));
 
   const canvas = document.createElement('canvas');
   canvas.width = cols;
-  canvas.height = rows;
+  canvas.height = isoH;
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
+  ctx.imageSmoothingEnabled = ditherMode !== 'threshold';
+  if (ctx.imageSmoothingEnabled) {
+    ctx.imageSmoothingQuality = 'high';
+  }
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, cols, rows);
+  ctx.fillRect(0, 0, cols, isoH);
 
-  const drawW = ((eng.widthMm ?? bboxW) / bboxW) * cols;
-  const drawH = ((eng.heightMm ?? bboxH) / bboxH) * rows;
+  const drawW = (eng.widthMm ?? bboxW) * isoPxPerMm;
+  const drawH = (eng.heightMm ?? bboxH) * isoPxPerMm;
 
   ctx.save();
-  ctx.translate(cols / 2, rows / 2);
+  ctx.translate(cols / 2, isoH / 2);
   if (rotDeg) {
     ctx.rotate((rotDeg * Math.PI) / 180);
   }
@@ -213,8 +273,49 @@ export async function resolveRasterEngravingMask(
   ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
   ctx.restore();
 
-  const imgData = ctx.getImageData(0, 0, cols, rows);
-  const mask = buildScanlineMaskFromRgba(imgData.data, cols, rows, ditherMode);
+  const isoRgba = ctx.getImageData(0, 0, cols, isoH).data;
+  const sampledRgba = new Uint8ClampedArray(cols * rows * 4);
+  const bandHalf =
+    ditherMode === 'threshold' ? Math.min(1, Math.floor((isoH / rows) * 0.25)) : 0;
+
+  for (let r = 0; r < rows; r++) {
+    const centerY = Math.min(isoH - 1, Math.floor(((r + 0.5) / rows) * isoH));
+    const yStart = Math.max(0, centerY - bandHalf);
+    const yEnd = Math.min(isoH - 1, centerY + bandHalf);
+    const dstRowOffset = r * cols * 4;
+
+    if (bandHalf === 0) {
+      const srcRowOffset = centerY * cols * 4;
+      sampledRgba.set(
+        isoRgba.subarray(srcRowOffset, srcRowOffset + cols * 4),
+        dstRowOffset
+      );
+    } else {
+      for (let x = 0; x < cols; x++) {
+        let bestOffset = (centerY * cols + x) * 4;
+        let bestLuma =
+          isoRgba[bestOffset] * 0.299 +
+          isoRgba[bestOffset + 1] * 0.587 +
+          isoRgba[bestOffset + 2] * 0.114;
+        for (let yy = yStart; yy <= yEnd; yy++) {
+          const o = (yy * cols + x) * 4;
+          const lum =
+            isoRgba[o] * 0.299 + isoRgba[o + 1] * 0.587 + isoRgba[o + 2] * 0.114;
+          if (lum < bestLuma) {
+            bestLuma = lum;
+            bestOffset = o;
+          }
+        }
+        const dstO = dstRowOffset + x * 4;
+        sampledRgba[dstO] = isoRgba[bestOffset];
+        sampledRgba[dstO + 1] = isoRgba[bestOffset + 1];
+        sampledRgba[dstO + 2] = isoRgba[bestOffset + 2];
+        sampledRgba[dstO + 3] = isoRgba[bestOffset + 3];
+      }
+    }
+  }
+
+  const mask = buildScanlineMaskFromRgba(sampledRgba, cols, rows, ditherMode);
   setCachedRasterScanlineMask(key, mask);
   return mask;
 }
@@ -229,7 +330,7 @@ export async function prepareWorkbenchRasterMasks(
 ): Promise<Map<string, RasterScanlineMask>> {
   const result = new Map<string, RasterScanlineMask>();
   const engraveLayer = config.layers.find((l) => l.role === 'ENGRAVE');
-  const intervalMm = Math.max(0.05, engraveLayer?.lineIntervalMm || 0.08);
+  const intervalMm = Math.max(0.025, engraveLayer?.lineIntervalMm || 0.08);
   const ditherMode: LightBurnImageDitherMode =
     engraveLayer?.imageDitherMode ?? 'threshold';
 
@@ -246,15 +347,13 @@ export async function prepareWorkbenchRasterMasks(
         const bb = eng.boundingBox;
         const bboxW = Math.max(0.5, bb.width || eng.widthMm || 10);
         const bboxH = Math.max(0.5, bb.height || eng.heightMm || 10);
-        const effInterval =
-          totalPieces > 60 ? Math.max(intervalMm, 0.1) : Math.max(0.05, intervalMm);
         const key = buildRasterMaskCacheKey({
           dataUrl: eng.dataUrl,
           bboxWidthMm: bboxW,
           bboxHeightMm: bboxH,
           rotationDeg: eng.rotationDeg ?? 0,
           mirrored: !!eng.mirrored,
-          lineIntervalMm: effInterval,
+          lineIntervalMm: intervalMm,
           ditherMode,
         });
         if (seenKeys.has(key)) continue;

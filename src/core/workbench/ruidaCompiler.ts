@@ -13,8 +13,10 @@ import { roundMm } from '../geometry/geometryEngine';
 import {
   buildRasterMaskCacheKey,
   getCachedRasterScanlineMask,
+  rasterizePolylinesToHorizontalRuns,
   RasterScanlineMask,
 } from './rasterScanlines';
+import { buildRuidaThumbnailsCommands } from './ruidaThumbnail';
 import {
   sortInstancesInTravelOrder,
   validateWorkbenchState,
@@ -421,25 +423,53 @@ export function compileWorkbenchToRuidaRd(
   const anyAirAssist = sortedLayers.some((l) => l.airAssist);
   emit([0xca, 0x01, anyAirAssist ? 0x13 : 0x12]);
 
-  // 2. Cabeceras de parámetros por capa activa
+  const getLayerWorkModeByte = (layer: WorkbenchLayerConfig): number => {
+    if (layer.mode === 'line') return 0x00;
+    return layer.bidirectional === false ? 0x01 : 0x02;
+  };
+
+  // 2. Cabeceras de parámetros por capa activa (`OutputCutBankInfo` LightBurn)
+  let maxCutIndex = 0;
   for (const layer of sortedLayers) {
     const lIdx = layer.cutIndex & 0x7f;
+    if (lIdx > maxCutIndex) maxCutIndex = lIdx;
     const speed = layer.speedMmPerSec!;
     const maxP = layer.maxPowerPercent!;
     const minP =
       layer.minPowerPercent !== null && layer.minPowerPercent >= 0
         ? Math.min(maxP, layer.minPowerPercent)
         : maxP;
+    const workMode = getLayerWorkModeByte(layer);
 
     // C9 04 <layer> <speed 5B>: Layer Speed
     emit([0xc9, 0x04, lIdx, ...encodeRuidaSpeedMmPerSec(speed)]);
-    // C6 31 <layer> <minPower 2B>: Layer Min Power Лазер 1
+    // C6 31/32 <layer> <power 2B>: Tube 1 Min/Max Power
     emit([0xc6, 0x31, lIdx, ...encodeRuidaPowerPercent(minP)]);
-    // C6 32 <layer> <maxPower 2B>: Layer Max Power Лазер 1
     emit([0xc6, 0x32, lIdx, ...encodeRuidaPowerPercent(maxP)]);
+    // C6 41/42 <layer> 00 00: Tube 2 disabled
+    emit([0xc6, 0x41, lIdx, 0x00, 0x00]);
+    emit([0xc6, 0x42, lIdx, 0x00, 0x00]);
+    // CA 41 <layer> <mode>: 0=Cut/Line, 1=Unidir Scan, 2=Bidir Scan
+    emit([0xca, 0x41, lIdx, workMode]);
   }
 
-  // 3. Emisión de trayectorias por orden de prioridad de capa
+  // CA 22 <maxLayer>: Cantidad máxima de capa activa
+  emit([0xca, 0x22, maxCutIndex & 0x7f]);
+
+  // Miniaturas LCD de hardware RDC8445S (`E7 11` 144x144 + `E7 12` 300x300) + `EA 00`
+  const engraveLayer = sortedLayers.find((l) => l.role === 'ENGRAVE') ?? config.layers[0];
+  for (const thumbPacket of buildRuidaThumbnailsCommands({
+    visibleJobs,
+    boundsMm: bounds,
+    rasterMasks,
+    engraveIntervalMm: Math.max(0.025, engraveLayer?.lineIntervalMm || 0.08),
+    engraveDitherMode: engraveLayer?.imageDitherMode ?? 'threshold',
+  })) {
+    emit(thumbPacket);
+  }
+  emit([0xea, 0x00]);
+
+  // 3. Emisión de trayectorias por orden de prioridad de capa (`EmitInlineCutSetting`)
   const emitLayerPreamble = (layer: WorkbenchLayerConfig) => {
     const lIdx = layer.cutIndex & 0x7f;
     const speed = layer.speedMmPerSec!;
@@ -448,16 +478,30 @@ export function compileWorkbenchToRuidaRd(
       layer.minPowerPercent !== null && layer.minPowerPercent >= 0
         ? Math.min(maxP, layer.minPowerPercent)
         : maxP;
+    const workMode = getLayerWorkModeByte(layer);
 
+    if (workMode !== 0x00) {
+      // CA 01 05: Habilitar modo escaneo ráster (`OutputShapeCuts` / `EmitInlineCutSetting`)
+      emit([0xca, 0x01, 0x05]);
+    }
+    // CA 01 <mode>: 0x00 Corte, 0x01 Scan Unidir, 0x02 Scan Bidir
+    emit([0xca, 0x01, workMode]);
     // CA 02 <layer>: Select active layer
     emit([0xca, 0x02, lIdx]);
-    // CA 01: Air assist toggle por capa
+    // Banderas estándar LightBurn de tubo láser y soplador
+    emit([0xca, 0x01, 0x30]);
+    emit([0xca, 0x01, 0x10]);
     emit([0xca, 0x01, layer.airAssist ? 0x13 : 0x12]);
     // C9 02 <speed 5B>: Active cut speed
     emit([0xc9, 0x02, ...encodeRuidaSpeedMmPerSec(speed)]);
-    // C6 01 <minP 2B> & C6 02 <maxP 2B>: Active power
-    emit([0xc6, 0x01, ...encodeRuidaPowerPercent(minP)]);
-    emit([0xc6, 0x02, ...encodeRuidaPowerPercent(maxP)]);
+    // C6 01/21/02/22: Active Min/Max power (LightBurn `EmitPowerSettings`)
+    const minPowBytes = encodeRuidaPowerPercent(minP);
+    const maxPowBytes = encodeRuidaPowerPercent(maxP);
+    emit([0xc6, 0x01, ...minPowBytes]);
+    emit([0xc6, 0x21, ...minPowBytes]);
+    emit([0xc6, 0x02, ...maxPowBytes]);
+    emit([0xc6, 0x22, ...maxPowBytes]);
+    emit([0xca, 0x03, 0x00]);
   };
 
   let curUmX = 0;
@@ -538,8 +582,50 @@ export function compileWorkbenchToRuidaRd(
         ensurePreamble();
 
         for (let pass = 0; pass < passes; pass++) {
+          const isScanLayer = layer.mode !== 'line';
+          const bidir = layer.bidirectional !== false;
+
           for (const eng of inst.engraveItems) {
             if (eng.kind === 'vector_path' && eng.polylines && eng.polylines.length > 0) {
+              if (isScanLayer) {
+                const absPolylines = eng.polylines.map((pl) => ({
+                  closed: pl.closed,
+                  points: pl.points.map((pt) => ({
+                    x: roundMm(job.xMm + pt.x),
+                    y: roundMm(job.yMm + pt.y),
+                  })),
+                }));
+                const bb = eng.boundingBox;
+                const fillRows = rasterizePolylinesToHorizontalRuns(
+                  absPolylines,
+                  roundMm(job.xMm + bb.minX),
+                  roundMm(job.xMm + bb.maxX),
+                  roundMm(job.yMm + bb.minY),
+                  roundMm(job.yMm + bb.maxY),
+                  Math.max(0.025, layer.lineIntervalMm || 0.08)
+                );
+                if (fillRows.length > 0) {
+                  for (let row = 0; row < fillRows.length; row++) {
+                    const { yMm, runsMm } = fillRows[row];
+                    const forward = !bidir || row % 2 === 0;
+                    if (forward) {
+                      for (let r = 0; r < runsMm.length; r++) {
+                        const [x0, x1] = runsMm[r];
+                        emitMoveAbs(x0, yMm);
+                        emitCutAbs(x1, yMm);
+                      }
+                    } else {
+                      for (let r = runsMm.length - 1; r >= 0; r--) {
+                        const [x0, x1] = runsMm[r];
+                        emitMoveAbs(x1, yMm);
+                        emitCutAbs(x0, yMm);
+                      }
+                    }
+                  }
+                  continue;
+                }
+              }
+
               for (const poly of eng.polylines) {
                 if (poly.points.length < 2) continue;
                 const p0 = poly.points[0];
@@ -553,15 +639,13 @@ export function compileWorkbenchToRuidaRd(
                 }
               }
             } else {
-              // Grabado raster real píxel a píxel (nunca rellenar el rectángulo entero)
+              // Grabado raster real píxel a píxel de alta resolución en X (<= 0.02 mm)
               const bb = eng.boundingBox;
               const minX = roundMm(job.xMm + bb.minX);
               const maxX = roundMm(job.xMm + bb.maxX);
               const minY = roundMm(job.yMm + bb.minY);
               const maxY = roundMm(job.yMm + bb.maxY);
-              const interval = Math.max(0.05, layer.lineIntervalMm || 0.08);
-              const effInterval =
-                report.totalPieces > 60 ? Math.max(interval, 0.1) : interval;
+              const effInterval = Math.max(0.025, layer.lineIntervalMm || 0.08);
               const ditherMode = layer.imageDitherMode ?? 'threshold';
 
               let mask: RasterScanlineMask | undefined;
@@ -585,12 +669,13 @@ export function compileWorkbenchToRuidaRd(
                   const runs = mask.rowRuns[row];
                   if (runs.length === 0) continue;
                   const y = roundMm(minY + ((row + 0.5) / mask.rows) * spanY, 3);
-                  if (row % 2 === 0) {
+                  const forward = !bidir || row % 2 === 0;
+                  if (forward) {
                     for (let r = 0; r < runs.length; r++) {
                       const [u0, u1] = runs[r];
                       const x0 = roundMm(minX + u0 * spanX, 3);
                       const x1 = roundMm(minX + u1 * spanX, 3);
-                      if (x1 - x0 < 0.02) continue;
+                      if (x1 - x0 < 0.012) continue;
                       emitMoveAbs(x0, y);
                       emitCutAbs(x1, y);
                     }
@@ -599,7 +684,7 @@ export function compileWorkbenchToRuidaRd(
                       const [u0, u1] = runs[r];
                       const x0 = roundMm(minX + u0 * spanX, 3);
                       const x1 = roundMm(minX + u1 * spanX, 3);
-                      if (x1 - x0 < 0.02) continue;
+                      if (x1 - x0 < 0.012) continue;
                       emitMoveAbs(x1, y);
                       emitCutAbs(x0, y);
                     }

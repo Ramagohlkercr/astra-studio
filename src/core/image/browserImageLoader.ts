@@ -29,12 +29,12 @@ export async function processImageDataUrlInBrowser(params: {
     img.crossOrigin = 'anonymous';
     img.onload = () => {
       try {
-        // Adaptar resolución de trabajo: 600 px para raster nítido (conservación de letras finas) o 280 px para vectorización Marching Squares rápida
+        // Adaptar resolución de trabajo: hasta 1024 px para raster de alta precisión (logos finos) o 420 px para vectorización Marching Squares
         const origW = Math.max(1, img.naturalWidth || img.width || 100);
         const origH = Math.max(1, img.naturalHeight || img.height || 100);
         const aspect = origW / origH;
 
-        const maxWorkDim = params.options.mode === 'raster' ? 640 : 280;
+        const maxWorkDim = params.options.mode === 'raster' ? 1024 : 420;
         const scale = Math.min(1, maxWorkDim / Math.max(origW, origH));
         const workW = Math.max(8, Math.round(origW * scale));
         const workH = Math.max(8, Math.round(origH * scale));
