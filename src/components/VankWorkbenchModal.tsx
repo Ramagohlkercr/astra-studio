@@ -215,6 +215,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   const [isPlayingSim, setIsPlayingSim] = useState<boolean>(false);
   const [simProgress, setSimProgress] = useState<number>(100);
   const [safetyConfirmed, setSafetyConfirmed] = useState<boolean>(false);
+  const [safetyHighlight, setSafetyHighlight] = useState<boolean>(false);
   const [isSendingToRuida, setIsSendingToRuida] = useState<boolean>(false);
   const [isUploadingLogos, setIsUploadingLogos] = useState<boolean>(false);
   const [ruidaStatusMsg, setRuidaStatusMsg] = useState<{
@@ -1113,12 +1114,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   const handleSendToVankRuida = async () => {
     setRuidaStatusMsg(null);
     if (!safetyConfirmed) {
+      const warnMsg =
+        'Marcá primero el check "Confirmo foco Z, extracción/chiller encendidos y parámetros validados" para enviar el trabajo a la Vank 9060.';
+      setSafetyHighlight(true);
       setRuidaStatusMsg({
         type: 'error',
-        text: 'Confirmá la lista de verificación de seguridad antes de enviar el trabajo a la Vank 9060.',
+        text: warnMsg,
       });
+      onNotify(warnMsg);
       return;
     }
+    setSafetyHighlight(false);
 
     try {
       const compiled = compileWorkbenchToRuidaRd(workbenchJobs, workbenchConfig);
@@ -2356,10 +2362,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
           </div>
         </div>
 
-        {/* PANEL LATERAL DERECHO: 3 PESTAÑAS LIMPIAS Y ENFOCADAS (1 VISTA A LA VEZ) */}
-        <aside className="w-[380px] lg:w-[425px] xl:w-[475px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-y-auto shrink-0">
+        {/* PANEL LATERAL DERECHO: 3 PESTAÑAS LIMPIAS + DOCK FIJO SIEMPRE VISIBLE */}
+        <aside className="w-[380px] lg:w-[425px] xl:w-[475px] bg-[#0d1117] border-l border-slate-800 flex flex-col overflow-hidden shrink-0">
           {/* BARRA DE PESTAÑAS SEGMENTADA */}
-          <div className="sticky top-0 z-20 bg-[#111621]/95 backdrop-blur border-b border-slate-800 p-2">
+          <div className="shrink-0 z-20 bg-[#111621]/95 backdrop-blur border-b border-slate-800 p-2">
             <div className="grid grid-cols-3 gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-[11px]">
               <button
                 type="button"
@@ -2397,6 +2403,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             </div>
           </div>
 
+          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
           {/* =====================================================================
               SECCIÓN 1: CALIBRACIÓN LIMPIA DE VELOCIDAD Y POTENCIA DE LAS 3 CAPAS
               (C00 GRABADO · C01 ORIFICIOS · C02 CORTE EXTERIOR)
@@ -3924,11 +3931,20 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   </div>
                 )}
 
-                <label className="flex items-start gap-2 p-2 rounded-lg bg-slate-900 border border-slate-800 text-[11px] text-slate-300 cursor-pointer">
+                <label
+                  className={`flex items-start gap-2 p-2 rounded-lg border text-[11px] cursor-pointer transition ${
+                    safetyHighlight && !safetyConfirmed
+                      ? 'bg-amber-950/70 border-amber-400 text-amber-100 ring-2 ring-amber-400/70'
+                      : 'bg-slate-900 border-slate-800 text-slate-300'
+                  }`}
+                >
                   <input
                     type="checkbox"
                     checked={safetyConfirmed}
-                    onChange={(e) => setSafetyConfirmed(e.target.checked)}
+                    onChange={(e) => {
+                      setSafetyConfirmed(e.target.checked);
+                      if (e.target.checked) setSafetyHighlight(false);
+                    }}
                     className="mt-0.5 accent-emerald-500"
                   />
                   <span>
@@ -4118,10 +4134,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             )}
           </div>
           )}
+          </div>
 
-          {/* DOCK FIJO INFERIOR DE CONEXIÓN Y ENVÍO RÁPIDO A VANK 9060 (SIEMPRE A MANO) */}
+          {/* DOCK FIJO INFERIOR DE CONEXIÓN Y ENVÍO RÁPIDO A VANK 9060 (SIEMPRE A MANO Y VISIBLE) */}
           {(sidebarView === 'layers' || sidebarView === 'jobs') && (
-            <div className="sticky bottom-0 z-20 mt-auto bg-[#0f1520]/95 backdrop-blur border-t border-slate-700 p-2.5 space-y-2 text-xs shadow-2xl">
+            <div className="shrink-0 z-20 bg-[#0f1520]/95 backdrop-blur border-t border-slate-700 p-2.5 space-y-2 text-xs shadow-2xl">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5">
                   <span
@@ -4176,7 +4193,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
               {ruidaStatusMsg && (
                 <div
-                  className={`p-1.5 rounded border text-[10px] leading-tight ${
+                  className={`p-1.5 rounded border text-[10px] leading-tight max-h-14 overflow-y-auto ${
                     ruidaStatusMsg.type === 'success'
                       ? 'bg-emerald-950/70 border-emerald-700 text-emerald-200'
                       : ruidaStatusMsg.type === 'error'
@@ -4188,11 +4205,31 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 </div>
               )}
 
-              <label className="flex items-center gap-1.5 text-[10px] text-slate-300 cursor-pointer">
+              {!validation.isValidForMachineSend && (
+                <div className="p-1.5 rounded border border-amber-700/70 bg-amber-950/50 text-amber-200 text-[10px] leading-tight">
+                  {validation.issues.find(
+                    (i) =>
+                      i.severity === 'error' ||
+                      i.code === 'LAYER_PARAMS_UNCONFIGURED'
+                  )?.message ??
+                    'Completá velocidad/potencia en las capas activas para habilitar el envío.'}
+                </div>
+              )}
+
+              <label
+                className={`flex items-center gap-1.5 text-[10px] cursor-pointer px-1.5 py-1 rounded border transition ${
+                  safetyHighlight && !safetyConfirmed
+                    ? 'border-amber-400 bg-amber-950/70 text-amber-100 ring-2 ring-amber-400/70'
+                    : 'border-transparent text-slate-300'
+                }`}
+              >
                 <input
                   type="checkbox"
                   checked={safetyConfirmed}
-                  onChange={(e) => setSafetyConfirmed(e.target.checked)}
+                  onChange={(e) => {
+                    setSafetyConfirmed(e.target.checked);
+                    if (e.target.checked) setSafetyHighlight(false);
+                  }}
                   className="accent-emerald-500"
                 />
                 <span>
@@ -4200,15 +4237,42 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 </span>
               </label>
 
+              {isSendingToRuida && ruidaUploadProgress && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] font-mono text-emerald-300">
+                    <span>
+                      Enviando paquete {ruidaUploadProgress.current_packet}/
+                      {ruidaUploadProgress.total_packets}
+                    </span>
+                    <span>{ruidaUploadProgress.percent}%</span>
+                  </div>
+                  <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+                    <div
+                      className="bg-emerald-400 h-full transition-all duration-150"
+                      style={{ width: `${ruidaUploadProgress.percent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-3 gap-1.5">
                 <button
                   type="button"
                   disabled={!validation.isValidForMachineSend || isSendingToRuida}
+                  title={
+                    !validation.isValidForMachineSend
+                      ? 'Configurá velocidad y potencia válidas sin superposiciones en la plancha'
+                      : !safetyConfirmed
+                        ? 'Requiere marcar el check de seguridad arriba del botón'
+                        : `Enviar trabajo a Vank 9060 (${workbenchConfig.ruidaIpAddress})`
+                  }
                   onClick={() => void handleSendToVankRuida()}
                   className="py-2 px-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-extrabold text-[11px] flex items-center justify-center gap-1 shadow"
                 >
                   <Send className="w-3.5 h-3.5 shrink-0" />
-                  <span>Enviar a Vank</span>
+                  <span>
+                    {isSendingToRuida ? 'Enviando...' : 'Enviar a Vank'}
+                  </span>
                 </button>
                 <button
                   type="button"

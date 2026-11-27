@@ -3643,9 +3643,15 @@ export function App() {
         </dialog>
       )}
 
-      {/* 5. TOAST DE NOTIFICACIÓN FLOTANTE */}
+      {/* 5. TOAST DE NOTIFICACIÓN FLOTANTE (ubicado abajo a la izquierda para no tapar la botonera de envío Vank) */}
       {statusMessage && (
-        <div role="status" aria-live="polite" className="studio-toast fixed bottom-4 right-4 z-50 bg-[#161b22] border border-cyan-500/60 shadow-xl rounded-lg px-3.5 py-2 text-xs text-cyan-200 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2">
+        <div
+          role="status"
+          aria-live="polite"
+          onClick={() => setStatusMessage(null)}
+          title="Clic para cerrar"
+          className="studio-toast fixed bottom-10 left-4 z-50 max-w-md cursor-pointer bg-[#161b22]/95 backdrop-blur border border-cyan-500/60 shadow-xl rounded-lg px-3.5 py-2 text-xs text-cyan-200 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2"
+        >
           <Info className="w-4 h-4 text-cyan-400 shrink-0" />
           <span>{statusMessage}</span>
         </div>
