@@ -2049,6 +2049,8 @@ function buildWorkbenchJobFromParsedPaths(params: {
   const instances: WorkbenchPlacedInstance[] = [
     {
       ...baseJob.instances[0],
+      localXMm: 0,
+      localYMm: 0,
       widthMm: totalW,
       heightMm: totalH,
       engraveItems: directEngraveItems,
@@ -2060,8 +2062,8 @@ function buildWorkbenchJobFromParsedPaths(params: {
     },
     ...extraCutContours.map((ec, idx) => ({
       instanceIndex: idx + 2,
-      localXMm: 0,
-      localYMm: 0,
+      localXMm: roundMm(ec.boundingBox.minX, 2),
+      localYMm: roundMm(ec.boundingBox.minY, 2),
       widthMm: roundMm(ec.boundingBox.width, 2),
       heightMm: roundMm(ec.boundingBox.height, 2),
       rotated90: false,
@@ -2074,12 +2076,215 @@ function buildWorkbenchJobFromParsedPaths(params: {
   const finalJob: WorkbenchJobItem = {
     ...baseJob,
     pieceCount: Math.max(1, cutPaths.length),
+    columns: 1,
+    rows: 1,
+    firstRowIndentMm: 0,
+    firstRowShelfHeightMm: 0,
     widthMm: totalW,
     heightMm: totalH,
+    preserveImportedGeometry: true,
     instances,
   };
 
   return { jobs: [finalJob], warnings, widthMm: totalW, heightMm: totalH };
+}
+
+function getImportedJobLayerFlags(job: WorkbenchJobItem): {
+  hasEngrave: boolean;
+  hasCutOrHoles: boolean;
+} {
+  let hasEngrave = false;
+  let hasCutOrHoles = false;
+  for (const inst of job.instances) {
+    if (inst.engraveItems.length > 0) hasEngrave = true;
+    if (inst.cutContour.points.length >= 2 || inst.holeContours.length > 0) {
+      hasCutOrHoles = true;
+    }
+  }
+  return { hasEngrave, hasCutOrHoles };
+}
+
+function shiftImportedCutContoursAndHoles(
+  instances: WorkbenchPlacedInstance[],
+  dx: number,
+  dy: number
+): WorkbenchPlacedInstance[] {
+  if (Math.abs(dx) < 0.005 && Math.abs(dy) < 0.005) return instances;
+  const shiftPt = (p: Point2D) => ({ x: roundMm(p.x + dx, 3), y: roundMm(p.y + dy, 3) });
+  return instances.map((inst) => ({
+    ...inst,
+    localXMm: roundMm(inst.localXMm + dx, 2),
+    localYMm: roundMm(inst.localYMm + dy, 2),
+    cutContour:
+      inst.cutContour.points.length >= 2
+        ? {
+            ...inst.cutContour,
+            points: inst.cutContour.points.map(shiftPt),
+            svgPathD: pointsToSvgPathD(inst.cutContour.points.map(shiftPt), inst.cutContour.closed),
+            boundingBox: computeBoundingBox(inst.cutContour.points.map(shiftPt)),
+          }
+        : inst.cutContour,
+    holeContours: inst.holeContours.map((hc) => {
+      const pts = hc.points.map(shiftPt);
+      return {
+        ...hc,
+        points: pts,
+        svgPathD: pointsToSvgPathD(pts, hc.closed),
+        boundingBox: computeBoundingBox(pts),
+      };
+    }),
+  }));
+}
+
+function shiftImportedEngraveItems(
+  items: EngravedItemGeometry[],
+  dx: number,
+  dy: number
+): EngravedItemGeometry[] {
+  if (Math.abs(dx) < 0.005 && Math.abs(dy) < 0.005) return items;
+  const shiftPt = (p: Point2D) => ({ x: roundMm(p.x + dx, 3), y: roundMm(p.y + dy, 3) });
+  return items.map((eng) => {
+    if (eng.kind === 'vector_path' && eng.polylines) {
+      const nextPolys = eng.polylines.map((pl) => ({ ...pl, points: pl.points.map(shiftPt) }));
+      const pts = nextPolys.flatMap((pl) => pl.points);
+      return {
+        ...eng,
+        polylines: nextPolys,
+        svgPathD: nextPolys.map((pl) => pointsToSvgPathD(pl.points, pl.closed)).join(' '),
+        boundingBox: pts.length > 0 ? computeBoundingBox(pts) : eng.boundingBox,
+      };
+    }
+    if (eng.kind === 'raster_image') {
+      const nx = roundMm((eng.xMm ?? 0) + dx, 2);
+      const ny = roundMm((eng.yMm ?? 0) + dy, 2);
+      const nw = eng.widthMm ?? 10;
+      const nh = eng.heightMm ?? 10;
+      return {
+        ...eng,
+        xMm: nx,
+        yMm: ny,
+        boundingBox: {
+          minX: nx,
+          minY: ny,
+          maxX: roundMm(nx + nw, 2),
+          maxY: roundMm(ny + nh, 2),
+          width: nw,
+          height: nh,
+        },
+      };
+    }
+    return eng;
+  });
+}
+
+function combinePairedEngraveAndCutJobs(
+  engraveJob: WorkbenchJobItem,
+  cutJob: WorkbenchJobItem
+): WorkbenchJobItem {
+  const mergedW = roundMm(Math.max(engraveJob.widthMm, cutJob.widthMm), 2);
+  const mergedH = roundMm(Math.max(engraveJob.heightMm, cutJob.heightMm), 2);
+  const engDx = roundMm((mergedW - engraveJob.widthMm) / 2, 2);
+  const engDy = roundMm((mergedH - engraveJob.heightMm) / 2, 2);
+  const cutDx = roundMm((mergedW - cutJob.widthMm) / 2, 2);
+  const cutDy = roundMm((mergedH - cutJob.heightMm) / 2, 2);
+
+  const allShiftedEngrave = engraveJob.instances.flatMap((i) =>
+    shiftImportedEngraveItems(i.engraveItems, engDx, engDy)
+  );
+  const shiftedCutInstances = shiftImportedCutContoursAndHoles(cutJob.instances, cutDx, cutDy);
+  shiftedCutInstances[0] = {
+    ...shiftedCutInstances[0],
+    widthMm: mergedW,
+    heightMm: mergedH,
+    engraveItems: allShiftedEngrave,
+  };
+
+  return {
+    ...cutJob,
+    name: `${cutJob.name} + Grabado`,
+    widthMm: mergedW,
+    heightMm: mergedH,
+    preserveImportedGeometry: true,
+    labelDesign: {
+      ...cutJob.labelDesign,
+      widthMm: mergedW,
+      heightMm: mergedH,
+      elements: [
+        ...engraveJob.labelDesign.elements,
+        ...cutJob.labelDesign.elements,
+      ],
+    },
+    instances: shiftedCutInstances,
+  };
+}
+
+/**
+ * Detecta y combina automáticamente archivos externos complementarios de la misma tirada/plancha
+ * (ej. `01_GRABADO_50_600dpi.png` solo grabado + `02_CORTE_50.dxf` solo corte con idénticas dimensiones ±8 mm),
+ * tanto si se abren juntos como uno después del otro.
+ */
+export function mergeComplementaryImportedJobs(
+  existingJobs: WorkbenchJobItem[],
+  incomingJobs: WorkbenchJobItem[]
+): { jobs: WorkbenchJobItem[]; mergedCount: number } {
+  const workingExisting = [...existingJobs];
+  const remainingIncoming: WorkbenchJobItem[] = [];
+  let mergedCount = 0;
+
+  const canPair = (a: WorkbenchJobItem, b: WorkbenchJobItem): boolean => {
+    if (!a.preserveImportedGeometry || !b.preserveImportedGeometry) return false;
+    const fa = getImportedJobLayerFlags(a);
+    const fb = getImportedJobLayerFlags(b);
+    const complementary =
+      (fa.hasEngrave && !fa.hasCutOrHoles && fb.hasCutOrHoles && !fb.hasEngrave) ||
+      (fb.hasEngrave && !fb.hasCutOrHoles && fa.hasCutOrHoles && !fa.hasEngrave);
+    if (!complementary) return false;
+    const tol = Math.max(8, Math.max(a.widthMm, a.heightMm, b.widthMm, b.heightMm) * 0.04);
+    return Math.abs(a.widthMm - b.widthMm) <= tol && Math.abs(a.heightMm - b.heightMm) <= tol;
+  };
+
+  // 1. Emparejar dentro del mismo lote entrante
+  const pool = [...incomingJobs];
+  const pairedIncoming: WorkbenchJobItem[] = [];
+  const usedIdx = new Set<number>();
+
+  for (let i = 0; i < pool.length; i++) {
+    if (usedIdx.has(i)) continue;
+    let cur = pool[i];
+    for (let j = i + 1; j < pool.length; j++) {
+      if (usedIdx.has(j)) continue;
+      if (canPair(cur, pool[j])) {
+        const flagsCur = getImportedJobLayerFlags(cur);
+        cur = flagsCur.hasEngrave
+          ? combinePairedEngraveAndCutJobs(cur, pool[j])
+          : combinePairedEngraveAndCutJobs(pool[j], cur);
+        usedIdx.add(j);
+        mergedCount++;
+        break;
+      }
+    }
+    pairedIncoming.push(cur);
+  }
+
+  // 2. Emparejar con trabajos ya presentes en mesa
+  for (const inc of pairedIncoming) {
+    const matchIdx = workingExisting.findIndex((ex) => canPair(ex, inc));
+    if (matchIdx >= 0) {
+      const ex = workingExisting[matchIdx];
+      const flagsEx = getImportedJobLayerFlags(ex);
+      workingExisting[matchIdx] = flagsEx.hasEngrave
+        ? combinePairedEngraveAndCutJobs(ex, inc)
+        : combinePairedEngraveAndCutJobs(inc, ex);
+      mergedCount++;
+    } else {
+      remainingIncoming.push(inc);
+    }
+  }
+
+  return {
+    jobs: [...workingExisting, ...remainingIncoming],
+    mergedCount,
+  };
 }
 
 // =========================================================================

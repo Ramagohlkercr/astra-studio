@@ -63,6 +63,7 @@ import {
 import {
   detectExternalLaserFormat,
   importExternalLaserFile,
+  mergeComplementaryImportedJobs,
 } from '../workbench/externalLaserFileImporter';
 import {
   armJobTimerWatch,
@@ -1933,5 +1934,62 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(pngRes.summary.rasterCount).toBe(1);
     expect(pngRes.summary.widthMm).toBeCloseTo(50, 0);
     expect(pngRes.summary.heightMm).toBeCloseTo(25, 0);
+
+    // 7. Regresión real: Plancha múltiple 02_CORTE_50.dxf (218x278 mm con 150 contornos) + 01_GRABADO_50_600dpi.png (218.02x278 mm)
+    // Nunca debe explotar a 1428 cm ni perder contornos al pasar por autoArrangeWorkbenchJobs!
+    const ecoCfg = createDefaultWorkbenchConfig(730, 600);
+    ecoCfg.isRollMaterial = true;
+    ecoCfg.packingMode = 'continuous_zero_waste';
+
+    const multiCutDxfLines = ['0', 'SECTION', '2', 'HEADER', '9', '$INSUNITS', '70', '4', '0', 'ENDSEC', '0', 'SECTION', '2', 'ENTITIES'];
+    for (let idx = 0; idx < 150; idx++) {
+      const col = idx % 10;
+      const row = Math.floor(idx / 10);
+      const x0 = col * 21.8;
+      const y0 = row * 18.5;
+      const x1 = x0 + 20;
+      const y1 = y0 + 17;
+      multiCutDxfLines.push(
+        '0', 'LWPOLYLINE', '8', 'CORTE', '62', '1', '70', '1',
+        '10', String(x0), '20', String(y0),
+        '10', String(x1), '20', String(y0),
+        '10', String(x1), '20', String(y1),
+        '10', String(x0), '20', String(y1)
+      );
+    }
+    multiCutDxfLines.push('0', 'ENDSEC', '0', 'EOF');
+
+    const sheetPng = new Uint8Array(24);
+    sheetPng.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    sheetPng.set([0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52], 8);
+    const dvSheet = new DataView(sheetPng.buffer);
+    dvSheet.setUint32(16, 5150, false); // ~218.02 mm @ 600 DPI
+    dvSheet.setUint32(20, 6567, false); // ~278.00 mm @ 600 DPI
+
+    const impEng = await importExternalLaserFile({
+      fileName: '01_GRABADO_50_600dpi.png',
+      bytes: sheetPng,
+      config: ecoCfg,
+    });
+    const impCut = await importExternalLaserFile({
+      fileName: '02_CORTE_50.dxf',
+      bytes: enc.encode(multiCutDxfLines.join('\n')),
+      config: ecoCfg,
+    });
+
+    const paired = mergeComplementaryImportedJobs([], [...impEng.jobs, ...impCut.jobs]);
+    expect(paired.mergedCount).toBe(1);
+    expect(paired.jobs).toHaveLength(1);
+
+    const arrangedSheet = autoArrangeWorkbenchJobs(paired.jobs, ecoCfg, 2, true);
+    expect(arrangedSheet).toHaveLength(1);
+    expect(arrangedSheet[0].preserveImportedGeometry).toBe(true);
+    expect(arrangedSheet[0].instances).toHaveLength(150);
+    expect(arrangedSheet[0].instances[0].engraveItems).toHaveLength(1);
+    expect(arrangedSheet[0].widthMm).toBeCloseTo(218, 0);
+    expect(arrangedSheet[0].heightMm).toBeCloseTo(278, 0);
+
+    const rollStats = computeEcocueroRollMetrics(arrangedSheet, ecoCfg);
+    expect(rollStats.usedLengthMm).toBeLessThan(350);
   });
 });

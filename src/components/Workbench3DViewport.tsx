@@ -401,7 +401,22 @@ export const Workbench3DViewport: React.FC<Props> = ({
 
       // Pieza física 3D extruida y perforada realmente con three-bvh-csg (1 draw call InstancedMesh para todas!)
       const protoInst = job.instances[0];
-      if (protoInst?.cutContour?.points?.length >= 3) {
+      if (job.preserveImportedGeometry) {
+        const plateGeo = new THREE.BoxGeometry(
+          Math.max(1, job.widthMm),
+          0.55,
+          Math.max(1, job.heightMm)
+        );
+        const plateMesh = new THREE.Mesh(plateGeo, sheetMat.clone());
+        plateMesh.position.set(
+          toWorldX(job.xMm + job.widthMm / 2),
+          topSurfaceY - 0.15,
+          toWorldZ(job.yMm + job.heightMm / 2)
+        );
+        plateMesh.castShadow = true;
+        plateMesh.receiveShadow = true;
+        root.add(plateMesh);
+      } else if (protoInst?.cutContour?.points?.length >= 3) {
         const tileGeo = buildPhysicalCutLabelGeometry(
           protoInst.cutContour,
           protoInst.holeContours ?? [],

@@ -9,6 +9,7 @@
 import {
   centerAllElementsGeometrically,
   compileLabelGeometry,
+  computeBoundingBox,
   fitAllElementsToAvailableSpace,
   roundMm,
 } from '../geometry/geometryEngine';
@@ -597,6 +598,149 @@ export function createWorkbenchJobFromUploadedLogo(params: {
  * Permite editar directamente en la mesa de trabajo la cantidad, medidas (ancho x alto mm),
  * forma, orificios o logo de cualquier trabajo de la tirada, recalculando su grilla.
  */
+function pointsToSvgPathDLocal(pts: { x: number; y: number }[], closed: boolean): string {
+  if (pts.length === 0) return '';
+  const segs = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`);
+  if (closed) segs.push('Z');
+  return segs.join(' ');
+}
+
+function transformImportedJobGeometry(
+  job: WorkbenchJobItem,
+  nextWidthMm: number,
+  nextHeightMm: number,
+  targetRot: 0 | 90
+): WorkbenchJobItem {
+  const prevRot = job.blockRotationDeg;
+  const needRotate90 = prevRot !== targetRot;
+  const srcW = Math.max(1, job.widthMm);
+  const srcH = Math.max(1, job.heightMm);
+
+  const mapPt = (pt: { x: number; y: number }): { x: number; y: number } => {
+    let x = pt.x;
+    let y = pt.y;
+    if (needRotate90) {
+      if (targetRot === 90) {
+        const nx = srcH - y;
+        const ny = x;
+        x = nx;
+        y = ny;
+      } else {
+        const nx = y;
+        const ny = srcW - x;
+        x = nx;
+        y = ny;
+      }
+    }
+    const baseW = needRotate90 ? srcH : srcW;
+    const baseH = needRotate90 ? srcW : srcH;
+    return {
+      x: roundMm((x * nextWidthMm) / Math.max(1, baseW), 3),
+      y: roundMm((y * nextHeightMm) / Math.max(1, baseH), 3),
+    };
+  };
+
+  const mapBb = (pts: { x: number; y: number }[]) => computeBoundingBox(pts);
+  const scaleX = nextWidthMm / Math.max(1, needRotate90 ? srcH : srcW);
+  const scaleY = nextHeightMm / Math.max(1, needRotate90 ? srcW : srcH);
+
+  const nextInstances = job.instances.map((inst) => {
+    const cutPts = inst.cutContour.points.map(mapPt);
+    const nextCut =
+      cutPts.length >= 2
+        ? {
+            ...inst.cutContour,
+            points: cutPts,
+            svgPathD: pointsToSvgPathDLocal(cutPts, inst.cutContour.closed),
+            boundingBox: mapBb(cutPts),
+          }
+        : inst.cutContour;
+
+    const nextHoles = inst.holeContours.map((hc) => {
+      const hPts = hc.points.map(mapPt);
+      return {
+        ...hc,
+        points: hPts,
+        svgPathD: pointsToSvgPathDLocal(hPts, hc.closed),
+        boundingBox: mapBb(hPts),
+      };
+    });
+
+    const nextEngrave = inst.engraveItems.map((eng) => {
+      if (eng.kind === 'vector_path' && eng.polylines) {
+        const nextPolys = eng.polylines.map((pl) => ({
+          ...pl,
+          points: pl.points.map(mapPt),
+        }));
+        const allPts = nextPolys.flatMap((pl) => pl.points);
+        const svgD = nextPolys.map((pl) => pointsToSvgPathDLocal(pl.points, pl.closed)).join(' ');
+        return {
+          ...eng,
+          polylines: nextPolys,
+          svgPathD: svgD,
+          boundingBox: allPts.length > 0 ? mapBb(allPts) : eng.boundingBox,
+        };
+      }
+      if (eng.kind === 'raster_image') {
+        const cx = (eng.xMm ?? 0) + (eng.widthMm ?? 10) / 2;
+        const cy = (eng.yMm ?? 0) + (eng.heightMm ?? 10) / 2;
+        const newCenter = mapPt({ x: cx, y: cy });
+        const rw = roundMm((eng.widthMm ?? 10) * (needRotate90 ? scaleY : scaleX), 2);
+        const rh = roundMm((eng.heightMm ?? 10) * (needRotate90 ? scaleX : scaleY), 2);
+        const nextX = roundMm(newCenter.x - rw / 2, 2);
+        const nextY = roundMm(newCenter.y - rh / 2, 2);
+        return {
+          ...eng,
+          xMm: nextX,
+          yMm: nextY,
+          widthMm: rw,
+          heightMm: rh,
+          rotationDeg: ((eng.rotationDeg ?? 0) + (needRotate90 ? (targetRot === 90 ? 90 : 270) : 0)) % 360,
+          boundingBox: {
+            minX: nextX,
+            minY: nextY,
+            maxX: roundMm(nextX + rw, 2),
+            maxY: roundMm(nextY + rh, 2),
+            width: rw,
+            height: rh,
+          },
+        };
+      }
+      return eng;
+    });
+
+    const loc =
+      nextCut.points.length >= 2
+        ? { x: nextCut.boundingBox.minX, y: nextCut.boundingBox.minY }
+        : mapPt({ x: inst.localXMm, y: inst.localYMm });
+
+    return {
+      ...inst,
+      localXMm: loc.x,
+      localYMm: loc.y,
+      widthMm: nextCut.points.length >= 2 ? nextCut.boundingBox.width : nextWidthMm,
+      heightMm: nextCut.points.length >= 2 ? nextCut.boundingBox.height : nextHeightMm,
+      rotated90: targetRot === 90,
+      engraveItems: nextEngrave,
+      holeContours: nextHoles,
+      cutContour: nextCut,
+    };
+  });
+
+  return {
+    ...job,
+    blockRotationDeg: targetRot,
+    widthMm: nextWidthMm,
+    heightMm: nextHeightMm,
+    labelDesign: {
+      ...job.labelDesign,
+      widthMm: needRotate90 ? job.labelDesign.heightMm : nextWidthMm,
+      heightMm: needRotate90 ? job.labelDesign.widthMm : nextHeightMm,
+    },
+    instances: nextInstances,
+  };
+}
+
 export function updateWorkbenchJobDesignAndQuantity(
   job: WorkbenchJobItem,
   updates: {
@@ -619,6 +763,27 @@ export function updateWorkbenchJobDesignAndQuantity(
   },
   config?: WorkbenchConfig
 ): WorkbenchJobItem {
+  if (job.preserveImportedGeometry) {
+    const targetRot = updates.blockRotationDeg ?? job.blockRotationDeg;
+    const rotChanged = targetRot !== job.blockRotationDeg;
+    const baseW = rotChanged ? job.heightMm : job.widthMm;
+    const baseH = rotChanged ? job.widthMm : job.heightMm;
+    const nextW =
+      updates.widthMm !== undefined
+        ? Math.max(5, Math.min(900, roundMm(updates.widthMm, 2)))
+        : baseW;
+    const nextH =
+      updates.heightMm !== undefined
+        ? Math.max(5, Math.min(900, roundMm(updates.heightMm, 2)))
+        : baseH;
+    const transformed = transformImportedJobGeometry(job, nextW, nextH, targetRot);
+    return {
+      ...transformed,
+      name: updates.baseName?.trim() || transformed.name,
+      clientName: updates.clientName !== undefined ? updates.clientName : transformed.clientName,
+    };
+  }
+
   const nextDesign = structuredClone(job.labelDesign);
   const dimensionsChanged =
     (updates.widthMm !== undefined && Math.abs(updates.widthMm - nextDesign.widthMm) > 0.01) ||
@@ -811,6 +976,33 @@ export function autoArrangeWorkbenchJobs(
         return rawJob;
       }
 
+      if (rawJob.preserveImportedGeometry) {
+        if (currentIndentMm > 0 && currentIndentMm + rawJob.widthMm > usableWidth + 0.01) {
+          currentShelfY = roundMm(
+            currentShelfY + currentShelfMaxHeight + interJobGapMm
+          );
+          currentIndentMm = 0;
+          currentShelfMaxHeight = 0;
+        }
+        const placedX = roundMm(startX + currentIndentMm);
+        const placedY = roundMm(currentShelfY);
+        const placed: WorkbenchJobItem = {
+          ...rawJob,
+          firstRowIndentMm: 0,
+          firstRowShelfHeightMm: 0,
+          xMm: placedX,
+          yMm: placedY,
+        };
+        currentIndentMm = roundMm(currentIndentMm + rawJob.widthMm + interJobGapMm);
+        currentShelfMaxHeight = Math.max(currentShelfMaxHeight, rawJob.heightMm);
+        if (currentIndentMm >= usableWidth) {
+          currentShelfY = roundMm(currentShelfY + currentShelfMaxHeight + interJobGapMm);
+          currentIndentMm = 0;
+          currentShelfMaxHeight = 0;
+        }
+        return placed;
+      }
+
       const gapX = Math.max(0, rawJob.gapXMm);
       const gapY = Math.max(0, rawJob.gapYMm);
       const candidateRotations: (0 | 90)[] =
@@ -934,23 +1126,25 @@ export function autoArrangeWorkbenchJobs(
       return rawJob;
     }
 
-    const job = optimizeColumnsForRoll
-      ? updateWorkbenchJobDesignAndQuantity(
-          rawJob,
-          {
-            pieceCount: rawJob.pieceCount,
-            autoFitColumnsToRoll: true,
-            firstRowIndentMm: 0,
-          },
-          config
-        )
-      : rawJob.firstRowIndentMm
+    const job = rawJob.preserveImportedGeometry
+      ? rawJob
+      : optimizeColumnsForRoll
         ? updateWorkbenchJobDesignAndQuantity(
             rawJob,
-            { firstRowIndentMm: 0 },
+            {
+              pieceCount: rawJob.pieceCount,
+              autoFitColumnsToRoll: true,
+              firstRowIndentMm: 0,
+            },
             config
           )
-        : rawJob;
+        : rawJob.firstRowIndentMm
+          ? updateWorkbenchJobDesignAndQuantity(
+              rawJob,
+              { firstRowIndentMm: 0 },
+              config
+            )
+          : rawJob;
 
     if (cursorX > startX && cursorX + job.widthMm > maxRightX) {
       cursorX = startX;

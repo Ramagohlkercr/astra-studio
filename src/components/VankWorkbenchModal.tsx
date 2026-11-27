@@ -68,6 +68,7 @@ import {
 import {
   detectExternalLaserFormat,
   importExternalLaserFile,
+  mergeComplementaryImportedJobs,
   mergeImportedLayerUpdates,
 } from '../core/workbench/externalLaserFileImporter';
 import {
@@ -764,9 +765,8 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   const importExternalFilesToWorkbench = async (fileArray: File[]) => {
     setIsUploadingLogos(true);
     try {
-      let currentList = [...workbenchJobs];
+      const incomingJobs: WorkbenchJobItem[] = [];
       let nextCfg = workbenchConfig;
-      let lastCreatedId: string | null = null;
       const summaries: string[] = [];
 
       for (const file of fileArray) {
@@ -779,15 +779,16 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         if (res.summary.hasAppliedLayerParams) {
           nextCfg = mergeImportedLayerUpdates(nextCfg, res.layerUpdates);
         }
-        for (const j of res.jobs) {
-          currentList.push(j);
-          lastCreatedId = j.id;
-        }
+        incomingJobs.push(...res.jobs);
         const engTotal = res.summary.engravePathCount + res.summary.rasterCount;
         summaries.push(
           `${file.name} (${res.summary.widthMm}×${res.summary.heightMm} mm · ${engTotal}G/${res.summary.holeContourCount}A/${res.summary.cutContourCount}C)`
         );
       }
+
+      const merged = mergeComplementaryImportedJobs(workbenchJobs, incomingJobs);
+      const lastCreatedId =
+        merged.jobs[merged.jobs.length - 1]?.id ?? incomingJobs[incomingJobs.length - 1]?.id ?? null;
 
       if (nextCfg !== workbenchConfig) {
         onUpdateConfig(nextCfg);
@@ -797,14 +798,16 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         nextCfg.isRollMaterial ||
         isEco;
       const arranged = autoArrangeWorkbenchJobs(
-        currentList,
+        merged.jobs,
         nextCfg,
         nextCfg.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
         useZeroWaste
       );
       onUpdateJobs(arranged);
       if (lastCreatedId) setSelectedJobId(lastCreatedId);
-      const msg = `📂 ${fileArray.length} archivo(s) externo(s) abierto(s): ${summaries.join(' | ')}`;
+      const pairNote =
+        merged.mergedCount > 0 ? ' · ✨ Grabado + Corte emparejados 1:1 mm' : '';
+      const msg = `📂 ${fileArray.length} archivo(s) externo(s) abierto(s): ${summaries.join(' | ')}${pairNote}`;
       setRuidaStatusMsg({ type: 'success', text: msg });
       onNotify(msg);
     } catch (err) {
@@ -2491,13 +2494,89 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       '#f472b6',
                     ];
                     const jobAccentColor = jobColors[jobIndex % jobColors.length];
+                    const isTech = canvasVisualMode === 'technical_lightburn';
+
+                    if (job.preserveImportedGeometry) {
+                      return (
+                        <g key={`def-${job.id}`} id={`wb-master-${job.id}`}>
+                          <rect
+                            x={0}
+                            y={0}
+                            width={job.widthMm}
+                            height={job.heightMm}
+                            fill={isTech ? '#f1f5f9' : material.visual.surfaceColor}
+                            fillOpacity={isTech ? 0.92 : 0.78}
+                            stroke={isSelected ? jobAccentColor : undefined}
+                            strokeWidth={isSelected ? '0.4' : undefined}
+                          />
+                          {job.instances.map((inst) => (
+                            <g key={`${job.id}-imp-${inst.instanceIndex}`}>
+                              {(!engraveLayerCfg || engraveLayerCfg.visible) &&
+                                inst.engraveItems.map((eng) => {
+                                  if (eng.kind === 'vector_path' && eng.svgPathD) {
+                                    return (
+                                      <path
+                                        key={eng.id}
+                                        d={eng.svgPathD}
+                                        fill={eng.filled ? '#090d14' : 'none'}
+                                        fillRule={eng.fillRule || 'evenodd'}
+                                        stroke="#090d14"
+                                        strokeWidth={
+                                          eng.filled ? 0.05 : eng.strokeWidthMm || 0.25
+                                        }
+                                      />
+                                    );
+                                  }
+                                  if (eng.kind === 'raster_image' && eng.dataUrl) {
+                                    return (
+                                      <image
+                                        key={eng.id}
+                                        x={eng.xMm}
+                                        y={eng.yMm}
+                                        width={eng.widthMm}
+                                        height={eng.heightMm}
+                                        preserveAspectRatio="none"
+                                        href={eng.dataUrl}
+                                        transform={rasterImageTransform(eng)}
+                                        style={{ mixBlendMode: 'multiply' }}
+                                      />
+                                    );
+                                  }
+                                  return null;
+                                })}
+                              {(!holesLayerCfg || holesLayerCfg.visible) &&
+                                inst.holeContours.map((hole) => (
+                                  <path
+                                    key={hole.id}
+                                    d={hole.svgPathD}
+                                    fill={isTech ? '#dbeafe' : '#090c10'}
+                                    stroke="#2563eb"
+                                    strokeWidth="0.4"
+                                  />
+                                ))}
+                              {(!cutLayerCfg || cutLayerCfg.visible) &&
+                                inst.cutContour &&
+                                inst.cutContour.points.length >= 2 &&
+                                inst.cutContour.svgPathD && (
+                                  <path
+                                    d={inst.cutContour.svgPathD}
+                                    fill="none"
+                                    stroke="#ef4444"
+                                    strokeWidth="0.45"
+                                  />
+                                )}
+                            </g>
+                          ))}
+                        </g>
+                      );
+                    }
+
                     const master = compileLabelGeometry(job.labelDesign, {
                       offsetXMm: 0,
                       offsetYMm: 0,
                       rotated90: job.blockRotationDeg === 90,
                       instanceIdPrefix: `master_${job.id}`,
                     });
-                    const isTech = canvasVisualMode === 'technical_lightburn';
                     return (
                       <g key={`def-${job.id}`} id={`wb-master-${job.id}`}>
                         <rect
@@ -2805,14 +2884,23 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                         #{jobIndex + 1} {job.name} · {job.labelDesign.widthMm}×{job.labelDesign.heightMm}mm
                       </text>
 
-                      {job.instances.map((inst) => (
+                      {job.preserveImportedGeometry ? (
                         <use
-                          key={`${job.id}-inst-${inst.instanceIndex}`}
+                          key={`${job.id}-imp-sheet`}
                           href={`#wb-master-${job.id}`}
-                          x={inst.localXMm}
-                          y={inst.localYMm}
+                          x={0}
+                          y={0}
                         />
-                      ))}
+                      ) : (
+                        job.instances.map((inst) => (
+                          <use
+                            key={`${job.id}-inst-${inst.instanceIndex}`}
+                            href={`#wb-master-${job.id}`}
+                            x={inst.localXMm}
+                            y={inst.localYMm}
+                          />
+                        ))
+                      )}
                     </g>
                   );
                 })}
@@ -3028,13 +3116,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 <div className="w-28 h-16 bg-[#06090e] rounded-lg border border-cyan-500/40 flex items-center justify-center p-1 shrink-0 shadow-inner">
                   <svg
                     viewBox={`-2 -2 ${
-                      (selectedJob.blockRotationDeg === 90
-                        ? selectedJob.labelDesign.heightMm
-                        : selectedJob.labelDesign.widthMm) + 4
+                      (selectedJob.preserveImportedGeometry
+                        ? selectedJob.widthMm
+                        : selectedJob.blockRotationDeg === 90
+                          ? selectedJob.labelDesign.heightMm
+                          : selectedJob.labelDesign.widthMm) + 4
                     } ${
-                      (selectedJob.blockRotationDeg === 90
-                        ? selectedJob.labelDesign.widthMm
-                        : selectedJob.labelDesign.heightMm) + 4
+                      (selectedJob.preserveImportedGeometry
+                        ? selectedJob.heightMm
+                        : selectedJob.blockRotationDeg === 90
+                          ? selectedJob.labelDesign.widthMm
+                          : selectedJob.labelDesign.heightMm) + 4
                     }`}
                     className="w-full h-full"
                   >
@@ -3044,7 +3136,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
                 <div className="space-y-1 text-[10px] font-mono min-w-0">
                   <div className="font-bold text-cyan-300 truncate">
-                    🔬 Muestra 1:1 — {selectedJob.name} ({selectedJob.labelDesign.widthMm}×{selectedJob.labelDesign.heightMm} mm)
+                    🔬 Muestra 1:1 — {selectedJob.name} (
+                    {selectedJob.preserveImportedGeometry
+                      ? `${selectedJob.widthMm}×${selectedJob.heightMm}`
+                      : `${selectedJob.labelDesign.widthMm}×${selectedJob.labelDesign.heightMm}`}{' '}
+                    mm)
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {sortedLayers.map((l) => (

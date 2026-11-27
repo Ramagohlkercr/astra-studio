@@ -62,6 +62,7 @@ import {
 import {
   detectExternalLaserFormat,
   importExternalLaserFile,
+  mergeComplementaryImportedJobs,
   mergeImportedLayerUpdates,
 } from './core/workbench/externalLaserFileImporter';
 import {
@@ -1763,8 +1764,12 @@ export function App() {
                       nextCfg.packingMode === 'continuous_zero_waste' ||
                       nextCfg.isRollMaterial ||
                       isEcocueroMaterial(activeMaterial);
+                    const merged = mergeComplementaryImportedJobs(
+                      workbenchJobs,
+                      imported.jobs
+                    );
                     const arranged = autoArrangeWorkbenchJobs(
-                      [...workbenchJobs, ...imported.jobs],
+                      merged.jobs,
                       nextCfg,
                       nextCfg.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
                       useZeroWaste

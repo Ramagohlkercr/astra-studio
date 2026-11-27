@@ -270,6 +270,8 @@ export interface WorkbenchJobItem {
   lastRowLocalYMm?: Millimeters;
   /** Instancias compiladas en coordenadas locales [0..widthMm, 0..heightMm] */
   instances: WorkbenchPlacedInstance[];
+  /** Si true, conserva íntegramente los múltiples contornos/grabados importados (DXF/SVG/AI/LBRN2/RD/PNG) sin recompilar grilla rectangular */
+  preserveImportedGeometry?: boolean;
   locked: boolean;
   visible: boolean;
 }
