@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseAndAuditDxfR12 } from '../exporters/fileFormatValidator';
 import { INITIAL_MATERIALS_CATALOG } from '../materials/materialsCatalog';
 import { computeNestingLayout } from '../nesting/nestingEngine';
 import { createInitialOrdersCatalog } from '../projects/projectManager';
@@ -6,6 +7,11 @@ import {
   exportWorkbenchToLbrn2,
   exportWorkbenchToSvg,
 } from '../workbench/lbrn2Exporter';
+import {
+  exportWorkbenchToAi,
+  exportWorkbenchToDxf,
+  extractClosedContoursFromRasterMask,
+} from '../workbench/workbenchVectorExporters';
 import {
   applyLibraryEntryToWorkbenchLayers,
   compileMaterialTestToRuidaRd,
@@ -1235,7 +1241,8 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(findSubseq([0xca, 0x01, 0x05, 0xca, 0x01, 0x02, 0xca, 0x02, 0x00])).toBeGreaterThan(-1);
     expect(findSubseq([0xe7, 0x11])).toBe(-1);
     expect(findSubseq([0xe7, 0x12])).toBe(-1);
-    expect(findSubseq([0xea, 0x00])).toBe(-1);
+    expect(findSubseq([0xea, 0x00])).toBeGreaterThan(-1);
+    expect(findSubseq([0xeb])).toBeGreaterThan(findSubseq([0xea, 0x00]));
 
     // Miniaturas hardware RDC8445S (`E7 11` 144x144 -> 3x1010B, `E7 12` 300x300 -> 15x862B)
     const thumbs = buildRuidaThumbnailsCommands({
@@ -1417,7 +1424,23 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(c00Idx).toBeGreaterThan(-1);
     expect(c01Idx).toBeGreaterThan(c00Idx);
     expect(c02Idx).toBeGreaterThan(c01Idx);
-    expect(findSub([0xca, 0x03, 0x00], c01Idx)).toBeGreaterThan(c01Idx);
+    // Tube 1 activo explícitamente (CA 03 01) y retardos C6 12/13 tanto en grabado como en corte
+    expect(findSub([0xca, 0x03, 0x01], c00Idx)).toBeGreaterThan(c00Idx);
+    expect(findSub([0xca, 0x03, 0x01], c01Idx)).toBeGreaterThan(c01Idx);
+    expect(findSub([0xca, 0x03, 0x01], c02Idx)).toBeGreaterThan(c02Idx);
+    expect(findSub([0xc6, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00], c01Idx)).toBeGreaterThan(c01Idx);
+    expect(findSub([0xc6, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00], c01Idx)).toBeGreaterThan(c01Idx);
+    // Layer bank RDC8445S completo: E7 52/53/61/62 + CA 06 colores + CA 22 maxLayer + EA 00 .. EB sin thumbnails E7 11/12
+    expect(findSub([0xe7, 0x52, 0x01])).toBeGreaterThan(-1);
+    expect(findSub([0xe7, 0x53, 0x02])).toBeGreaterThan(-1);
+    expect(findSub([0xca, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])).toBeGreaterThan(-1);
+    expect(findSub([0xca, 0x06, 0x01, 0x00, 0x07, 0x7c, 0x00, 0x00])).toBeGreaterThan(-1);
+    expect(findSub([0xca, 0x06, 0x02, 0x00, 0x00, 0x00, 0x01, 0x7f])).toBeGreaterThan(-1);
+    expect(findSub([0xca, 0x22, 0x02])).toBeGreaterThan(-1);
+    expect(findSub([0xea, 0x00])).toBeGreaterThan(-1);
+    expect(findSub([0xea, 0x00])).toBeLessThan(c00Idx);
+    expect(findSub([0xe7, 0x11])).toBe(-1);
+    expect(findSub([0xeb], c02Idx)).toBeGreaterThan(c02Idx);
 
     // Extraer coordenadas Y de los cortes en C00 (0xA8 o 0xAA): en Y0 deben ocurrir 3 cortes seguidos y luego 3 en Y1
     let curX = 0;
@@ -1448,5 +1471,128 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(cutYs[3]).toBe(cutYs[4]);
     expect(cutYs[4]).toBe(cutYs[5]);
     expect(cutYs[3]).not.toBe(cutYs[0]);
+  });
+
+  it('exporta plancha Vank 9060 en DXF R12 (1:1 mm) y Adobe Illustrator (.AI) con 3 capas precisas y vectorización automática de logos ráster', () => {
+    const orders = createInitialOrdersCatalog();
+    const cfg = createDefaultWorkbenchConfig(600, 400);
+    const baseDesign = orders[0].labelDesign;
+    const fakePng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const rasterDesign = {
+      ...baseDesign,
+      holes: { ...baseDesign.holes, preset: 'two_horizontal' as const },
+      elements: [
+        {
+          id: 'logo-vec-export',
+          type: 'logo_raster' as const,
+          name: 'Logo Export',
+          visible: true,
+          locked: false,
+          xMm: 10,
+          yMm: 5,
+          widthMm: 12,
+          heightMm: 6,
+          aspectRatio: 2,
+          lockAspectRatio: true,
+          rotationDeg: 0,
+          mirrored: false,
+          operationLayer: 'ENGRAVE' as const,
+          originalDataUrl: fakePng,
+          processedDataUrl: fakePng,
+          pixelWidth: 100,
+          pixelHeight: 50,
+          processing: {
+            mode: 'raster' as const,
+            threshold: 175,
+            ditherStrength: 0.5,
+            invert: false,
+            contrast: 1.1,
+            brightness: 0,
+            gamma: 1,
+            removeLightBackground: true,
+            removeBackground: true,
+            turdSize: 2,
+            backgroundTolerance: 24,
+            preserveLogoDetail: true,
+          },
+          vectorizedPathsNormalized: [],
+          effectiveDpi: 254,
+        },
+      ],
+    };
+    const job = createWorkbenchJobFromOrder({
+      design: rasterDesign,
+      nesting: computeNestingLayout(rasterDesign, {
+        ...orders[0].nestingConfig,
+        sheetWidthMm: cfg.sheetWidthMm,
+        sheetHeightMm: cfg.sheetHeightMm,
+      }),
+      mode: 'custom_grid',
+      customColumns: 3,
+      customRows: 1,
+      projectName: 'Etiquetas Precision',
+      clientName: 'Cliente',
+      orderId: 'ord-vec-exp',
+      existingJobs: [],
+      config: cfg,
+    });
+
+    // Máscara de logo ráster con hueco interior (anillo) para verificar contornos cerrados
+    const holeRingMask: RasterScanlineMask = {
+      cols: 10,
+      rows: 10,
+      rowRuns: [
+        [[0.0, 1.0]],
+        [[0.0, 1.0]],
+        [[0.0, 0.3], [0.7, 1.0]],
+        [[0.0, 0.3], [0.7, 1.0]],
+        [[0.0, 0.3], [0.7, 1.0]],
+        [[0.0, 0.3], [0.7, 1.0]],
+        [[0.0, 0.3], [0.7, 1.0]],
+        [[0.0, 0.3], [0.7, 1.0]],
+        [[0.0, 1.0]],
+        [[0.0, 1.0]],
+      ],
+    };
+    const tracedLoops = extractClosedContoursFromRasterMask(holeRingMask, 10, 20, 30, 40);
+    expect(tracedLoops.length).toBeGreaterThanOrEqual(2); // contorno exterior + hueco interior
+
+    const rasterMasks = new Map<string, RasterScanlineMask>();
+    for (const eng of job.instances[0]?.engraveItems || []) {
+      if (eng.kind === 'raster_image' && eng.dataUrl) {
+        const key = buildRasterMaskCacheKey({
+          dataUrl: eng.dataUrl,
+          bboxWidthMm: Math.max(0.5, eng.boundingBox.width || eng.widthMm || 10),
+          bboxHeightMm: Math.max(0.5, eng.boundingBox.height || eng.heightMm || 10),
+          rotationDeg: eng.rotationDeg ?? 0,
+          mirrored: !!eng.mirrored,
+          lineIntervalMm: Math.max(0.03, cfg.layers[0].lineIntervalMm || 0.08),
+          ditherMode: cfg.layers[0].imageDitherMode ?? 'threshold',
+        });
+        rasterMasks.set(key, holeRingMask);
+      }
+    }
+
+    const dxfArt = exportWorkbenchToDxf([job], cfg, rasterMasks, 'Etiquetas Precision');
+    expect(dxfArt.pieceCount).toBe(3);
+    expect(dxfArt.cutContourCount).toBe(3);
+    expect(dxfArt.engravePolylineCount).toBeGreaterThan(0);
+    const dxfAudit = parseAndAuditDxfR12(dxfArt.dxfContent);
+    expect(dxfAudit.isValid).toBe(true);
+    expect(dxfArt.dxfContent).toContain('$INSUNITS\n70\n4');
+    expect(dxfArt.dxfContent).toContain('GRABADO');
+    expect(dxfArt.dxfContent).toContain('AGUJEROS');
+    expect(dxfArt.dxfContent).toContain('CORTE');
+
+    const aiArt = exportWorkbenchToAi([job], cfg, rasterMasks, 'Etiquetas Precision');
+    expect(aiArt.pieceCount).toBe(3);
+    expect(aiArt.cutContourCount).toBe(3);
+    expect(aiArt.engraveContourCount).toBeGreaterThan(0);
+    expect(aiArt.aiContent).toContain('%!PS-Adobe-3.0');
+    expect(aiArt.aiContent).toContain('%%HiResBoundingBox: 0.0000 0.0000');
+    expect(aiArt.aiContent).toContain('%LayerName: GRABADO');
+    expect(aiArt.aiContent).toContain('%LayerName: AGUJEROS');
+    expect(aiArt.aiContent).toContain('%LayerName: CORTE');
+    expect(aiArt.filenameSuggested.endsWith('.ai')).toBe(true);
   });
 });

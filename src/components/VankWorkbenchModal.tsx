@@ -60,6 +60,10 @@ import {
   exportWorkbenchToSvg,
 } from '../core/workbench/lbrn2Exporter';
 import {
+  exportWorkbenchToAi,
+  exportWorkbenchToDxf,
+} from '../core/workbench/workbenchVectorExporters';
+import {
   applyLibraryEntryToWorkbenchLayers,
   compileMaterialTestToRuidaRd,
   DEFAULT_CUT_TEST_CONFIG,
@@ -1306,6 +1310,56 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
           content: svgArt.svgContent,
         },
       ]);
+    } catch (err) {
+      setRuidaStatusMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const handleExportWorkbenchVector = async (format: 'dxf' | 'ai') => {
+    setRuidaStatusMsg(null);
+    try {
+      const rasterMasks = await prepareWorkbenchRasterMasks(
+        workbenchJobs,
+        workbenchConfig
+      );
+      if (format === 'dxf') {
+        const dxfArt = exportWorkbenchToDxf(
+          workbenchJobs,
+          workbenchConfig,
+          rasterMasks,
+          projectName
+        );
+        onRequestSaveFiles([
+          {
+            name: dxfArt.filenameSuggested,
+            content: dxfArt.dxfContent,
+          },
+        ]);
+        setRuidaStatusMsg({
+          type: 'success',
+          text: `DXF 1:1 mm exportado: "${dxfArt.filenameSuggested}" (${dxfArt.engravePolylineCount} grabados, ${dxfArt.holeContourCount} orificios, ${dxfArt.cutContourCount} cortes).`,
+        });
+      } else {
+        const aiArt = exportWorkbenchToAi(
+          workbenchJobs,
+          workbenchConfig,
+          rasterMasks,
+          projectName
+        );
+        onRequestSaveFiles([
+          {
+            name: aiArt.filenameSuggested,
+            content: aiArt.aiContent,
+          },
+        ]);
+        setRuidaStatusMsg({
+          type: 'success',
+          text: `Archivo Adobe Illustrator (.AI) 1:1 mm exportado: "${aiArt.filenameSuggested}" (${aiArt.engraveContourCount} grabados, ${aiArt.holeContourCount} orificios, ${aiArt.cutContourCount} cortes).`,
+        });
+      }
     } catch (err) {
       setRuidaStatusMsg({
         type: 'error',
@@ -4355,6 +4409,30 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       <span>Exportar Tirada (.SVG)</span>
                     </button>
                   </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      disabled={!validation.isValidForExport}
+                      onClick={() => void handleExportWorkbenchVector('dxf')}
+                      title="Exportar plancha 1:1 en milímetros (R12 AC1009, 0.0001 mm) con capas C00 Grabado, C01 Orificios y C02 Corte"
+                      className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 border border-amber-700/50 text-amber-200 font-bold text-[11px] flex items-center justify-center gap-1.5 transition"
+                    >
+                      <FileCode2 className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Guardar DXF (1:1 mm)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!validation.isValidForExport}
+                      onClick={() => void handleExportWorkbenchVector('ai')}
+                      title="Exportar plancha Adobe Illustrator (.AI) 1:1 en milímetros multi-capa de alta precisión"
+                      className="py-1.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 border border-orange-700/50 text-orange-200 font-bold text-[11px] flex items-center justify-center gap-1.5 transition"
+                    >
+                      <FileCode2 className="w-3.5 h-3.5 text-orange-400" />
+                      <span>Guardar .AI (Illustrator)</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -4632,6 +4710,36 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 >
                   <Download className="w-3.5 h-3.5 shrink-0" />
                   <span>Guardar .RD</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!validation.isValidForExport}
+                  onClick={() => void handleExportWorkbenchVector('dxf')}
+                  title="Exportar plancha DXF R12 1:1 mm con alta precisión"
+                  className="py-2 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-amber-700/60 text-amber-200 font-bold text-[11px] flex items-center justify-center gap-1"
+                >
+                  <FileCode2 className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                  <span>Guardar DXF</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!validation.isValidForExport}
+                  onClick={() => void handleExportWorkbenchVector('ai')}
+                  title="Exportar plancha Adobe Illustrator .AI 1:1 mm multi-capa"
+                  className="py-2 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-orange-700/60 text-orange-200 font-bold text-[11px] flex items-center justify-center gap-1"
+                >
+                  <FileCode2 className="w-3.5 h-3.5 shrink-0 text-orange-400" />
+                  <span>Guardar .AI</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!validation.isValidForExport}
+                  onClick={handleExportWorkbenchSvg}
+                  title="Exportar tirada completa SVG 1:1 mm"
+                  className="py-2 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-cyan-200 font-bold text-[11px] flex items-center justify-center gap-1"
+                >
+                  <FileCode2 className="w-3.5 h-3.5 shrink-0 text-cyan-400" />
+                  <span>Guardar .SVG</span>
                 </button>
               </div>
             </div>

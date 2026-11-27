@@ -234,6 +234,24 @@ export function encodeRuidaUnsigned35(value: number): number[] {
 }
 
 /**
+ * Empaqueta un color RGB (#RRGGBB) en los 4 bytes de 7 bits usados por `CA 06 <layer> 00 <4B>` en Ruida RDC8445S
+ * (idéntico al empaquetado QColor::rgb() de LightBurn `OutputCutBankInfo`).
+ */
+export function encodeRuidaLayerColor4Bytes(hexColor?: string): number[] {
+  const clean = (hexColor || '#000000').trim().replace(/^#/, '');
+  const parsed = /^[0-9a-fA-F]{6}$/.test(clean) ? parseInt(clean, 16) : 0;
+  const rgb = (0xff000000 | parsed) >>> 0;
+  const w25 = ((rgb & 0xffffff00) | ((rgb >>> 16) & 0xff)) >>> 0;
+  const w26 = ((rgb & 0xff00) | ((rgb << 16) >>> 0)) >>> 0;
+  return [
+    (rgb >>> 5) & 0x07,
+    (w26 >>> 14) & 0x7f,
+    (w25 >>> 7) & 0x7f,
+    (rgb >>> 16) & 0x7f,
+  ];
+}
+
+/**
  * Emite las etiquetas de envolvente Ruida estándar (`E7 06`, `E7 38`, `E7 03`/`E7 07`, `E7 50`/`E7 51`, `E7 04`, `E7 05`)
  * idénticas a LightBurn `OutputRDBoundsInfo` para `FRAME` y verificación de límites sin Boundary Error.
  */
@@ -396,6 +414,49 @@ export function compileWorkbenchToRuidaRd(
     .filter((l) => l.outputEnabled)
     .sort((a, b) => a.priority - b.priority);
 
+  // Calcular bounding box individual en coordenadas Ruida (mm) para cada capa con geometría real
+  type RuidaBox = { minX: number; minY: number; maxX: number; maxY: number };
+  const layerBoundsMap = new Map<number, RuidaBox>();
+  const extendLayerBound = (cutIndex: number, bedX: number, bedY: number) => {
+    const rx = toRuidaX(bedX);
+    const ry = toRuidaY(bedY);
+    const prev = layerBoundsMap.get(cutIndex);
+    if (!prev) {
+      layerBoundsMap.set(cutIndex, { minX: rx, minY: ry, maxX: rx, maxY: ry });
+    } else {
+      prev.minX = Math.min(prev.minX, rx);
+      prev.maxX = Math.max(prev.maxX, rx);
+      prev.minY = Math.min(prev.minY, ry);
+      prev.maxY = Math.max(prev.maxY, ry);
+    }
+  };
+
+  for (const job of visibleJobs) {
+    for (const inst of job.instances) {
+      for (const layer of sortedLayers) {
+        if (layer.role === 'ENGRAVE') {
+          for (const eng of inst.engraveItems) {
+            const bb = eng.boundingBox;
+            extendLayerBound(layer.cutIndex, job.xMm + bb.minX, job.yMm + bb.minY);
+            extendLayerBound(layer.cutIndex, job.xMm + bb.maxX, job.yMm + bb.maxY);
+          }
+        } else if (layer.role === 'HOLES') {
+          for (const hole of inst.holeContours) {
+            for (const pt of hole.points) {
+              extendLayerBound(layer.cutIndex, job.xMm + pt.x, job.yMm + pt.y);
+            }
+          }
+        } else if (layer.role === 'CUT' && inst.cutContour) {
+          for (const pt of inst.cutContour.points) {
+            extendLayerBound(layer.cutIndex, job.xMm + pt.x, job.yMm + pt.y);
+          }
+        }
+      }
+    }
+  }
+
+  const bankLayersToEmit = sortedLayers;
+
   const raw: number[] = [];
   let commandCount = 0;
 
@@ -418,17 +479,13 @@ export function compileWorkbenchToRuidaRd(
     emit(cmd);
   }
 
-  // Asistencia de aire (Soplador general si alguna capa lo requiere)
-  const anyAirAssist = sortedLayers.some((l) => l.airAssist);
-  emit([0xca, 0x01, anyAirAssist ? 0x13 : 0x12]);
-
   const getLayerWorkModeByte = (layer: WorkbenchLayerConfig): number => {
     if (layer.mode === 'line') return 0x00;
     return layer.bidirectional === false ? 0x01 : 0x02;
   };
 
-  // 2. Cabeceras de parámetros por capa activa (`OutputCutBankInfo` compatible RDC8445S hwType 0x13, 1 tubo)
-  for (const layer of sortedLayers) {
+  // 2. Cabeceras de parámetros por capa activa (`OutputCutBankInfo` completo RDC8445S hwType 0x13, 1 tubo)
+  for (const layer of bankLayersToEmit) {
     const lIdx = layer.cutIndex & 0x7f;
     const speed = layer.speedMmPerSec!;
     const maxP = layer.maxPowerPercent!;
@@ -437,15 +494,75 @@ export function compileWorkbenchToRuidaRd(
         ? Math.min(maxP, layer.minPowerPercent)
         : maxP;
     const workMode = getLayerWorkModeByte(layer);
+    const lBox = layerBoundsMap.get(layer.cutIndex) ?? emittedBounds;
+    const minCoord = [
+      ...encodeRuidaAbsCoordMm(lBox.minX),
+      ...encodeRuidaAbsCoordMm(lBox.minY),
+    ];
+    const maxCoord = [
+      ...encodeRuidaAbsCoordMm(lBox.maxX),
+      ...encodeRuidaAbsCoordMm(lBox.maxY),
+    ];
 
+    // E7 52/53/61/62: Bounding box por capa (pantalla HMI Vank 9060 y validación de rango por capa)
+    emit([0xe7, 0x52, lIdx, ...minCoord]);
+    emit([0xe7, 0x53, lIdx, ...maxCoord]);
+    emit([0xe7, 0x61, lIdx, ...minCoord]);
+    emit([0xe7, 0x62, lIdx, ...maxCoord]);
     // C9 04 <layer> <speed 5B>: Layer Speed
     emit([0xc9, 0x04, lIdx, ...encodeRuidaSpeedMmPerSec(speed)]);
     // C6 31/32 <layer> <power 2B>: Tube 1 Min/Max Power
     emit([0xc6, 0x31, lIdx, ...encodeRuidaPowerPercent(minP)]);
     emit([0xc6, 0x32, lIdx, ...encodeRuidaPowerPercent(maxP)]);
-    // CA 41 <layer> <mode>: 0=Cut/Line, 1=Unidir Scan, 2=Bidir Scan (válido en RDC8445S hwType 0x13)
+    // CA 06 <layer> 00 <4B color>: Color e índice de capa visible en la pantalla Ruida
+    emit([0xca, 0x06, lIdx, 0x00, ...encodeRuidaLayerColor4Bytes(layer.hexColor)]);
+    // CA 41 <layer> <mode>: 0=Cut/Line, 1=Unidir Scan, 2=Bidir Scan
     emit([0xca, 0x41, lIdx, workMode]);
   }
+
+  // 2b. Bloque de apertura de trayectorias (`OutputShapeCuts` verificado LightBurn RDC8445S hwType 0x13 — sin thumbnails E7 11/12)
+  const maxLayerIdx = bankLayersToEmit.reduce(
+    (mx, l) => Math.max(mx, l.cutIndex & 0x7f),
+    0
+  );
+  const zero5 = [0, 0, 0, 0, 0];
+  const gMinCoord = [
+    ...encodeRuidaAbsCoordMm(emittedBounds.minX),
+    ...encodeRuidaAbsCoordMm(emittedBounds.minY),
+  ];
+  const gMaxCoord = [
+    ...encodeRuidaAbsCoordMm(emittedBounds.maxX),
+    ...encodeRuidaAbsCoordMm(emittedBounds.maxY),
+  ];
+  const spanCoord = [
+    ...encodeRuidaAbsCoordMm(roundMm(emittedBounds.maxX - emittedBounds.minX, 3)),
+    ...encodeRuidaAbsCoordMm(roundMm(emittedBounds.maxY - emittedBounds.minY, 3)),
+  ];
+
+  emit([0xca, 0x22, maxLayerIdx]);
+  emit([0xe7, 0x54, 0x00, ...zero5]);
+  emit([0xe7, 0x54, 0x01, ...zero5]);
+  emit([0xe7, 0x55, 0x00, ...zero5]);
+  emit([0xe7, 0x55, 0x01, ...zero5]);
+  emit([0xf1, 0x03, ...zero5, ...zero5]);
+  emit([0xf1, 0x00, 0x00]);
+  emit([0xf1, 0x01, 0x00]);
+  emit([0xf2, 0x00, 0x00]);
+  emit([0xf2, 0x01, 0x00]);
+  emit([0xf2, 0x02, ...encodeRuidaUnsigned35(0x554e4e41), ...encodeRuidaUnsigned35(0x4d454420)]);
+  emit([0xf2, 0x03, ...gMinCoord]);
+  emit([0xf2, 0x04, ...gMaxCoord]);
+  emit([0xf2, 0x05, 0x00, 0x01, 0x00, 0x01, ...spanCoord]);
+  emit([0xf2, 0x06, ...zero5, ...zero5]);
+  emit([0xf2, 0x07, 0x00]);
+  emit([0xea, 0x00]);
+  emit([0xe7, 0x60, 0x00]);
+  emit([0xe7, 0x13, ...gMinCoord]);
+  emit([0xe7, 0x17, ...gMaxCoord]);
+  emit([0xe7, 0x23, ...gMinCoord]);
+  emit([0xe7, 0x24, 0x00]);
+  emit([0xe7, 0x37, ...gMaxCoord]);
+  emit([0xe7, 0x08, 0x00, 0x01, 0x00, 0x01, ...spanCoord]);
 
   // 3. Emisión de trayectorias por orden de prioridad de capa (`EmitInlineCutSetting` compatible RDC8445S hwType 0x13)
   const emitLayerPreamble = (layer: WorkbenchLayerConfig) => {
@@ -459,10 +576,10 @@ export function compileWorkbenchToRuidaRd(
     const workMode = getLayerWorkModeByte(layer);
 
     if (workMode !== 0x00) {
-      // CA 01 05: Habilitar modo escaneo ráster (`EmitInlineCutSetting`)
+      // CA 01 05: Habilitar modo escaneo ráster únicamente para capas Scan (`EmitInlineCutSetting`)
       emit([0xca, 0x01, 0x05]);
     }
-    // CA 01 <mode>: 0x00 Corte, 0x01 Scan Unidir, 0x02 Scan Bidir
+    // CA 01 <mode>: 0x00 Corte/Vector, 0x01 Scan Unidir, 0x02 Scan Bidir
     emit([0xca, 0x01, workMode]);
     // CA 02 <layer>: Select active layer
     emit([0xca, 0x02, lIdx]);
@@ -475,8 +592,11 @@ export function compileWorkbenchToRuidaRd(
     // C6 01/02: Tube 1 Active Min/Max power
     emit([0xc6, 0x01, ...encodeRuidaPowerPercent(minP)]);
     emit([0xc6, 0x02, ...encodeRuidaPowerPercent(maxP)]);
-    // CA 03 00: Fin de bloque de parámetros de capa
-    emit([0xca, 0x03, 0x00]);
+    // C6 12/13: Laser-On / Laser-Off Delay = 0 (evita retardos residuales entre Scan y Cut)
+    emit([0xc6, 0x12, ...zero5]);
+    emit([0xc6, 0x13, ...zero5]);
+    // CA 03 01: Bitmask de tubos activos = 0x01 (Tubo 1 habilitado; 0x00 dejaba el tubo apagado en transiciones)
+    emit([0xca, 0x03, 0x01]);
   };
 
   let curUmX = 0;
@@ -832,8 +952,9 @@ export function compileWorkbenchToRuidaRd(
 
   const activeLayersCount = emittedLayerCutIndices.size;
 
-  // Retornar cabezal al origen del trabajo y cerrar trama Ruida (`E7 00`, `DA 01 06 20`, `E5 05`, `D7`)
+  // Retornar cabezal al origen del trabajo, cerrar bloque EA 00 -> EB y cerrar trama Ruida (`E7 00`, `DA 01 06 20`, `E5 05`, `D7`)
   emitMoveAbs(origin.x, origin.y);
+  emit([0xeb]);
   appendRuidaProgramFooter(raw, emit, 0);
 
   const rawUnscrambledBytes = new Uint8Array(raw);
