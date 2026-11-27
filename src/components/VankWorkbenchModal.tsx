@@ -15,6 +15,7 @@ import {
   ExternalLink,
   FileCode2,
   FlaskConical,
+  FolderOpen,
   Grid,
   Layers,
   Minimize2,
@@ -64,6 +65,11 @@ import {
   exportWorkbenchToLbrn2,
   exportWorkbenchToSvg,
 } from '../core/workbench/lbrn2Exporter';
+import {
+  detectExternalLaserFormat,
+  importExternalLaserFile,
+  mergeImportedLayerUpdates,
+} from '../core/workbench/externalLaserFileImporter';
 import {
   exportWorkbenchToAi,
   exportWorkbenchToDxf,
@@ -309,6 +315,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
   const hardwareSyncedKeyRef = useRef<string>('');
 
   const multiLogoInputRef = useRef<HTMLInputElement | null>(null);
+  const externalLaserInputRef = useRef<HTMLInputElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const draggingJobRef = useRef<{
     jobId: string;
@@ -753,7 +760,74 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     );
   };
 
-  // Subir múltiples archivos de logo (PNG, JPG, SVG) a la vez para combinarlos en la misma tirada
+  // Importar archivos externos de grabado y corte (DXF, SVG, LBRN2, AI, RD) con medidas reales 1:1 en mm
+  const importExternalFilesToWorkbench = async (fileArray: File[]) => {
+    setIsUploadingLogos(true);
+    try {
+      let currentList = [...workbenchJobs];
+      let nextCfg = workbenchConfig;
+      let lastCreatedId: string | null = null;
+      const summaries: string[] = [];
+
+      for (const file of fileArray) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const res = await importExternalLaserFile({
+          fileName: file.name,
+          bytes,
+          config: nextCfg,
+        });
+        if (res.summary.hasAppliedLayerParams) {
+          nextCfg = mergeImportedLayerUpdates(nextCfg, res.layerUpdates);
+        }
+        for (const j of res.jobs) {
+          currentList.push(j);
+          lastCreatedId = j.id;
+        }
+        summaries.push(
+          `${file.name} (${res.summary.widthMm}×${res.summary.heightMm} mm · ${res.summary.engravePathCount}G/${res.summary.holeContourCount}A/${res.summary.cutContourCount}C)`
+        );
+      }
+
+      if (nextCfg !== workbenchConfig) {
+        onUpdateConfig(nextCfg);
+      }
+      const useZeroWaste =
+        nextCfg.packingMode === 'continuous_zero_waste' ||
+        nextCfg.isRollMaterial ||
+        isEco;
+      const arranged = autoArrangeWorkbenchJobs(
+        currentList,
+        nextCfg,
+        nextCfg.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+        useZeroWaste
+      );
+      onUpdateJobs(arranged);
+      if (lastCreatedId) setSelectedJobId(lastCreatedId);
+      const msg = `📂 ${fileArray.length} archivo(s) externo(s) abierto(s): ${summaries.join(' | ')}`;
+      setRuidaStatusMsg({ type: 'success', text: msg });
+      onNotify(msg);
+    } catch (err) {
+      const msg = `Error al abrir archivo externo: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      setRuidaStatusMsg({ type: 'error', text: msg });
+      onNotify(msg);
+    } finally {
+      setIsUploadingLogos(false);
+    }
+  };
+
+  const handleExternalLaserFilesSelected = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const fileArray = Array.from(files);
+    e.target.value = '';
+    await importExternalFilesToWorkbench(fileArray);
+  };
+
+  // Subir múltiples archivos de logo (PNG, JPG, SVG) o archivos CAD/Láser a la tirada
   const handleMultiLogoFilesSelected = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -765,53 +839,91 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     setIsUploadingLogos(true);
     try {
       let currentList = [...workbenchJobs];
+      let nextCfg = workbenchConfig;
       let lastCreatedId: string | null = null;
       let addedCount = 0;
 
       for (const file of fileArray) {
         const cleanName = file.name.replace(/\.[^.]+$/, '');
+        const extFmt = detectExternalLaserFormat(file.name);
+        if (extFmt && extFmt !== 'svg') {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const imported = await importExternalLaserFile({
+            fileName: file.name,
+            bytes,
+            config: nextCfg,
+          });
+          if (imported.summary.hasAppliedLayerParams) {
+            nextCfg = mergeImportedLayerUpdates(nextCfg, imported.layerUpdates);
+          }
+          for (const j of imported.jobs) {
+            currentList.push(j);
+            lastCreatedId = j.id;
+            addedCount++;
+          }
+          continue;
+        }
+
         const isSvg =
           file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
 
         if (isSvg) {
           const svgText = await file.text();
-          const parsed = parseSvgLogoString(svgText);
-          const svgEl: SvgLogoElement = {
-            id: `wb-logo-svg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            name: cleanName,
-            type: 'logo_svg',
-            xMm: roundMm(design.widthMm / 2, 2),
-            yMm: roundMm(design.heightMm / 2, 2),
-            widthMm: roundMm(design.widthMm * 0.7, 2),
-            heightMm: roundMm((design.widthMm * 0.7) / Math.max(0.1, parsed.aspectRatio), 2),
-            aspectRatio: parsed.aspectRatio,
-            lockAspectRatio: true,
-            rotationDeg: 0,
-            locked: false,
-            visible: true,
-            rawSvgContent: svgText,
-            normalizedPaths: parsed.normalizedPaths,
-            originalViewBox: parsed.originalViewBox,
-            contentBoundsNormalized: parsed.contentBoundsNormalized,
-          };
+          let usedExternalSvgFallback = false;
+          try {
+            const parsed = parseSvgLogoString(svgText);
+            const svgEl: SvgLogoElement = {
+              id: `wb-logo-svg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              name: cleanName,
+              type: 'logo_svg',
+              xMm: roundMm(design.widthMm / 2, 2),
+              yMm: roundMm(design.heightMm / 2, 2),
+              widthMm: roundMm(design.widthMm * 0.7, 2),
+              heightMm: roundMm((design.widthMm * 0.7) / Math.max(0.1, parsed.aspectRatio), 2),
+              aspectRatio: parsed.aspectRatio,
+              lockAspectRatio: true,
+              rotationDeg: 0,
+              locked: false,
+              visible: true,
+              rawSvgContent: svgText,
+              normalizedPaths: parsed.normalizedPaths,
+              originalViewBox: parsed.originalViewBox,
+              contentBoundsNormalized: parsed.contentBoundsNormalized,
+            };
 
-          const newJob = createWorkbenchJobFromUploadedLogo({
-            logoName: cleanName,
-            clientName: cleanName,
-            element: svgEl,
-            widthMm: design.widthMm,
-            heightMm: design.heightMm,
-            shape: design.shape,
-            holePreset: design.holes.preset,
-            quantity: Math.min(200, Math.max(10, nesting.config.requestedQuantity || 50)),
-            gapXMm: nesting.config.gapXMm,
-            gapYMm: nesting.config.gapYMm,
-            existingJobs: currentList,
-            config: workbenchConfig,
-          });
-          currentList.push(newJob);
-          lastCreatedId = newJob.id;
-          addedCount++;
+            const newJob = createWorkbenchJobFromUploadedLogo({
+              logoName: cleanName,
+              clientName: cleanName,
+              element: svgEl,
+              widthMm: design.widthMm,
+              heightMm: design.heightMm,
+              shape: design.shape,
+              holePreset: design.holes.preset,
+              quantity: Math.min(200, Math.max(10, nesting.config.requestedQuantity || 50)),
+              gapXMm: nesting.config.gapXMm,
+              gapYMm: nesting.config.gapYMm,
+              existingJobs: currentList,
+              config: nextCfg,
+            });
+            currentList.push(newJob);
+            lastCreatedId = newJob.id;
+            addedCount++;
+          } catch {
+            usedExternalSvgFallback = true;
+          }
+
+          if (usedExternalSvgFallback) {
+            const imported = await importExternalLaserFile({
+              fileName: file.name,
+              bytes: new Uint8Array(await file.arrayBuffer()),
+              config: nextCfg,
+            });
+            for (const j of imported.jobs) {
+              currentList.push(j);
+              lastCreatedId = j.id;
+              addedCount++;
+            }
+          }
         } else {
           const dataUrl = await readFileAsDataUrl(file);
           const rasterEl = await processImageDataUrlInBrowser({
@@ -843,15 +955,18 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         }
       }
 
+      if (nextCfg !== workbenchConfig) {
+        onUpdateConfig(nextCfg);
+      }
       // Acomodar todos los trabajos automáticamente aprovechando al máximo el ancho útil
       const useZeroWaste =
-        workbenchConfig.packingMode === 'continuous_zero_waste' ||
-        workbenchConfig.isRollMaterial ||
+        nextCfg.packingMode === 'continuous_zero_waste' ||
+        nextCfg.isRollMaterial ||
         isEco;
       const arranged = autoArrangeWorkbenchJobs(
         currentList,
-        workbenchConfig,
-        workbenchConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+        nextCfg,
+        nextCfg.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
         useZeroWaste
       );
       onUpdateJobs(arranged);
@@ -1908,14 +2023,39 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Mesa de Trabajo Vank 9060 estilo LightBurn"
+      onDragOver={(e) => {
+        if (e.dataTransfer?.types?.includes('Files')) {
+          e.preventDefault();
+        }
+      }}
+      onDrop={(e) => {
+        if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+          e.preventDefault();
+          const dropped = Array.from(e.dataTransfer.files);
+          const laserFiles = dropped.filter((f) => detectExternalLaserFormat(f.name) !== null);
+          if (laserFiles.length > 0) {
+            void importExternalFilesToWorkbench(laserFiles);
+          }
+        }
+      }}
       className="fixed inset-0 z-50 bg-[#070a0e]/95 backdrop-blur-sm flex flex-col text-slate-100 select-none"
     >
-      {/* Input oculto para subir múltiples logos a la vez */}
+      {/* Input oculto para abrir archivos externos completos de grabado y corte (DXF, SVG, LBRN2, AI, RD) */}
+      <input
+        ref={externalLaserInputRef}
+        type="file"
+        multiple
+        accept=".dxf,.svg,.lbrn2,.lbrn,.ai,.rd"
+        aria-label="Abrir archivo externo de grabado y corte"
+        onChange={handleExternalLaserFilesSelected}
+        className="hidden"
+      />
+      {/* Input oculto para subir múltiples logos o trazados a la vez */}
       <input
         ref={multiLogoInputRef}
         type="file"
         multiple
-        accept=".png,.jpg,.jpeg,.svg"
+        accept=".png,.jpg,.jpeg,.webp,.svg,.dxf,.lbrn2,.lbrn,.ai,.rd"
         aria-label="Subir varios logos a la tirada"
         onChange={handleMultiLogoFilesSelected}
         className="hidden"
@@ -1939,6 +2079,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
         {/* Acciones principales despejadas */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={isUploadingLogos}
+            onClick={() => externalLaserInputRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600/90 hover:bg-cyan-500 text-white text-xs font-bold transition-colors whitespace-nowrap"
+            title="Abrir archivo externo de grabado y corte (DXF, SVG, LightBurn .lbrn2, Illustrator .ai o Ruida .rd) en medidas 1:1 mm"
+          >
+            <FolderOpen className="w-3.5 h-3.5 shrink-0" />
+            <span>Abrir Archivo</span>
+          </button>
+
           <button
             type="button"
             disabled={isUploadingLogos}

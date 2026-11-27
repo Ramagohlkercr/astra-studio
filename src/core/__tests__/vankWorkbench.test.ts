@@ -61,6 +61,10 @@ import {
   mergeControllerMotionParams,
 } from '../workbench/motionTiming';
 import {
+  detectExternalLaserFormat,
+  importExternalLaserFile,
+} from '../workbench/externalLaserFileImporter';
+import {
   armJobTimerWatch,
   computeLiveTimerSnapshot,
   createInitialJobTimerState,
@@ -1784,5 +1788,133 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     const simSlow = simulateWorkbenchToolpath([job], cfgSlow, hwCal);
     expect(simFast.totalDurationSec).toBeGreaterThan(0);
     expect(simSlow.engraveDurationSec).toBeGreaterThan(simFast.engraveDurationSec * 3);
+  });
+
+  it('25. Importador universal de archivos externos (DXF, SVG c/ transform, LightBurn LBRN2, Illustrator AI y Ruida RD)', async () => {
+    const cfg = createDefaultWorkbenchConfig(900, 600);
+    const enc = new TextEncoder();
+
+    // 1. DXF en mm con CORTE, AGUJEROS y GRABADO
+    const dxfSample = [
+      '0', 'SECTION', '2', 'HEADER', '9', '$INSUNITS', '70', '4', '0', 'ENDSEC',
+      '0', 'SECTION', '2', 'ENTITIES',
+      // Contorno exterior 50 x 25 mm en capa CORTE
+      '0', 'LWPOLYLINE', '8', 'CORTE', '62', '1', '70', '1',
+      '10', '0', '20', '0', '10', '50', '20', '0', '10', '50', '20', '25', '10', '0', '20', '25',
+      // Agujero circular diámetro 4 mm en capa AGUJEROS
+      '0', 'CIRCLE', '8', 'AGUJEROS', '62', '5', '10', '5', '20', '12.5', '40', '2',
+      // Grabado interior 30 x 10 mm en capa GRABADO
+      '0', 'LWPOLYLINE', '8', 'GRABADO', '62', '7', '70', '1',
+      '10', '10', '20', '7.5', '10', '40', '20', '7.5', '10', '40', '20', '17.5', '10', '10', '20', '17.5',
+      '0', 'ENDSEC', '0', 'EOF',
+    ].join('\n');
+
+    expect(detectExternalLaserFormat('Etiqueta.DXF')).toBe('dxf');
+    const dxfRes = await importExternalLaserFile({
+      fileName: 'Etiqueta.dxf',
+      bytes: enc.encode(dxfSample),
+      config: cfg,
+    });
+    expect(dxfRes.summary.format).toBe('dxf');
+    expect(dxfRes.summary.widthMm).toBeCloseTo(50, 1);
+    expect(dxfRes.summary.heightMm).toBeCloseTo(25, 1);
+    expect(dxfRes.summary.cutContourCount).toBe(1);
+    expect(dxfRes.summary.holeContourCount).toBe(1);
+    expect(dxfRes.summary.engravePathCount).toBe(1);
+    expect(dxfRes.jobs[0].instances[0].cutContour.points.length).toBeGreaterThanOrEqual(4);
+    expect(dxfRes.jobs[0].instances[0].holeContours).toHaveLength(1);
+    expect(dxfRes.jobs[0].instances[0].engraveItems).toHaveLength(1);
+
+    // 2. SVG con <g transform="translate(...) scale(...)"> + unidades reales en mm
+    const svgSample = `<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="20mm" viewBox="0 0 40 20">
+      <g transform="translate(0,0)">
+        <rect x="0" y="0" width="40" height="20" fill="none" stroke="#FF0000" />
+        <g transform="scale(2)">
+          <circle cx="3" cy="5" r="1" fill="none" stroke="#0000FF" />
+        </g>
+        <path d="M 12 6 L 34 6 L 34 14 L 12 14 Z" fill="#000000" stroke="none" />
+      </g>
+    </svg>`;
+    const svgRes = await importExternalLaserFile({
+      fileName: 'LogoYPlaca.svg',
+      bytes: enc.encode(svgSample),
+      config: cfg,
+    });
+    expect(svgRes.summary.widthMm).toBeCloseTo(40, 1);
+    expect(svgRes.summary.heightMm).toBeCloseTo(20, 1);
+    expect(svgRes.summary.cutContourCount).toBe(1);
+    expect(svgRes.summary.holeContourCount).toBe(1);
+    expect(svgRes.summary.engravePathCount).toBe(1);
+    expect(svgRes.jobs[0].instances[0].holeContours[0].boundingBox.width).toBeCloseTo(4, 1);
+
+    // 3. LightBurn .lbrn2 con CutSetting reales + Shapes + XForm
+    const lbrnSample = `<?xml version="1.0" encoding="UTF-8"?>
+    <LightBurnProject AppVersion="1.4.00">
+      <CutSetting type="Scan">
+        <index Value="0"/><name Value="Grabado Ecocuero"/><speed Value="340"/><maxPower Value="24"/><minPower Value="12"/><interval Value="0.075"/><numPasses Value="1"/>
+      </CutSetting>
+      <CutSetting type="Cut">
+        <index Value="2"/><name Value="Corte Final"/><speed Value="19"/><maxPower Value="68"/><minPower Value="42"/><numPasses Value="1"/>
+      </CutSetting>
+      <Shape Type="Rect" CutIndex="2" w="60" h="30" cr="3"><XForm>1 0 0 1 30 15</XForm></Shape>
+      <Shape Type="Ellipse" CutIndex="1" Rx="1.75" Ry="1.75"><XForm>1 0 0 1 6 15</XForm></Shape>
+      <Shape Type="Path" CutIndex="0"><XForm>1 0 0 1 30 15</XForm><VertList>V -12 -5\nV 12 -5\nV 12 5\nV -12 5</VertList><PrimList>L0 1\nL1 2\nL2 3\nL3 0\nLineClosed</PrimList></Shape>
+    </LightBurnProject>`;
+    const lbrnRes = await importExternalLaserFile({
+      fileName: 'LlaveroLightBurn.lbrn2',
+      bytes: enc.encode(lbrnSample),
+      config: cfg,
+    });
+    expect(lbrnRes.summary.format).toBe('lbrn2');
+    expect(lbrnRes.summary.widthMm).toBeCloseTo(60, 1);
+    expect(lbrnRes.summary.heightMm).toBeCloseTo(30, 1);
+    expect(lbrnRes.summary.cutContourCount).toBe(1);
+    expect(lbrnRes.summary.holeContourCount).toBe(1);
+    expect(lbrnRes.summary.engravePathCount).toBe(1);
+    expect(lbrnRes.layerUpdates.ENGRAVE?.speedMmPerSec).toBe(340);
+    expect(lbrnRes.layerUpdates.ENGRAVE?.lineIntervalMm).toBe(0.075);
+    expect(lbrnRes.layerUpdates.CUT?.speedMmPerSec).toBe(19);
+    expect(lbrnRes.layerUpdates.CUT?.maxPowerPercent).toBe(68);
+
+    // 4. Adobe Illustrator (.ai) PostScript en puntos (72 pt = 25.4 mm)
+    const aiSample = `%!PS-Adobe-3.0
+%%BoundingBox: 0 0 144 72
+1 0 0 RG
+0 0 144 72 re S
+0 0 0 rg
+36 18 72 36 re f
+%%EOF`;
+    const aiRes = await importExternalLaserFile({
+      fileName: 'EtiquetaIllustrator.ai',
+      bytes: enc.encode(aiSample),
+      config: cfg,
+    });
+    expect(aiRes.summary.format).toBe('ai');
+    expect(aiRes.summary.widthMm).toBeCloseTo(50.8, 0);
+    expect(aiRes.summary.heightMm).toBeCloseTo(25.4, 0);
+    expect(aiRes.summary.cutContourCount).toBe(1);
+    expect(aiRes.summary.engravePathCount).toBe(1);
+
+    // 5. Round-trip Ruida binario (.rd): compilar trabajo Astra -> abrir archivo .rd en importador
+    const cfgWithLaser = {
+      ...cfg,
+      layers: cfg.layers.map((l) =>
+        l.role === 'ENGRAVE'
+          ? { ...l, speedMmPerSec: 320, maxPowerPercent: 25, minPowerPercent: 12 }
+          : l.role === 'HOLES'
+            ? { ...l, speedMmPerSec: 22, maxPowerPercent: 55, minPowerPercent: 35 }
+            : { ...l, speedMmPerSec: 18, maxPowerPercent: 68, minPowerPercent: 40 }
+      ),
+    };
+    const compiledRd = compileWorkbenchToRuidaRd(dxfRes.jobs, cfgWithLaser);
+    const rdRes = await importExternalLaserFile({
+      fileName: 'VANK01.rd',
+      bytes: compiledRd.rdBytes,
+      config: cfgWithLaser,
+    });
+    expect(rdRes.summary.format).toBe('rd');
+    expect(rdRes.summary.cutContourCount).toBeGreaterThanOrEqual(1);
+    expect(rdRes.summary.holeContourCount).toBeGreaterThanOrEqual(1);
+    expect(rdRes.summary.hasAppliedLayerParams).toBe(true);
   });
 });

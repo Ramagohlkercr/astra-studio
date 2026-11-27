@@ -366,7 +366,7 @@ export function exportWorkbenchToSvg(
         }
       }
 
-      if (includeCut && inst.cutContour) {
+      if (includeCut && inst.cutContour && inst.cutContour.points.length >= 2 && inst.cutContour.svgPathD) {
         cutNodes.push(
           `      <path d="${inst.cutContour.svgPathD}" fill="none" stroke="${LIGHTBURN_LAYERS.CUT.hexColor}" stroke-width="0.1" />`
         );

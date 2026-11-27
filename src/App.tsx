@@ -60,6 +60,11 @@ import {
   syncLayersWithMaterialProfile,
 } from './core/workbench/workbenchEngine';
 import {
+  detectExternalLaserFormat,
+  importExternalLaserFile,
+  mergeImportedLayerUpdates,
+} from './core/workbench/externalLaserFileImporter';
+import {
   createDefaultWorkbenchConfig,
   ECOCUERO_BED_PASS_HEIGHT_MM,
   ECOCUERO_ROLL_TOTAL_LENGTH_MM,
@@ -1724,16 +1729,63 @@ export function App() {
             )}
           </button>
 
-          <label className="px-2.5 py-1 text-xs bg-slate-800 border border-slate-700 rounded text-slate-200 cursor-pointer">
+          <label
+            className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-slate-200 cursor-pointer transition-colors"
+            title="Abrir proyecto (.lhstudio.json / .json) o archivo externo de grabado y corte (.dxf, .svg, .lbrn2, .ai, .rd)"
+          >
             Abrir archivo
-            <input type="file" aria-label="Abrir archivo de proyecto" accept=".json,.lhstudio.json" className="hidden"
-              onChange={async e => {
+            <input
+              type="file"
+              aria-label="Abrir archivo de proyecto"
+              accept=".json,.lhstudio.json,.dxf,.svg,.lbrn2,.lbrn,.ai,.rd"
+              className="hidden"
+              onChange={async (e) => {
                 const file = e.target.files?.[0];
-                if (!file) return;
-                try { openProject(deserializeOrderProjectFromJson(await file.text())); }
-                catch (err) { notify(`Error al abrir proyecto: ${(err as Error).message}`); }
                 e.target.value = '';
-              }} />
+                if (!file) return;
+                try {
+                  const extFormat = file.name ? detectExternalLaserFormat(file.name) : null;
+                  if (extFormat) {
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    const imported = await importExternalLaserFile({
+                      fileName: file.name,
+                      bytes,
+                      config: workbenchConfig,
+                    });
+                    const nextCfg = mergeImportedLayerUpdates(
+                      workbenchConfig,
+                      imported.layerUpdates
+                    );
+                    if (imported.summary.hasAppliedLayerParams) {
+                      setWorkbenchConfig(nextCfg);
+                    }
+                    const useZeroWaste =
+                      nextCfg.packingMode === 'continuous_zero_waste' ||
+                      nextCfg.isRollMaterial ||
+                      isEcocueroMaterial(activeMaterial);
+                    const arranged = autoArrangeWorkbenchJobs(
+                      [...workbenchJobs, ...imported.jobs],
+                      nextCfg,
+                      nextCfg.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+                      useZeroWaste
+                    );
+                    setWorkbenchJobs(arranged);
+                    setIsWorkbenchOpen(true);
+                    const warnTxt =
+                      imported.summary.warnings.length > 0
+                        ? ` (${imported.summary.warnings[0]})`
+                        : '';
+                    notify(
+                      `📂 "${file.name}" (${imported.summary.format.toUpperCase()} ${imported.summary.widthMm}×${imported.summary.heightMm} mm) abierto en Mesa Vank 9060: ${imported.summary.engravePathCount} grabados, ${imported.summary.holeContourCount} agujeros, ${imported.summary.cutContourCount} cortes.${warnTxt}`
+                    );
+                  } else {
+                    openProject(deserializeOrderProjectFromJson(await file.text()));
+                  }
+                } catch (err) {
+                  notify(`Error al abrir archivo: ${(err as Error).message}`);
+                }
+              }}
+            />
           </label>
           <button
             onClick={handleSaveOrderProject}
