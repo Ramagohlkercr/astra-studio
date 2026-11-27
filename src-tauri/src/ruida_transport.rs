@@ -13,9 +13,10 @@ const RUIDA_ACK_ALT: u8 = 0xC6;
 const RUIDA_NAK_CHECKSUM: u8 = 0xCF;
 const RUIDA_NAK_ALT: u8 = 0x46;
 const RUIDA_MAGIC: u8 = 0x88;
+const RUIDA_MAGIC_ALT: u8 = 0x11;
 const MAX_RETRIES_PER_PACKET: usize = 4;
 const PACKET_READ_TIMEOUT_MS: u64 = 950;
-const PROBE_UDP_TIMEOUT_MS: u64 = 700;
+const PROBE_UDP_TIMEOUT_MS: u64 = 320;
 
 #[derive(Serialize, Clone)]
 pub struct RuidaUploadProgress {
@@ -82,15 +83,19 @@ fn build_checksum_udp_packet(scrambled_payload: &[u8]) -> Vec<u8> {
     pkt
 }
 
-/// Construye un paquete de consulta de solo lectura Ruida (`DA 00 05 7E`: ID placa/estado)
+/// Construye un paquete de consulta de solo lectura Ruida con `magic` configurable
 /// sin comandos de movimiento ni disparo láser.
-fn build_safe_ruida_probe_packet() -> Vec<u8> {
-    let raw_query = [0xDAu8, 0x00, 0x05, 0x7E];
+fn build_safe_ruida_probe_packet_with(raw_query: &[u8], magic: u8) -> Vec<u8> {
     let scrambled: Vec<u8> = raw_query
         .iter()
-        .map(|&b| scramble_ruida_byte(b, RUIDA_MAGIC))
+        .map(|&b| scramble_ruida_byte(b, magic))
         .collect();
     build_checksum_udp_packet(&scrambled)
+}
+
+#[cfg(test)]
+fn build_safe_ruida_probe_packet() -> Vec<u8> {
+    build_safe_ruida_probe_packet_with(&[0xDAu8, 0x00, 0x05, 0x7E], RUIDA_MAGIC)
 }
 
 fn bind_ruida_socket() -> Result<(UdpSocket, bool), String> {
@@ -279,35 +284,53 @@ fn probe_udp_handshake_internal(
     target_ip: Ipv4Addr,
     port: u16,
     socket: &UdpSocket,
-) -> (bool, Option<String>, Option<u64>) {
+) -> (bool, Option<String>, Option<u64>, Option<String>) {
     let remote_addr = SocketAddr::V4(SocketAddrV4::new(target_ip, port));
-    let query = build_safe_ruida_probe_packet();
-    drain_stale_datagrams(socket);
-    let _ = socket.set_write_timeout(Some(Duration::from_millis(700)));
+    let _ = socket.set_write_timeout(Some(Duration::from_millis(500)));
 
-    let started = Instant::now();
-    if socket.send_to(&query, remote_addr).is_err() {
-        return (false, None, None);
-    }
+    // Consultas seguras de solo lectura (DA 00 ...): estado IO, ID de placa, archivos guardados y magic alterno
+    let queries: [([u8; 4], u8); 4] = [
+        ([0xDA, 0x00, 0x04, 0x00], RUIDA_MAGIC),
+        ([0xDA, 0x00, 0x05, 0x7E], RUIDA_MAGIC),
+        ([0xDA, 0x00, 0x04, 0x05], RUIDA_MAGIC),
+        ([0xDA, 0x00, 0x05, 0x7E], RUIDA_MAGIC_ALT),
+    ];
 
     let mut buf = [0u8; 64];
-    match recv_from_expected_ip(
-        socket,
-        target_ip,
-        &mut buf,
-        Duration::from_millis(PROBE_UDP_TIMEOUT_MS),
-    ) {
-        Ok((n, _)) if n > 0 => {
-            let latency_ms = started.elapsed().as_millis() as u64;
-            let hex = buf[..n.min(12)]
-                .iter()
-                .map(|b| format!("{b:02X}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            (true, Some(hex), Some(latency_ms))
+    let mut last_os_error: Option<String> = None;
+
+    for (raw_query, magic) in queries {
+        let query = build_safe_ruida_probe_packet_with(&raw_query, magic);
+        drain_stale_datagrams(socket);
+        let started = Instant::now();
+        if let Err(e) = socket.send_to(&query, remote_addr) {
+            last_os_error = Some(format!("{e}"));
+            continue;
         }
-        _ => (false, None, None),
+
+        match recv_from_expected_ip(
+            socket,
+            target_ip,
+            &mut buf,
+            Duration::from_millis(PROBE_UDP_TIMEOUT_MS),
+        ) {
+            Ok((n, _)) if n > 0 => {
+                let latency_ms = started.elapsed().as_millis() as u64;
+                let hex = buf[..n.min(12)]
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                return (true, Some(hex), Some(latency_ms), None);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                last_os_error = Some(e);
+            }
+        }
     }
+
+    (false, None, None, last_os_error)
 }
 
 /// Envía paquetes UDP Ruida pre-compilados y con checksum a la controladora Ruida RDC8445S (puerto 50200).
@@ -410,7 +433,7 @@ pub async fn probe_ruida_connection(ip: String, port: u16) -> Result<RuidaProbeR
     tauri::async_runtime::spawn_blocking(move || {
         let ip_str = target_ip.to_string();
         let (socket, local_port_40200_free) = bind_ruida_socket()?;
-        let (udp_handshake_ok, controller_reply_hex, latency_ms) =
+        let (udp_handshake_ok, controller_reply_hex, latency_ms, udp_error) =
             probe_udp_handshake_internal(target_ip, port, &socket);
         drop(socket);
 
@@ -427,6 +450,11 @@ pub async fn probe_ruida_connection(ip: String, port: u16) -> Result<RuidaProbeR
             "Puerto local 40200 ocupado por LightBurn (usá 'Abrir en LightBurn' o cerrá LightBurn para envío UDP directo)."
         };
 
+        let macos_perm_hint = udp_error
+            .as_deref()
+            .map(|e| e.to_lowercase().contains("permitted") || e.contains("EPERM") || e.contains("os error 1"))
+            .unwrap_or(false);
+
         let message = if udp_handshake_ok {
             format!(
                 "✓ Vank 9060 online ({}:{}) · Handshake Ruida OK en {} ms. {}",
@@ -435,10 +463,15 @@ pub async fn probe_ruida_connection(ip: String, port: u16) -> Result<RuidaProbeR
                 latency_ms.unwrap_or(0),
                 port_note
             )
+        } else if macos_perm_hint {
+            format!(
+                "macOS bloqueó el socket UDP local hacia {}:{} (Privacidad → Red local). Habilitá 'Astra Studio' en Ajustes del Sistema → Privacidad y seguridad → Red local.",
+                ip_str, port
+            )
         } else if ping_ok {
             format!(
-                "Red IP alcanzable ({}:{}), pero la controladora Ruida no respondió al handshake UDP. Verificá si la máquina está encendida o cerrá LightBurn. {}",
-                ip_str, port, port_note
+                "Red IP alcanzable ({}:{}), pero sin respuesta UDP en puerto {}. Verificá que 'Astra Studio' tenga permiso en Ajustes → Privacidad → Red local, que la Vank esté encendida y LightBurn cerrado. {}",
+                ip_str, port, port, port_note
             )
         } else {
             format!(
@@ -591,7 +624,7 @@ mod tests {
         });
 
         let host_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let (ok, hex, latency) =
+        let (ok, hex, latency, _err) =
             probe_udp_handshake_internal(Ipv4Addr::LOCALHOST, mock_port, &host_sock);
         handle.join().unwrap();
         assert!(ok);

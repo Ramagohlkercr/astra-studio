@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Astra Studio se conecta por red local (UDP 50200/40200) a la cortadora láser Vank 9060 para verificar su estado y enviar trabajos de corte y grabado.</string>
+</dict>
+</plist>
