@@ -65,6 +65,18 @@ pub struct RuidaProbeResponse {
     pub message: String,
 }
 
+#[derive(Serialize)]
+pub struct RuidaMachineStatus {
+    pub reachable: bool,
+    pub is_running: bool,
+    pub is_paused: bool,
+    pub is_framing: bool,
+    pub state_bits: u32,
+    pub raw_reply_hex: Option<String>,
+    pub transport_mode: Option<String>,
+    pub latency_ms: Option<u64>,
+}
+
 fn parse_ipv4(ip_str: &str) -> Result<Ipv4Addr, String> {
     ip_str
         .trim()
@@ -76,6 +88,53 @@ fn scramble_ruida_byte(raw: u8, magic: u8) -> u8 {
     let swapped = (raw & 0x7e) | ((raw >> 7) & 0x01) | ((raw & 0x01) << 7);
     let xored = swapped ^ magic;
     xored.wrapping_add(1)
+}
+
+fn unscramble_ruida_byte(scrambled: u8, magic: u8) -> u8 {
+    let dec = scrambled.wrapping_sub(1);
+    let xored = dec ^ magic;
+    (xored & 0x7e) | ((xored >> 7) & 0x01) | ((xored & 0x01) << 7)
+}
+
+/// Decodifica la respuesta `GetStates` (`DA 01 04 00 b4 b5 b6 b7 b8`) de Ruida RDC8445S
+/// (ya sea directa o precedida por ACK 0xC6/0xCC y/o checksum UDP de 2 bytes).
+fn decode_ruida_states_reply(raw_wire: &[u8], magic: u8) -> Option<u32> {
+    let mut candidates: Vec<&[u8]> = Vec::new();
+    candidates.push(raw_wire);
+    if raw_wire.len() > 1 && is_ruida_ack(raw_wire[0]) {
+        candidates.push(&raw_wire[1..]);
+    }
+    if raw_wire.len() > 2 {
+        candidates.push(&raw_wire[2..]);
+    }
+    if raw_wire.len() > 3 && is_ruida_ack(raw_wire[2]) {
+        candidates.push(&raw_wire[3..]);
+    }
+
+    for slice in candidates {
+        if slice.len() < 9 {
+            continue;
+        }
+        for start in 0..=(slice.len() - 9) {
+            let unscrambled: Vec<u8> = slice[start..start + 9]
+                .iter()
+                .map(|&b| unscramble_ruida_byte(b, magic))
+                .collect();
+            if unscrambled[0] == 0xDA
+                && unscrambled[1] == 0x01
+                && unscrambled[2] == 0x04
+                && unscrambled[3] == 0x00
+            {
+                let b4 = (unscrambled[4] & 0x7f) as u32;
+                let b5 = (unscrambled[5] & 0x7f) as u32;
+                let b6 = (unscrambled[6] & 0x7f) as u32;
+                let b7 = (unscrambled[7] & 0x7f) as u32;
+                let b8 = (unscrambled[8] & 0x7f) as u32;
+                return Some((b4 << 28) | (b5 << 21) | (b6 << 14) | (b7 << 7) | b8);
+            }
+        }
+    }
+    None
 }
 
 fn build_checksum_udp_packet(scrambled_payload: &[u8]) -> Vec<u8> {
@@ -885,6 +944,116 @@ pub async fn probe_ruida_connection(ip: String, port: u16) -> Result<RuidaProbeR
     .map_err(|e| format!("Error interno al probar conexión con Vank 9060: {e}"))?
 }
 
+/// Consulta de solo lectura del estado en vivo de la Vank 9060 (`GetStates_Fast` `DA 00 05 7E` / `DA 00 04 00`).
+/// Permite detectar exactamente cuándo el operador presiona Start en la máquina y cuándo termina el grabado/corte.
+#[tauri::command]
+pub async fn query_ruida_machine_status(ip: String, port: u16) -> Result<RuidaMachineStatus, String> {
+    let target_ip = parse_ipv4(&ip)?;
+    if port == 0 {
+        return Err("Puerto Ruida inválido (debe ser > 0).".into());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let queries: [([u8; 4], u8); 3] = [
+            ([0xDA, 0x00, 0x05, 0x7E], RUIDA_MAGIC),
+            ([0xDA, 0x00, 0x04, 0x00], RUIDA_MAGIC),
+            ([0xDA, 0x00, 0x04, 0x00], RUIDA_MAGIC_ALT),
+        ];
+
+        // 1. Vía TCP Packet (RDC8445S puerto 50200)
+        if let Ok(mut stream) = try_connect_ruida_tcp(target_ip, port, 700) {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(550)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(550)));
+
+            for (raw_query, magic) in queries {
+                let payload = build_safe_tcp_probe_payload(&raw_query, magic);
+                let started = Instant::now();
+                if stream.write_all(&payload).and_then(|_| stream.flush()).is_err() {
+                    continue;
+                }
+
+                let mut buf = [0u8; 64];
+                let mut total_n = 0usize;
+                for _ in 0..3 {
+                    match stream.read(&mut buf[total_n..]) {
+                        Ok(n) if n > 0 => {
+                            total_n += n;
+                            if decode_ruida_states_reply(&buf[..total_n], magic).is_some()
+                                || total_n >= 12
+                            {
+                                break;
+                            }
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(80)));
+                        }
+                        _ => break,
+                    }
+                }
+
+                if total_n > 0 {
+                    if let Some(bits) = decode_ruida_states_reply(&buf[..total_n], magic) {
+                        let _ = stream.shutdown(Shutdown::Both);
+                        return Ok(RuidaMachineStatus {
+                            reachable: true,
+                            is_running: (bits & 0x01) != 0,
+                            is_paused: (bits & 0x02) != 0,
+                            is_framing: (bits & (1 << 17)) != 0,
+                            state_bits: bits,
+                            raw_reply_hex: Some(format_hex_preview(&buf[..total_n])),
+                            transport_mode: Some("TCP_PK".into()),
+                            latency_ms: Some(started.elapsed().as_millis() as u64),
+                        });
+                    }
+                }
+            }
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+
+        // 2. Fallback UDP clásico (50200↔40200)
+        if let Ok((socket, _)) = bind_ruida_socket() {
+            let remote_addr = SocketAddr::V4(SocketAddrV4::new(target_ip, port));
+            let _ = socket.set_write_timeout(Some(Duration::from_millis(400)));
+            let mut buf = [0u8; 64];
+            for (raw_query, magic) in queries {
+                let query = build_safe_ruida_probe_packet_with(&raw_query, magic);
+                drain_stale_datagrams(&socket);
+                let started = Instant::now();
+                if socket.send_to(&query, remote_addr).is_err() {
+                    continue;
+                }
+                if let Ok((n, _)) =
+                    recv_from_expected_ip(&socket, target_ip, &mut buf, Duration::from_millis(550))
+                {
+                    if let Some(bits) = decode_ruida_states_reply(&buf[..n], magic) {
+                        return Ok(RuidaMachineStatus {
+                            reachable: true,
+                            is_running: (bits & 0x01) != 0,
+                            is_paused: (bits & 0x02) != 0,
+                            is_framing: (bits & (1 << 17)) != 0,
+                            state_bits: bits,
+                            raw_reply_hex: Some(format_hex_preview(&buf[..n])),
+                            transport_mode: Some("UDP".into()),
+                            latency_ms: Some(started.elapsed().as_millis() as u64),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(RuidaMachineStatus {
+            reachable: false,
+            is_running: false,
+            is_paused: false,
+            is_framing: false,
+            state_bits: 0,
+            raw_reply_hex: None,
+            transport_mode: None,
+            latency_ms: None,
+        })
+    })
+    .await
+    .map_err(|e| format!("Error interno al consultar estado Ruida: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1113,5 +1282,43 @@ mod tests {
         assert_eq!(observed_len.load(Ordering::SeqCst), 4);
         assert_eq!(outcome.reply_hex.as_deref(), Some("C6 DA 01 05"));
         assert!(outcome.latency_ms.is_some());
+    }
+
+    #[test]
+    fn decodes_ruida_machine_state_bits_for_running_paused_and_idle() {
+        let make_wire = |bits: u32, with_ack: bool| {
+            let b4 = ((bits >> 28) & 0x7f) as u8;
+            let b5 = ((bits >> 21) & 0x7f) as u8;
+            let b6 = ((bits >> 14) & 0x7f) as u8;
+            let b7 = ((bits >> 7) & 0x7f) as u8;
+            let b8 = (bits & 0x7f) as u8;
+            let raw = [0xDA, 0x01, 0x04, 0x00, b4, b5, b6, b7, b8];
+            let mut out = Vec::new();
+            if with_ack {
+                out.push(RUIDA_ACK_ALT);
+            }
+            for &b in &raw {
+                out.push(scramble_ruida_byte(b, RUIDA_MAGIC));
+            }
+            out
+        };
+
+        let running_wire = make_wire(0x01, true);
+        let bits_run = decode_ruida_states_reply(&running_wire, RUIDA_MAGIC).unwrap();
+        assert_ne!(bits_run & 0x01, 0);
+        assert_eq!(bits_run & 0x02, 0);
+
+        let paused_wire = make_wire(0x03, false);
+        let bits_paused = decode_ruida_states_reply(&paused_wire, RUIDA_MAGIC).unwrap();
+        assert_ne!(bits_paused & 0x01, 0);
+        assert_ne!(bits_paused & 0x02, 0);
+
+        let framing_wire = make_wire(1 << 17, false);
+        let bits_framing = decode_ruida_states_reply(&framing_wire, RUIDA_MAGIC).unwrap();
+        assert_ne!(bits_framing & (1 << 17), 0);
+
+        let idle_wire = make_wire(0x00, true);
+        let bits_idle = decode_ruida_states_reply(&idle_wire, RUIDA_MAGIC).unwrap();
+        assert_eq!(bits_idle, 0);
     }
 }

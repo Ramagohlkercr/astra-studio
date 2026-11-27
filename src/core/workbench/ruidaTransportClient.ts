@@ -11,6 +11,51 @@ import {
   verifyRuidaUdpPacketChecksums,
 } from './ruidaCompiler';
 
+export interface RuidaMachineStatus {
+  reachable: boolean;
+  is_running: boolean;
+  is_paused: boolean;
+  is_framing: boolean;
+  state_bits: number;
+  raw_reply_hex?: string | null;
+  transport_mode?: string | null;
+  latency_ms?: number | null;
+}
+
+/**
+ * Consulta en tiempo real (solo lectura) los flags de ejecución de la Ruida RDC8445S
+ * (`running`, `paused`, `framing`) para disparar cronómetro y alerta automática de fin.
+ */
+export async function queryVankRuidaMachineStatus(params: {
+  ip: string;
+  port: number;
+}): Promise<RuidaMachineStatus> {
+  const cleanIp = params.ip.trim();
+  if (!isValidIpv4Address(cleanIp) || !isTauri()) {
+    return {
+      reachable: false,
+      is_running: false,
+      is_paused: false,
+      is_framing: false,
+      state_bits: 0,
+    };
+  }
+  try {
+    return await invoke<RuidaMachineStatus>('query_ruida_machine_status', {
+      ip: cleanIp,
+      port: params.port,
+    });
+  } catch {
+    return {
+      reachable: false,
+      is_running: false,
+      is_paused: false,
+      is_framing: false,
+      state_bits: 0,
+    };
+  }
+}
+
 /**
  * Ejecuta un diagnóstico de red y handshake Ruida seguro (solo lectura, sin mover ni disparar láser)
  * hacia la controladora Vank 9060 (`ip:port`). En navegador web nunca simula falso estado online.

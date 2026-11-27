@@ -53,6 +53,16 @@ import {
   uploadRdBytesToVankRuida,
 } from '../workbench/ruidaTransportClient';
 import {
+  armJobTimerWatch,
+  computeLiveTimerSnapshot,
+  createInitialJobTimerState,
+  finishJobTimerExecution,
+  formatDurationTimer,
+  pauseJobTimerExecution,
+  resumeJobTimerExecution,
+  startJobTimerExecution,
+} from '../workbench/jobTimerAlert';
+import {
   analyzeStepMaterialSavings,
   applyExtremeMaterialSavingToWorkbench,
   applyWorkbenchLayersToMaterialProfile,
@@ -1594,5 +1604,48 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     expect(aiArt.aiContent).toContain('%LayerName: AGUJEROS');
     expect(aiArt.aiContent).toContain('%LayerName: CORTE');
     expect(aiArt.filenameSuggested.endsWith('.ai')).toBe(true);
+  });
+
+  it('23. Monitor de cronómetro Vank 9060: armado, arranque en vivo, pausa/reanudación sin deriva y finalización con alerta', () => {
+    const t0 = 1_000_000;
+    const init = createInitialJobTimerState();
+    const armed = armJobTimerWatch(
+      init,
+      { jobName: 'ASTRA01', totalPieces: 200, estimatedTotalSec: 120 },
+      t0
+    );
+    expect(armed.phase).toBe('armed');
+    expect(armed.popupMinimized).toBe(false);
+
+    const running = startJobTimerExecution(armed, { source: 'hardware' }, t0 + 5_000);
+    expect(running.phase).toBe('running');
+    const snap30 = computeLiveTimerSnapshot(running, t0 + 35_000);
+    expect(snap30.elapsedSec).toBe(30);
+    expect(snap30.remainingSec).toBe(90);
+    expect(snap30.progressPercent).toBe(25);
+    expect(formatDurationTimer(snap30.remainingSec)).toBe('01:30');
+
+    // Pausar durante 20s reales: el tiempo transcurrido activo no debe avanzar durante la pausa
+    const paused = pauseJobTimerExecution(running, t0 + 35_000);
+    const snapPaused = computeLiveTimerSnapshot(paused, t0 + 50_000);
+    expect(snapPaused.elapsedSec).toBe(30);
+
+    const resumed = resumeJobTimerExecution(paused, t0 + 55_000);
+    const snapAfterResume = computeLiveTimerSnapshot(resumed, t0 + 65_000);
+    expect(snapAfterResume.elapsedSec).toBe(40);
+    expect(snapAfterResume.remainingSec).toBe(80);
+
+    // Exceso sobre estimado sigue contando positivo sin romper
+    const snapOver = computeLiveTimerSnapshot(resumed, t0 + 165_000);
+    expect(snapOver.remainingSec).toBe(0);
+    expect(snapOver.overtimeSec).toBe(20);
+
+    const finished = finishJobTimerExecution(resumed, t0 + 165_000);
+    expect(finished.phase).toBe('finished');
+    expect(finished.popupMinimized).toBe(false);
+    const snapFinal = computeLiveTimerSnapshot(finished, t0 + 200_000);
+    expect(snapFinal.elapsedSec).toBe(140);
+    expect(snapFinal.progressPercent).toBe(100);
+    expect(formatDurationTimer(3665)).toBe('01:01:05');
   });
 });

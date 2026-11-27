@@ -5,8 +5,10 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
+  Bell,
   BookOpen,
   CheckCircle2,
+  Clock,
   Copy,
   Cpu,
   Download,
@@ -15,6 +17,7 @@ import {
   FlaskConical,
   Grid,
   Layers,
+  Minimize2,
   Pause,
   Play,
   Plus,
@@ -27,6 +30,8 @@ import {
   Target,
   Trash2,
   Upload,
+  Volume2,
+  VolumeX,
   Wind,
   X,
 } from 'lucide-react';
@@ -84,8 +89,22 @@ import {
 } from '../core/workbench/ruidaCompiler';
 import {
   probeVankRuidaConnection,
+  queryVankRuidaMachineStatus,
   uploadRdBytesToVankRuida,
 } from '../core/workbench/ruidaTransportClient';
+import {
+  armJobTimerWatch,
+  computeLiveTimerSnapshot,
+  createInitialJobTimerState,
+  finishJobTimerExecution,
+  formatDurationTimer,
+  MachineJobTimerState,
+  pauseJobTimerExecution,
+  playWorkshopCompletionAlertChime,
+  requestAndNotifyWorkshopCompletion,
+  resumeJobTimerExecution,
+  startJobTimerExecution,
+} from '../core/workbench/jobTimerAlert';
 import {
   applyExtremeMaterialSavingToWorkbench,
   applyWorkbenchLayersToMaterialProfile,
@@ -252,6 +271,16 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     () => `${material.name} (${material.thicknessMm} mm)`
   );
   const [libraryNotes, setLibraryNotes] = useState<string>('');
+  const [machineTimer, setMachineTimer] = useState<MachineJobTimerState>(() =>
+    createInitialJobTimerState()
+  );
+  const [timerNowMs, setTimerNowMs] = useState<number>(() => Date.now());
+  const [machineLiveStatus, setMachineLiveStatus] = useState<{
+    reachable: boolean;
+    latencyMs?: number | null;
+  } | null>(null);
+  const consecutiveIdlePollsRef = useRef<number>(0);
+  const alertedCompletionRef = useRef<boolean>(false);
 
   const multiLogoInputRef = useRef<HTMLInputElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -366,6 +395,140 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     }, 45);
     return () => window.clearInterval(interval);
   }, [isPlayingSim]);
+
+  // Cronómetro en vivo (tick cada 1s) cuando la máquina está grabando/cortando o en pausa
+  useEffect(() => {
+    if (machineTimer.phase !== 'running' && machineTimer.phase !== 'paused') {
+      return;
+    }
+    setTimerNowMs(Date.now());
+    const id = window.setInterval(() => {
+      const now = Date.now();
+      setTimerNowMs(now);
+      setMachineTimer((prev) => {
+        if (
+          prev.phase === 'running' &&
+          prev.source === 'manual' &&
+          prev.autoAlertOnManualZero
+        ) {
+          const snap = computeLiveTimerSnapshot(prev, now);
+          if (snap.remainingSec <= 0) {
+            return finishJobTimerExecution(prev, now);
+          }
+        }
+        return prev;
+      });
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [machineTimer.phase]);
+
+  // Disparo único de alerta sonora y notificación macOS al finalizar el trabajo
+  useEffect(() => {
+    if (machineTimer.phase !== 'finished') {
+      alertedCompletionRef.current = false;
+      return;
+    }
+    if (alertedCompletionRef.current) return;
+    alertedCompletionRef.current = true;
+
+    const snap = computeLiveTimerSnapshot(
+      machineTimer,
+      machineTimer.finishedAtMs ?? Date.now()
+    );
+    const elapsedText = formatDurationTimer(snap.elapsedSec);
+    if (machineTimer.soundEnabled) {
+      playWorkshopCompletionAlertChime();
+    }
+    requestAndNotifyWorkshopCompletion(
+      machineTimer.jobName,
+      elapsedText,
+      machineTimer.totalPieces
+    );
+    onNotify(
+      `✅ Vank 9060 terminó "${machineTimer.jobName}" (${machineTimer.totalPieces} u.) en ${elapsedText}.`
+    );
+  }, [machineTimer, onNotify]);
+
+  // Monitor de estado real de la controladora Ruida RDC8445S (detecta Start físico y Fin automático)
+  useEffect(() => {
+    if (
+      !isTauri() ||
+      (machineTimer.phase !== 'armed' &&
+        machineTimer.phase !== 'running' &&
+        machineTimer.phase !== 'paused')
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const poll = async () => {
+      const st = await queryVankRuidaMachineStatus({
+        ip: workbenchConfig.ruidaIpAddress,
+        port: workbenchConfig.ruidaPort,
+      });
+      if (cancelled) return;
+      setMachineLiveStatus({
+        reachable: st.reachable,
+        latencyMs: st.latency_ms,
+      });
+      if (!st.reachable) return;
+
+      const now = Date.now();
+      setMachineTimer((prev) => {
+        if (prev.phase === 'armed') {
+          if (st.is_running) {
+            consecutiveIdlePollsRef.current = 0;
+            return startJobTimerExecution(prev, { source: 'hardware' }, now);
+          }
+          return prev;
+        }
+        if (prev.phase === 'running') {
+          if (st.is_paused) {
+            consecutiveIdlePollsRef.current = 0;
+            return pauseJobTimerExecution(prev, now);
+          }
+          if (prev.source === 'hardware' && !st.is_running && !st.is_framing) {
+            const elapsed = prev.startedAtMs ? now - prev.startedAtMs : 0;
+            if (elapsed >= 2500) {
+              consecutiveIdlePollsRef.current += 1;
+              if (consecutiveIdlePollsRef.current >= 2) {
+                return finishJobTimerExecution(prev, now);
+              }
+            }
+          } else if (st.is_running) {
+            consecutiveIdlePollsRef.current = 0;
+          }
+          return prev;
+        }
+        if (prev.phase === 'paused') {
+          if (st.is_running && !st.is_paused) {
+            consecutiveIdlePollsRef.current = 0;
+            return resumeJobTimerExecution(prev, now);
+          }
+          if (prev.source === 'hardware' && !st.is_running && !st.is_paused && !st.is_framing) {
+            consecutiveIdlePollsRef.current += 1;
+            if (consecutiveIdlePollsRef.current >= 2) {
+              return finishJobTimerExecution(prev, now);
+            }
+          }
+          return prev;
+        }
+        return prev;
+      });
+    };
+
+    void poll();
+    const id = window.setInterval(() => void poll(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [machineTimer.phase, workbenchConfig.ruidaIpAddress, workbenchConfig.ruidaPort]);
+
+  const liveTimerSnapshot = useMemo(
+    () => computeLiveTimerSnapshot(machineTimer, timerNowMs),
+    [machineTimer, timerNowMs]
+  );
 
   // Segmento activo y posición instantánea del cabezal láser durante la simulación
   const activeSimulatedSegment = useMemo(() => {
@@ -1192,6 +1355,13 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         a.click();
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setMachineTimer((prev) =>
+          armJobTimerWatch(prev, {
+            jobName: compiled.ruidaJobName || projectName,
+            totalPieces: compiled.totalPieces,
+            estimatedTotalSec: Math.max(10, Math.round(simulation.totalDurationSec)),
+          })
+        );
         setRuidaStatusMsg({
           type: 'info',
           text: `Archivo binario Ruida "${compiled.filenameSuggested}" (${compiled.rdBytes.length} bytes) descargado. El envío TCP/UDP directo sin cables se realiza desde la app nativa Astra Studio (.app).`,
@@ -1208,6 +1378,13 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
         onProgress: setRuidaUploadProgress,
       });
 
+      setMachineTimer((prev) =>
+        armJobTimerWatch(prev, {
+          jobName: compiled.ruidaJobName || projectName,
+          totalPieces: compiled.totalPieces,
+          estimatedTotalSec: Math.max(10, Math.round(simulation.totalDurationSec)),
+        })
+      );
       setRuidaStatusMsg({
         type: 'success',
         text: response.message,
@@ -1544,6 +1721,58 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             <Upload className="w-3.5 h-3.5 shrink-0" />
             <span>
               {isUploadingLogos ? 'Cargando...' : '+ Subir Logos'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (machineTimer.phase === 'idle') {
+                setMachineTimer((prev) =>
+                  armJobTimerWatch(prev, {
+                    jobName: workbenchConfig.ruidaJobName || projectName,
+                    totalPieces: validation.totalPieces,
+                    estimatedTotalSec: Math.max(
+                      10,
+                      Math.round(simulation.totalDurationSec)
+                    ),
+                  })
+                );
+              } else {
+                setMachineTimer((prev) => ({
+                  ...prev,
+                  popupMinimized: false,
+                }));
+              }
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-colors whitespace-nowrap ${
+              machineTimer.phase === 'running'
+                ? 'bg-emerald-600/25 border-emerald-400 text-emerald-200 animate-pulse'
+                : machineTimer.phase === 'paused'
+                  ? 'bg-amber-600/25 border-amber-400 text-amber-200'
+                  : machineTimer.phase === 'armed'
+                    ? 'bg-cyan-600/20 border-cyan-400/70 text-cyan-200'
+                    : machineTimer.phase === 'finished'
+                      ? 'bg-emerald-600 border-emerald-400 text-white shadow-lg shadow-emerald-500/30'
+                      : 'bg-slate-800/90 hover:bg-slate-700 border-slate-700 text-cyan-300'
+            }`}
+            title="Monitor de estado en vivo, cronómetro del pedido y alerta sonora al finalizar"
+          >
+            {machineTimer.phase === 'finished' ? (
+              <Bell className="w-3.5 h-3.5 shrink-0" />
+            ) : (
+              <Clock className="w-3.5 h-3.5 shrink-0" />
+            )}
+            <span>
+              {machineTimer.phase === 'idle'
+                ? 'Cronómetro Vank'
+                : machineTimer.phase === 'armed'
+                  ? 'Esperando START...'
+                  : machineTimer.phase === 'running'
+                    ? `${formatDurationTimer(liveTimerSnapshot.remainingSec)} · ${liveTimerSnapshot.progressPercent}%`
+                    : machineTimer.phase === 'paused'
+                      ? `Pausada (${formatDurationTimer(liveTimerSnapshot.remainingSec)})`
+                      : '¡Pedido Terminado!'}
             </span>
           </button>
 
@@ -5246,6 +5475,360 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. POP-UP CARTEL DE ESPERA DE START / CRONÓMETRO EN VIVO DURANTE EL GRABADO Y CORTE */}
+      {machineTimer.phase === 'armed' && !machineTimer.popupMinimized && (
+        <div
+          role="dialog"
+          aria-modal="false"
+          aria-label="Monitor esperando arranque de la Vank 9060"
+          className="fixed bottom-12 right-5 z-50 w-[390px] max-w-[calc(100vw-2rem)] rounded-2xl bg-[#0e1623] border-2 border-cyan-500/70 shadow-2xl shadow-cyan-950/60 p-4 text-slate-100"
+        >
+          <div className="flex items-start justify-between gap-2 mb-2.5">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
+              <div>
+                <h4 className="text-xs font-extrabold text-cyan-200 uppercase tracking-wide">
+                  Pedido listo en Vank 9060 ({workbenchConfig.ruidaIpAddress})
+                </h4>
+                <p className="text-[11px] text-slate-300">
+                  {machineTimer.jobName} · {machineTimer.totalPieces} u. · Est.{' '}
+                  <strong className="text-white">
+                    {formatDurationTimer(machineTimer.estimatedTotalSec)}
+                  </strong>
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() =>
+                  setMachineTimer((prev) => ({ ...prev, popupMinimized: true }))
+                }
+                title="Minimizar cartel"
+                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <Minimize2 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setMachineTimer(createInitialJobTimerState())}
+                title="Desactivar monitor"
+                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] text-slate-300 space-y-1 mb-3">
+            <div>
+              {isTauri()
+                ? machineLiveStatus?.reachable
+                  ? '● Escuchando controladora Ruida en vivo: al presionar START en la máquina aparecerá automáticamente el cronómetro y luego la alerta de fin.'
+                  : '⏳ Buscando estado de la Vank 9060 en red local... Cuando presiones START podés activar el cronómetro abajo si no responde.'
+                : 'Cuando presiones START en la máquina hacé clic abajo para abrir el cronómetro con cuenta regresiva y alerta al finalizar.'}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setMachineTimer((prev) =>
+                  startJobTimerExecution(prev, { source: 'manual' })
+                )
+              }
+              className="flex-1 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 shadow"
+            >
+              <Play className="w-3.5 h-3.5" />
+              <span>¡Arrancó! Abrir Cronómetro</span>
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                setMachineTimer((prev) => ({
+                  ...prev,
+                  soundEnabled: !prev.soundEnabled,
+                }))
+              }
+              title={
+                machineTimer.soundEnabled
+                  ? 'Alarma sonora activada'
+                  : 'Alarma sonora silenciada'
+              }
+              className={`p-2 rounded-xl border text-xs ${
+                machineTimer.soundEnabled
+                  ? 'bg-emerald-950/50 border-emerald-600/60 text-emerald-300'
+                  : 'bg-slate-900 border-slate-700 text-slate-400'
+              }`}
+            >
+              {machineTimer.soundEnabled ? (
+                <Volume2 className="w-4 h-4" />
+              ) : (
+                <VolumeX className="w-4 h-4" />
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {(machineTimer.phase === 'running' || machineTimer.phase === 'paused') &&
+        !machineTimer.popupMinimized && (
+          <div
+            role="dialog"
+            aria-modal="false"
+            aria-label="Cronómetro de Grabado y Corte en Vank 9060"
+            className={`fixed bottom-12 right-5 z-50 w-[410px] max-w-[calc(100vw-2rem)] rounded-2xl bg-[#0b131d] border-2 shadow-2xl p-4 text-slate-100 ${
+              machineTimer.phase === 'paused'
+                ? 'border-amber-400 shadow-amber-950/60'
+                : 'border-emerald-400 shadow-emerald-950/70'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-3 h-3 rounded-full shrink-0 ${
+                    machineTimer.phase === 'paused'
+                      ? 'bg-amber-400'
+                      : 'bg-emerald-400 animate-ping'
+                  }`}
+                />
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-wider text-emerald-300">
+                    {machineTimer.phase === 'paused'
+                      ? '❚❚ Vank 9060 Pausada'
+                      : machineTimer.source === 'hardware'
+                        ? '● Grabando / Cortando en Vank 9060'
+                        : '● Cronómetro Activo — Pedido en Curso'}
+                  </div>
+                  <div className="text-xs font-bold text-white">
+                    {machineTimer.jobName} · {machineTimer.totalPieces} etiquetas
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setMachineTimer((prev) => ({
+                      ...prev,
+                      soundEnabled: !prev.soundEnabled,
+                    }))
+                  }
+                  title="Activar/silenciar alerta sonora al terminar"
+                  className={`p-1.5 rounded-lg border text-xs ${
+                    machineTimer.soundEnabled
+                      ? 'bg-emerald-950/50 border-emerald-600/50 text-emerald-300'
+                      : 'bg-slate-900 border-slate-700 text-slate-400'
+                  }`}
+                >
+                  {machineTimer.soundEnabled ? (
+                    <Volume2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <VolumeX className="w-3.5 h-3.5" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setMachineTimer((prev) => ({ ...prev, popupMinimized: true }))
+                  }
+                  title="Minimizar pop-up al encabezado"
+                  className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300"
+                >
+                  <Minimize2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-950/90 border border-slate-800 mb-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+                    {liveTimerSnapshot.overtimeSec > 0
+                      ? 'Tiempo excedido sobre est.'
+                      : 'Falta aprox. para terminar'}
+                  </div>
+                  <div
+                    className={`text-4xl font-black font-mono tabular-nums tracking-tight ${
+                      liveTimerSnapshot.overtimeSec > 0
+                        ? 'text-amber-300'
+                        : machineTimer.phase === 'paused'
+                          ? 'text-amber-200'
+                          : 'text-emerald-300'
+                    }`}
+                  >
+                    {liveTimerSnapshot.overtimeSec > 0
+                      ? `+${formatDurationTimer(liveTimerSnapshot.overtimeSec)}`
+                      : formatDurationTimer(liveTimerSnapshot.remainingSec)}
+                  </div>
+                </div>
+                <div className="text-right space-y-0.5">
+                  <div className="text-[10px] text-slate-400">
+                    Transcurrido:{' '}
+                    <span className="font-mono font-bold text-slate-100 tabular-nums">
+                      {formatDurationTimer(liveTimerSnapshot.elapsedSec)}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    Total est.:{' '}
+                    <span className="font-mono font-semibold text-slate-200 tabular-nums">
+                      {formatDurationTimer(machineTimer.estimatedTotalSec)}
+                    </span>
+                  </div>
+                  {liveTimerSnapshot.estimatedFinishAtMs && (
+                    <div className="text-[10px] text-cyan-300 font-semibold">
+                      Termina aprox.{' '}
+                      {new Date(
+                        liveTimerSnapshot.estimatedFinishAtMs
+                      ).toLocaleTimeString('es-AR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-2.5">
+                <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
+                  <span>Progreso estimado</span>
+                  <span className="font-mono font-bold text-emerald-300">
+                    {liveTimerSnapshot.progressPercent}%
+                  </span>
+                </div>
+                <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                  <div
+                    className={`h-full transition-all duration-500 ${
+                      machineTimer.phase === 'paused'
+                        ? 'bg-amber-400'
+                        : 'bg-gradient-to-r from-emerald-500 to-cyan-400'
+                    }`}
+                    style={{ width: `${liveTimerSnapshot.progressPercent}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  setMachineTimer((prev) =>
+                    prev.phase === 'paused'
+                      ? resumeJobTimerExecution(prev)
+                      : pauseJobTimerExecution(prev)
+                  )
+                }
+                className="py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-[11px] flex items-center justify-center gap-1"
+              >
+                {machineTimer.phase === 'paused' ? (
+                  <>
+                    <Play className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Reanudar</span>
+                  </>
+                ) : (
+                  <>
+                    <Pause className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Pausar</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setMachineTimer((prev) => ({
+                    ...prev,
+                    estimatedTotalSec: prev.estimatedTotalSec + 60,
+                  }))
+                }
+                className="py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-200 font-bold text-[11px] flex items-center justify-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+1 min</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setMachineTimer((prev) => finishJobTimerExecution(prev))
+                }
+                className="py-1.5 px-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white font-bold text-[11px] flex items-center justify-center gap-1"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Terminó</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+      {/* 6. POP-UP ALERTA FINAL CUANDO TERMINA LA MÁQUINA DE GRABAR */}
+      {machineTimer.phase === 'finished' && !machineTimer.popupMinimized && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-label="Alerta Pedido Terminado en Vank 9060"
+          className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-[#0b1614] border-2 border-emerald-400 shadow-2xl shadow-emerald-500/30 p-6 text-center space-y-4">
+            <div className="mx-auto w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-400/60 flex items-center justify-center">
+              <Bell className="w-7 h-7 text-emerald-300 animate-bounce" />
+            </div>
+            <div className="space-y-1">
+              <div className="text-[11px] font-black uppercase tracking-widest text-emerald-400">
+                Aviso Automático Vank 9060
+              </div>
+              <h3 className="text-xl font-black text-white">
+                ¡Terminó la máquina de grabar!
+              </h3>
+              <p className="text-sm text-slate-300">
+                Pedido <strong className="text-white">{machineTimer.jobName}</strong> (
+                <strong className="text-emerald-300">{machineTimer.totalPieces} u.</strong>) completado.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 p-3 rounded-xl bg-slate-950/90 border border-emerald-800/60 text-xs">
+              <div>
+                <div className="text-[10px] text-slate-400 uppercase">Duración Real</div>
+                <div className="text-lg font-black font-mono text-emerald-300 tabular-nums">
+                  {formatDurationTimer(liveTimerSnapshot.elapsedSec)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-slate-400 uppercase">Finalizado a las</div>
+                <div className="text-lg font-black font-mono text-cyan-200 tabular-nums">
+                  {machineTimer.finishedAtMs
+                    ? new Date(machineTimer.finishedAtMs).toLocaleTimeString('es-AR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                      })
+                    : '--:--'}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => playWorkshopCompletionAlertChime()}
+                className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center gap-1.5"
+              >
+                <Volume2 className="w-4 h-4 text-emerald-300" />
+                <span>Sonar Alerta</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMachineTimer(createInitialJobTimerState())}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Entendido · Cerrar Alerta</span>
+              </button>
             </div>
           </div>
         </div>
