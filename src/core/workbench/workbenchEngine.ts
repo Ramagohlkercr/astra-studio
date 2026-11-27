@@ -2238,6 +2238,8 @@ export function simulateWorkbenchToolpath(
     rapidDurationSec += dur;
   };
 
+  const engraveGrouping = config.engraveGrouping ?? 'all_at_once';
+
   const emitJobLayerSegments = (
     job: WorkbenchJobItem,
     jobIndex: number,
@@ -2252,23 +2254,51 @@ export function simulateWorkbenchToolpath(
         layer.speedMmPerSec && layer.speedMmPerSec > 0 ? layer.speedMmPerSec : 200;
       const interval = Math.max(0.04, layer.lineIntervalMm || 0.1);
 
+      const boxItems: Array<{ minX: number; maxX: number; minY: number; maxY: number }> = [];
       for (const inst of orderedInstances) {
         if (inst.engraveItems.length === 0) continue;
-
         let minX = Infinity;
         let minY = Infinity;
         let maxX = -Infinity;
         let maxY = -Infinity;
-
         for (const item of inst.engraveItems) {
           minX = Math.min(minX, job.xMm + item.boundingBox.minX);
           minY = Math.min(minY, job.yMm + item.boundingBox.minY);
           maxX = Math.max(maxX, job.xMm + item.boundingBox.maxX);
           maxY = Math.max(maxY, job.yMm + item.boundingBox.maxY);
         }
+        if (Number.isFinite(minX)) {
+          boxItems.push({ minX, maxX, minY, maxY });
+        }
+      }
 
-        if (!Number.isFinite(minX)) continue;
+      const bandsToEmit: Array<{ minX: number; maxX: number; minY: number; maxY: number }> = [];
+      if (engraveGrouping === 'all_at_once' && layer.mode !== 'line' && boxItems.length > 0) {
+        // Agrupar todas las etiquetas que comparten fila horizontal Y para simular barrido continuo de toda la fila
+        const byRow = new Map<number, { minX: number; maxX: number; minY: number; maxY: number }>();
+        const sortedBoxes = [...boxItems].sort((a, b) => a.minY - b.minY);
+        for (const box of sortedBoxes) {
+          const rowKey = Math.round(box.minY * 10);
+          const existing = byRow.get(rowKey);
+          if (existing) {
+            existing.minX = Math.min(existing.minX, box.minX);
+            existing.maxX = Math.max(existing.maxX, box.maxX);
+            existing.minY = Math.min(existing.minY, box.minY);
+            existing.maxY = Math.max(existing.maxY, box.maxY);
+          } else {
+            byRow.set(rowKey, { ...box });
+          }
+        }
+        bandsToEmit.push(...byRow.values());
+      } else {
+        bandsToEmit.push(...boxItems);
+      }
 
+      for (const band of bandsToEmit) {
+        const minX = band.minX;
+        const maxX = band.maxX;
+        const minY = band.minY;
+        const maxY = band.maxY;
         const scanWidth = Math.max(1, roundMm(maxX - minX));
         const scanHeight = Math.max(0.5, roundMm(maxY - minY));
         const realScanLines = Math.max(1, Math.ceil(scanHeight / interval));

@@ -112,6 +112,7 @@ import {
   SavedMaterialLibraryEntry,
   StartFromMode,
   WorkbenchConfig,
+  WorkbenchEngraveGrouping,
   WorkbenchExecutionSequenceMode,
   WorkbenchJobItem,
   WorkbenchLayerConfig,
@@ -3211,6 +3212,30 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     </select>
                   </label>
                 </div>
+
+                <label className="block">
+                  <span className="text-[10px] text-emerald-300 font-semibold block mb-0.5">
+                    Modo de grabado en plancha (C00)
+                  </span>
+                  <select
+                    aria-label="Modo de barrido de grabado en plancha"
+                    value={workbenchConfig.engraveGrouping ?? 'all_at_once'}
+                    onChange={(e) =>
+                      onUpdateConfig({
+                        ...workbenchConfig,
+                        engraveGrouping: e.target.value as WorkbenchEngraveGrouping,
+                      })
+                    }
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-white"
+                  >
+                    <option value="all_at_once">
+                      Todas a la vez — barrido completo por fila (estilo LightBurn)
+                    </option>
+                    <option value="per_piece">
+                      Etiqueta por etiqueta (una pieza completa por vez)
+                    </option>
+                  </select>
+                </label>
 
                 <div className="flex items-center justify-between gap-2 text-[10px]">
                   <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none">

@@ -54,6 +54,8 @@ export type WorkbenchPackingMode = 'continuous_zero_waste' | 'rectangular_blocks
 
 export type WorkbenchExecutionSequenceMode = 'sequential_per_job' | 'global_by_layer';
 
+export type WorkbenchEngraveGrouping = 'all_at_once' | 'per_piece';
+
 export type WorkbenchTravelOrder = 'zigzag_rows' | 'left_to_right' | 'top_to_bottom';
 
 export type MaterialSavingPreset =
@@ -313,6 +315,8 @@ export interface WorkbenchConfig {
   optimizeInsideOut: boolean;
   /** Secuencia de ejecución con varios archivos: terminar trabajo #1 completo antes de pasar al #2, o global por capa */
   executionSequenceMode?: WorkbenchExecutionSequenceMode;
+  /** Cómo graba C00 cuando hay muchas etiquetas: todas las de la misma fila juntas (LightBurn) o etiqueta por etiqueta */
+  engraveGrouping?: WorkbenchEngraveGrouping;
   /** Sentido ordenado de barrido dentro de cada trabajo (serpenteo zigzag, izq→der o arriba→abajo) */
   travelOrder?: WorkbenchTravelOrder;
   /** Al optimizar el espacio, respetar el orden #1 → #2 → #3 definido por el operador */
@@ -553,6 +557,7 @@ export function createDefaultWorkbenchConfig(
     sheetSafetyMarginMm: 5,
     optimizeInsideOut: true,
     executionSequenceMode: 'sequential_per_job',
+    engraveGrouping: 'all_at_once',
     travelOrder: 'zigzag_rows',
     preserveJobSequenceInNesting: false,
     ruidaIpAddress: VANK_9060_DEFAULT_IP,

@@ -447,7 +447,7 @@ export function compileWorkbenchToRuidaRd(
     emit([0xca, 0x41, lIdx, workMode]);
   }
 
-  // 3. Emisión de trayectorias por orden de prioridad de capa
+  // 3. Emisión de trayectorias por orden de prioridad de capa (`EmitInlineCutSetting` compatible RDC8445S hwType 0x13)
   const emitLayerPreamble = (layer: WorkbenchLayerConfig) => {
     const lIdx = layer.cutIndex & 0x7f;
     const speed = layer.speedMmPerSec!;
@@ -466,13 +466,17 @@ export function compileWorkbenchToRuidaRd(
     emit([0xca, 0x01, workMode]);
     // CA 02 <layer>: Select active layer
     emit([0xca, 0x02, lIdx]);
-    // CA 01: Air assist toggle por capa
+    // Habilitación láser Tubo 1, reset I/O y soplador (verificado LightBurn hwType 0x13)
+    emit([0xca, 0x01, 0x30]);
+    emit([0xca, 0x01, 0x10]);
     emit([0xca, 0x01, layer.airAssist ? 0x13 : 0x12]);
     // C9 02 <speed 5B>: Active cut speed
     emit([0xc9, 0x02, ...encodeRuidaSpeedMmPerSec(speed)]);
     // C6 01/02: Tube 1 Active Min/Max power
     emit([0xc6, 0x01, ...encodeRuidaPowerPercent(minP)]);
     emit([0xc6, 0x02, ...encodeRuidaPowerPercent(maxP)]);
+    // CA 03 00: Fin de bloque de parámetros de capa
+    emit([0xca, 0x03, 0x00]);
   };
 
   let curUmX = 0;
@@ -528,14 +532,55 @@ export function compileWorkbenchToRuidaRd(
 
   const emittedLayerCutIndices = new Set<number>();
   const executionMode = config.executionSequenceMode ?? 'sequential_per_job';
+  const engraveGrouping = config.engraveGrouping ?? 'all_at_once';
   const travelOrder = config.travelOrder ?? 'zigzag_rows';
 
-  const emitJobLayerInRuida = (
-    job: WorkbenchJobItem,
+  const emitScanRowRuns = (
+    runsMm: Array<[number, number]>,
+    yMm: number,
+    forward: boolean
+  ) => {
+    if (forward) {
+      for (let r = 0; r < runsMm.length; r++) {
+        const [x0, x1] = runsMm[r];
+        if (x1 - x0 < 0.012) continue;
+        emitMoveAbs(x0, yMm);
+        emitCutAbs(x1, yMm);
+      }
+    } else {
+      for (let r = runsMm.length - 1; r >= 0; r--) {
+        const [x0, x1] = runsMm[r];
+        if (x1 - x0 < 0.012) continue;
+        emitMoveAbs(x1, yMm);
+        emitCutAbs(x0, yMm);
+      }
+    }
+  };
+
+  const resolveRasterMaskForItem = (
+    eng: WorkbenchJobItem['instances'][number]['engraveItems'][number],
+    effInterval: number,
+    ditherMode: WorkbenchLayerConfig['imageDitherMode']
+  ): RasterScanlineMask | undefined => {
+    if (eng.kind !== 'raster_image' || !eng.dataUrl) return undefined;
+    const bb = eng.boundingBox;
+    const key = buildRasterMaskCacheKey({
+      dataUrl: eng.dataUrl,
+      bboxWidthMm: Math.max(0.5, bb.width || eng.widthMm || 10),
+      bboxHeightMm: Math.max(0.5, bb.height || eng.heightMm || 10),
+      rotationDeg: eng.rotationDeg ?? 0,
+      mirrored: !!eng.mirrored,
+      lineIntervalMm: effInterval,
+      ditherMode: ditherMode ?? 'threshold',
+    });
+    return rasterMasks?.get(key) ?? getCachedRasterScanlineMask(key);
+  };
+
+  const emitLayerScopeInRuida = (
+    jobsScope: WorkbenchJobItem[],
     layer: WorkbenchLayerConfig
   ) => {
     const passes = Math.max(1, layer.passes);
-    const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
     let emittedPreamble = false;
 
     const ensurePreamble = () => {
@@ -548,177 +593,240 @@ export function compileWorkbenchToRuidaRd(
     };
 
     if (layer.role === 'ENGRAVE') {
-      for (const inst of orderedInstances) {
-        if (inst.engraveItems.length === 0) continue;
-        ensurePreamble();
+      const isScanLayer = layer.mode !== 'line';
+      const bidir = layer.bidirectional !== false;
+      const effInterval = Math.max(0.025, layer.lineIntervalMm || 0.08);
+      const ditherMode = layer.imageDitherMode ?? 'threshold';
+      const sweepAllAtOnce = isScanLayer && engraveGrouping === 'all_at_once';
 
+      if (sweepAllAtOnce) {
         for (let pass = 0; pass < passes; pass++) {
-          const isScanLayer = layer.mode !== 'line';
-          const bidir = layer.bidirectional !== false;
+          const bucketStep = Math.max(0.015, effInterval * 0.45);
+          const rowBuckets = new Map<
+            number,
+            { yMm: number; runsMm: Array<[number, number]> }
+          >();
+          const fallbackRects: Array<{
+            minX: number;
+            maxX: number;
+            minY: number;
+            maxY: number;
+          }> = [];
+          let hasAnyEngrave = false;
 
-          for (const eng of inst.engraveItems) {
-            if (eng.kind === 'vector_path' && eng.polylines && eng.polylines.length > 0) {
-              if (isScanLayer) {
-                const absPolylines = eng.polylines.map((pl) => ({
-                  closed: pl.closed,
-                  points: pl.points.map((pt) => ({
-                    x: roundMm(job.xMm + pt.x),
-                    y: roundMm(job.yMm + pt.y),
-                  })),
-                }));
-                const bb = eng.boundingBox;
-                const fillRows = rasterizePolylinesToHorizontalRuns(
-                  absPolylines,
-                  roundMm(job.xMm + bb.minX),
-                  roundMm(job.xMm + bb.maxX),
-                  roundMm(job.yMm + bb.minY),
-                  roundMm(job.yMm + bb.maxY),
-                  Math.max(0.025, layer.lineIntervalMm || 0.08)
-                );
-                if (fillRows.length > 0) {
-                  for (let row = 0; row < fillRows.length; row++) {
-                    const { yMm, runsMm } = fillRows[row];
-                    const forward = !bidir || row % 2 === 0;
-                    if (forward) {
-                      for (let r = 0; r < runsMm.length; r++) {
-                        const [x0, x1] = runsMm[r];
-                        emitMoveAbs(x0, yMm);
-                        emitCutAbs(x1, yMm);
-                      }
-                    } else {
-                      for (let r = runsMm.length - 1; r >= 0; r--) {
-                        const [x0, x1] = runsMm[r];
-                        emitMoveAbs(x1, yMm);
-                        emitCutAbs(x0, yMm);
-                      }
-                    }
-                  }
-                  continue;
-                }
-              }
-
-              for (const poly of eng.polylines) {
-                if (poly.points.length < 2) continue;
-                const p0 = poly.points[0];
-                emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-                for (let i = 1; i < poly.points.length; i++) {
-                  const pt = poly.points[i];
-                  emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
-                }
-                if (poly.closed && poly.points.length > 2) {
-                  emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-                }
-              }
+          const addScanRowToBucket = (yMm: number, runs: Array<[number, number]>) => {
+            if (runs.length === 0) return;
+            const bucketIdx = Math.round(yMm / bucketStep);
+            const existing = rowBuckets.get(bucketIdx);
+            if (existing) {
+              for (const seg of runs) existing.runsMm.push(seg);
             } else {
-              // Grabado raster real píxel a píxel de alta resolución en X (<= 0.02 mm)
-              const bb = eng.boundingBox;
-              const minX = roundMm(job.xMm + bb.minX);
-              const maxX = roundMm(job.xMm + bb.maxX);
-              const minY = roundMm(job.yMm + bb.minY);
-              const maxY = roundMm(job.yMm + bb.maxY);
-              const effInterval = Math.max(0.025, layer.lineIntervalMm || 0.08);
-              const ditherMode = layer.imageDitherMode ?? 'threshold';
+              rowBuckets.set(bucketIdx, { yMm, runsMm: [...runs] });
+            }
+          };
 
-              let mask: RasterScanlineMask | undefined;
-              if (eng.kind === 'raster_image' && eng.dataUrl) {
-                const key = buildRasterMaskCacheKey({
-                  dataUrl: eng.dataUrl,
-                  bboxWidthMm: Math.max(0.5, bb.width || eng.widthMm || 10),
-                  bboxHeightMm: Math.max(0.5, bb.height || eng.heightMm || 10),
-                  rotationDeg: eng.rotationDeg ?? 0,
-                  mirrored: !!eng.mirrored,
-                  lineIntervalMm: effInterval,
-                  ditherMode,
-                });
-                mask = rasterMasks?.get(key) ?? getCachedRasterScanlineMask(key);
+          for (const job of jobsScope) {
+            const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
+            for (const inst of orderedInstances) {
+              if (inst.engraveItems.length === 0) continue;
+              hasAnyEngrave = true;
+
+              for (const eng of inst.engraveItems) {
+                const bb = eng.boundingBox;
+                const minX = roundMm(job.xMm + bb.minX);
+                const maxX = roundMm(job.xMm + bb.maxX);
+                const minY = roundMm(job.yMm + bb.minY);
+                const maxY = roundMm(job.yMm + bb.maxY);
+
+                if (eng.kind === 'vector_path' && eng.polylines && eng.polylines.length > 0) {
+                  const absPolylines = eng.polylines.map((pl) => ({
+                    closed: pl.closed,
+                    points: pl.points.map((pt) => ({
+                      x: roundMm(job.xMm + pt.x),
+                      y: roundMm(job.yMm + pt.y),
+                    })),
+                  }));
+                  const fillRows = rasterizePolylinesToHorizontalRuns(
+                    absPolylines,
+                    minX,
+                    maxX,
+                    minY,
+                    maxY,
+                    effInterval
+                  );
+                  for (const row of fillRows) {
+                    addScanRowToBucket(row.yMm, row.runsMm);
+                  }
+                } else {
+                  const mask = resolveRasterMaskForItem(eng, effInterval, ditherMode);
+                  if (mask && mask.rowRuns.length > 0) {
+                    const spanX = Math.max(0.01, maxX - minX);
+                    const spanY = Math.max(0.01, maxY - minY);
+                    for (let row = 0; row < mask.rowRuns.length; row++) {
+                      const normRuns = mask.rowRuns[row];
+                      if (normRuns.length === 0) continue;
+                      const y = roundMm(minY + ((row + 0.5) / mask.rows) * spanY, 3);
+                      const absRuns: Array<[number, number]> = [];
+                      for (let r = 0; r < normRuns.length; r++) {
+                        const [u0, u1] = normRuns[r];
+                        const x0 = roundMm(minX + u0 * spanX, 3);
+                        const x1 = roundMm(minX + u1 * spanX, 3);
+                        if (x1 - x0 >= 0.012) absRuns.push([x0, x1]);
+                      }
+                      addScanRowToBucket(y, absRuns);
+                    }
+                  } else if (!mask) {
+                    fallbackRects.push({ minX, maxX, minY, maxY });
+                  }
+                }
               }
+            }
+          }
 
-              if (mask && mask.rowRuns.length > 0) {
-                const spanX = Math.max(0.01, maxX - minX);
-                const spanY = Math.max(0.01, maxY - minY);
-                for (let row = 0; row < mask.rowRuns.length; row++) {
-                  const runs = mask.rowRuns[row];
-                  if (runs.length === 0) continue;
-                  const y = roundMm(minY + ((row + 0.5) / mask.rows) * spanY, 3);
-                  const forward = !bidir || row % 2 === 0;
-                  if (forward) {
-                    for (let r = 0; r < runs.length; r++) {
-                      const [u0, u1] = runs[r];
-                      const x0 = roundMm(minX + u0 * spanX, 3);
-                      const x1 = roundMm(minX + u1 * spanX, 3);
-                      if (x1 - x0 < 0.012) continue;
-                      emitMoveAbs(x0, y);
-                      emitCutAbs(x1, y);
-                    }
-                  } else {
-                    for (let r = runs.length - 1; r >= 0; r--) {
-                      const [u0, u1] = runs[r];
-                      const x0 = roundMm(minX + u0 * spanX, 3);
-                      const x1 = roundMm(minX + u1 * spanX, 3);
-                      if (x1 - x0 < 0.012) continue;
-                      emitMoveAbs(x1, y);
-                      emitCutAbs(x0, y);
-                    }
+          if (!hasAnyEngrave) continue;
+          ensurePreamble();
+
+          const sortedRows = Array.from(rowBuckets.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map((entry) => entry[1]);
+
+          for (let rowIdx = 0; rowIdx < sortedRows.length; rowIdx++) {
+            const row = sortedRows[rowIdx];
+            const runs = [...row.runsMm].sort((a, b) => a[0] - b[0]);
+            const merged: Array<[number, number]> = [];
+            for (const [x0, x1] of runs) {
+              const prev = merged[merged.length - 1];
+              if (prev && x0 <= prev[1] + 0.015) {
+                prev[1] = Math.max(prev[1], x1);
+              } else {
+                merged.push([x0, x1]);
+              }
+            }
+            const forward = !bidir || rowIdx % 2 === 0;
+            emitScanRowRuns(merged, row.yMm, forward);
+          }
+
+          for (const rect of fallbackRects) {
+            emitMoveAbs(rect.minX, rect.minY);
+            emitCutAbs(rect.maxX, rect.minY);
+            emitCutAbs(rect.maxX, rect.maxY);
+            emitCutAbs(rect.minX, rect.maxY);
+            emitCutAbs(rect.minX, rect.minY);
+          }
+        }
+        return;
+      }
+
+      // Modo etiqueta por etiqueta (o modo vector/línea para grabado)
+      for (const job of jobsScope) {
+        const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
+        for (const inst of orderedInstances) {
+          if (inst.engraveItems.length === 0) continue;
+          ensurePreamble();
+
+          for (let pass = 0; pass < passes; pass++) {
+            for (const eng of inst.engraveItems) {
+              if (eng.kind === 'vector_path' && eng.polylines && eng.polylines.length > 0) {
+                for (const poly of eng.polylines) {
+                  if (poly.points.length < 2) continue;
+                  const p0 = poly.points[0];
+                  emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
+                  for (let i = 1; i < poly.points.length; i++) {
+                    const pt = poly.points[i];
+                    emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
+                  }
+                  if (poly.closed && poly.points.length > 2) {
+                    emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
                   }
                 }
               } else {
-                // Fallback seguro si no hay canvas DOM (tests headless): marcar solo contorno de encuadre sin bloque negro sólido
-                emitMoveAbs(minX, minY);
-                emitCutAbs(maxX, minY);
-                emitCutAbs(maxX, maxY);
-                emitCutAbs(minX, maxY);
-                emitCutAbs(minX, minY);
+                const bb = eng.boundingBox;
+                const minX = roundMm(job.xMm + bb.minX);
+                const maxX = roundMm(job.xMm + bb.maxX);
+                const minY = roundMm(job.yMm + bb.minY);
+                const maxY = roundMm(job.yMm + bb.maxY);
+                const mask = resolveRasterMaskForItem(eng, effInterval, ditherMode);
+
+                if (mask && mask.rowRuns.length > 0) {
+                  const spanX = Math.max(0.01, maxX - minX);
+                  const spanY = Math.max(0.01, maxY - minY);
+                  for (let row = 0; row < mask.rowRuns.length; row++) {
+                    const normRuns = mask.rowRuns[row];
+                    if (normRuns.length === 0) continue;
+                    const y = roundMm(minY + ((row + 0.5) / mask.rows) * spanY, 3);
+                    const absRuns = normRuns.map(
+                      ([u0, u1]) =>
+                        [
+                          roundMm(minX + u0 * spanX, 3),
+                          roundMm(minX + u1 * spanX, 3),
+                        ] as [number, number]
+                    );
+                    const forward = !bidir || row % 2 === 0;
+                    emitScanRowRuns(absRuns, y, forward);
+                  }
+                } else {
+                  emitMoveAbs(minX, minY);
+                  emitCutAbs(maxX, minY);
+                  emitCutAbs(maxX, maxY);
+                  emitCutAbs(minX, maxY);
+                  emitCutAbs(minX, minY);
+                }
               }
             }
           }
         }
       }
     } else if (layer.role === 'HOLES') {
-      for (const inst of orderedInstances) {
-        for (const hole of inst.holeContours) {
-          if (hole.points.length < 2) continue;
+      for (const job of jobsScope) {
+        const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
+        for (const inst of orderedInstances) {
+          for (const hole of inst.holeContours) {
+            if (hole.points.length < 2) continue;
+            ensurePreamble();
+            for (let pass = 0; pass < passes; pass++) {
+              const p0 = hole.points[0];
+              emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
+              for (let i = 1; i < hole.points.length; i++) {
+                const pt = hole.points[i];
+                emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
+              }
+              emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
+            }
+          }
+        }
+      }
+    } else if (layer.role === 'CUT') {
+      for (const job of jobsScope) {
+        const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
+        for (const inst of orderedInstances) {
+          const contour = inst.cutContour;
+          if (!contour || contour.points.length < 2) continue;
           ensurePreamble();
           for (let pass = 0; pass < passes; pass++) {
-            const p0 = hole.points[0];
+            const p0 = contour.points[0];
             emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-            for (let i = 1; i < hole.points.length; i++) {
-              const pt = hole.points[i];
+            for (let i = 1; i < contour.points.length; i++) {
+              const pt = contour.points[i];
               emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
             }
             emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
           }
         }
       }
-    } else if (layer.role === 'CUT') {
-      for (const inst of orderedInstances) {
-        const contour = inst.cutContour;
-        if (!contour || contour.points.length < 2) continue;
-        ensurePreamble();
-        for (let pass = 0; pass < passes; pass++) {
-          const p0 = contour.points[0];
-          emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-          for (let i = 1; i < contour.points.length; i++) {
-            const pt = contour.points[i];
-            emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
-          }
-          emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-        }
-      }
     }
   };
 
   if (executionMode === 'sequential_per_job') {
-    // Ejecutar Trabajo #1 completo (C00 Grabado -> C01 Agujeros -> C02 Corte), y recién al terminar seguir con #2, #3...
+    // Trabajo #1 completo (C00 todas las de esa fila -> C01 Agujeros -> C02 Corte), luego #2...
     for (const job of visibleJobs) {
       for (const layer of sortedLayers) {
-        emitJobLayerInRuida(job, layer);
+        emitLayerScopeInRuida([job], layer);
       }
     }
   } else {
+    // Global por capa en toda la plancha: primero todo C00 barriendo filas completas, luego C01, luego C02
     for (const layer of sortedLayers) {
-      for (const job of visibleJobs) {
-        emitJobLayerInRuida(job, layer);
-      }
+      emitLayerScopeInRuida(visibleJobs, layer);
     }
   }
 

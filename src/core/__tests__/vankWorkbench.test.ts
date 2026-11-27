@@ -22,6 +22,7 @@ import {
   buildRasterMaskCacheKey,
   buildScanlineMaskFromRgba,
   rasterizePolylinesToHorizontalRuns,
+  RasterScanlineMask,
 } from '../workbench/rasterScanlines';
 import {
   buildRuidaThumbnailsCommands,
@@ -1298,5 +1299,154 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
       [0, 3],
       [7, 10],
     ]);
+  });
+
+  it('21. Barrido simultáneo por fila en C00 (todas las columnas juntas) y transición limpia C00→C01→C02 (CA 01 30/10 + CA 03 00)', () => {
+    const eco = INITIAL_MATERIALS_CATALOG.find((m) => m.id === 'ECOCUERO_SUELA')!;
+    const base = createDefaultWorkbenchConfig(730, 600, eco);
+    const cfg = {
+      ...base,
+      engraveGrouping: 'all_at_once' as const,
+      layers: base.layers.map((l) => ({
+        ...l,
+        speedMmPerSec: l.role === 'ENGRAVE' ? 600 : 100,
+        maxPowerPercent: l.role === 'ENGRAVE' ? 30 : 100,
+        minPowerPercent: l.role === 'ENGRAVE' ? 15 : 80,
+      })),
+    };
+
+    const fakePng = 'data:image/png;base64,iVBORw0KGgo=';
+    const baseOrders = createInitialOrdersCatalog();
+    const rasterDesign = {
+      ...baseOrders[0].labelDesign,
+      widthMm: 20,
+      heightMm: 10,
+      holes: { ...baseOrders[0].labelDesign.holes, preset: 'two_horizontal' as const },
+      elements: [
+        {
+          id: 'logo-row-sweep',
+          type: 'logo_raster' as const,
+          name: 'Logo Sweep',
+          visible: true,
+          locked: false,
+          xMm: 10,
+          yMm: 5,
+          widthMm: 12,
+          heightMm: 6,
+          aspectRatio: 2,
+          lockAspectRatio: true,
+          rotationDeg: 0,
+          mirrored: false,
+          operationLayer: 'ENGRAVE' as const,
+          originalDataUrl: fakePng,
+          processedDataUrl: fakePng,
+          pixelWidth: 100,
+          pixelHeight: 50,
+          processing: {
+            mode: 'raster' as const,
+            threshold: 175,
+            ditherStrength: 0.5,
+            invert: false,
+            contrast: 1.1,
+            brightness: 0,
+            gamma: 1,
+            removeLightBackground: true,
+            removeBackground: true,
+            turdSize: 2,
+            backgroundTolerance: 24,
+            preserveLogoDetail: true,
+          },
+          vectorizedPathsNormalized: [],
+          effectiveDpi: 254,
+        },
+      ],
+    };
+
+    // 3 columnas en la misma fila horizontal + agujeros + corte exterior
+    const job = createWorkbenchJobFromOrder({
+      design: rasterDesign,
+      nesting: computeNestingLayout(rasterDesign, {
+        ...baseOrders[0].nestingConfig,
+        sheetWidthMm: 730,
+        sheetHeightMm: 600,
+      }),
+      mode: 'custom_grid',
+      customColumns: 3,
+      customRows: 1,
+      projectName: 'Sweep Row',
+      clientName: 'Cliente',
+      orderId: 'ord-sweep',
+      existingJobs: [],
+      config: cfg,
+    });
+
+    const engItem = job.instances[0].engraveItems[0];
+    const maskKey = buildRasterMaskCacheKey({
+      dataUrl: engItem.dataUrl!,
+      bboxWidthMm: engItem.boundingBox.width,
+      bboxHeightMm: engItem.boundingBox.height,
+      rotationDeg: engItem.rotationDeg ?? 0,
+      mirrored: !!engItem.mirrored,
+      lineIntervalMm: cfg.layers[0].lineIntervalMm || 0.08,
+      ditherMode: cfg.layers[0].imageDitherMode ?? 'threshold',
+    });
+    // 2 filas oscuras: la fila 0 debe barrer las 3 etiquetas (3 cortes en Y0) antes de bajar a Y1
+    const twoRowMask: RasterScanlineMask = {
+      cols: 12,
+      rows: 2,
+      rowRuns: [[[0.1, 0.9]], [[0.1, 0.9]]],
+    };
+
+    const compiled = compileWorkbenchToRuidaRd(
+      [job],
+      cfg,
+      new Map([[maskKey, twoRowMask]])
+    );
+    const raw = compiled.rawUnscrambledBytes;
+
+    // Verificar los 3 cambios de capa C00 (Scan) -> C01 (Cut) -> C02 (Cut) con CA 01 30/10 y CA 03 00
+    const findSub = (seq: number[], from = 0): number => {
+      for (let i = from; i <= raw.length - seq.length; i++) {
+        if (seq.every((v, k) => raw[i + k] === v)) return i;
+      }
+      return -1;
+    };
+    const c00Idx = findSub([0xca, 0x01, 0x05, 0xca, 0x01, 0x02, 0xca, 0x02, 0x00, 0xca, 0x01, 0x30, 0xca, 0x01, 0x10]);
+    const c01Idx = findSub([0xca, 0x01, 0x00, 0xca, 0x02, 0x01, 0xca, 0x01, 0x30, 0xca, 0x01, 0x10], c00Idx + 1);
+    const c02Idx = findSub([0xca, 0x01, 0x00, 0xca, 0x02, 0x02, 0xca, 0x01, 0x30, 0xca, 0x01, 0x10], c01Idx + 1);
+    expect(c00Idx).toBeGreaterThan(-1);
+    expect(c01Idx).toBeGreaterThan(c00Idx);
+    expect(c02Idx).toBeGreaterThan(c01Idx);
+    expect(findSub([0xca, 0x03, 0x00], c01Idx)).toBeGreaterThan(c01Idx);
+
+    // Extraer coordenadas Y de los cortes en C00 (0xA8 o 0xAA): en Y0 deben ocurrir 3 cortes seguidos y luego 3 en Y1
+    let curX = 0;
+    let curY = 0;
+    const cutYs: number[] = [];
+    for (let i = c00Idx; i < c01Idx; ) {
+      const b = raw[i];
+      if (b === 0x88 && i + 10 < c01Idx) {
+        curX = decodeRuidaAbsCoordMm(Array.from(raw.slice(i + 1, i + 6)));
+        curY = decodeRuidaAbsCoordMm(Array.from(raw.slice(i + 6, i + 11)));
+        i += 11;
+      } else if (b === 0xa8 && i + 10 < c01Idx) {
+        curX = decodeRuidaAbsCoordMm(Array.from(raw.slice(i + 1, i + 6)));
+        curY = decodeRuidaAbsCoordMm(Array.from(raw.slice(i + 6, i + 11)));
+        cutYs.push(Math.round(curY * 100));
+        i += 11;
+      } else if ((b === 0x8a || b === 0xaa) && i + 2 < c01Idx) {
+        if (b === 0xaa) cutYs.push(Math.round(curY * 100));
+        i += 3;
+      } else {
+        i++;
+      }
+    }
+    expect(cutYs).toHaveLength(6);
+    // Los primeros 3 cortes comparten exactamente la misma fila Y (barriendo 3 etiquetas a la vez), luego los 3 siguientes bajan a Y1
+    expect(cutYs[0]).toBe(cutYs[1]);
+    expect(cutYs[1]).toBe(cutYs[2]);
+    expect(cutYs[3]).toBe(cutYs[4]);
+    expect(cutYs[4]).toBe(cutYs[5]);
+    expect(cutYs[3]).not.toBe(cutYs[0]);
   });
 });
