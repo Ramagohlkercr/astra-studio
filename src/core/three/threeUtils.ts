@@ -265,7 +265,8 @@ function synthesizeLaserMapsFromCanvas(
   bumpCtx: CanvasRenderingContext2D,
   width: number,
   height: number,
-  markHex: string
+  markHex: string,
+  finishKind: 'ablated_metal' | 'char_burn' | 'frosted_glass' | 'anodized_dark' = 'char_burn'
 ): void {
   const [mr, mg, mb] = hexToRgbTuple(markHex);
   const src = colorCtx.getImageData(0, 0, width, height);
@@ -275,7 +276,7 @@ function synthesizeLaserMapsFromCanvas(
 
   for (let i = 0; i < d.length; i += 4) {
     const a = d[i + 3];
-    if (a < 18) {
+    if (a < 16) {
       d[i + 3] = 0;
       b[i] = 160;
       b[i + 1] = 160;
@@ -295,11 +296,30 @@ function synthesizeLaserMapsFromCanvas(
       b[i + 2] = 160;
       b[i + 3] = 255;
     } else {
-      d[i] = mr;
-      d[i + 1] = mg;
-      d[i + 2] = mb;
-      d[i + 3] = Math.round(Math.min(255, strength * 270));
-      const depthVal = Math.round(160 - strength * 140);
+      const pxIdx = i >> 2;
+      const px = pxIdx % width;
+      const py = (pxIdx / width) | 0;
+      const microNoise =
+        finishKind === 'frosted_glass'
+          ? 0.8 + 0.2 * Math.abs(Math.sin(px * 12.9898 + py * 78.233) * 43758.5453 % 1)
+          : 1;
+
+      if (finishKind === 'char_burn' && strength < 0.55) {
+        // Borde térmico tostado cálido alrededor del pirograbado en cuero/madera
+        d[i] = Math.round(mr + (120 - mr) * 0.38);
+        d[i + 1] = Math.round(mg + (66 - mg) * 0.35);
+        d[i + 2] = Math.round(mb + (24 - mb) * 0.28);
+      } else {
+        d[i] = mr;
+        d[i + 1] = mg;
+        d[i + 2] = mb;
+      }
+
+      const alphaBoost = finishKind === 'frosted_glass' ? 235 * microNoise : 285;
+      d[i + 3] = Math.round(Math.min(255, strength * alphaBoost));
+
+      const depthScale = finishKind === 'char_burn' ? 148 : finishKind === 'ablated_metal' ? 125 : 105;
+      const depthVal = Math.round(160 - strength * depthScale);
       b[i] = depthVal;
       b[i + 1] = depthVal;
       b[i + 2] = depthVal;
@@ -328,9 +348,10 @@ export function buildRotaryEngravedTextures(
   svgWidthMm: number,
   svgHeightMm: number,
   markHex: string,
-  onLoaded?: () => void
+  onLoaded?: () => void,
+  finishKind: 'ablated_metal' | 'char_burn' | 'frosted_glass' | 'anodized_dark' = 'char_burn'
 ): Engraved3DTextures {
-  const size = 1536;
+  const size = 2048;
   const colorCanvas = document.createElement('canvas');
   colorCanvas.width = size;
   colorCanvas.height = size;
@@ -349,10 +370,10 @@ export function buildRotaryEngravedTextures(
 
   const colorTexture = new THREE.CanvasTexture(colorCanvas);
   colorTexture.colorSpace = THREE.SRGBColorSpace;
-  colorTexture.anisotropy = 8;
+  colorTexture.anisotropy = 16;
 
   const bumpTexture = new THREE.CanvasTexture(bumpCanvas);
-  bumpTexture.anisotropy = 8;
+  bumpTexture.anisotropy = 16;
 
   let cancelled = false;
   if (svgRaw && typeof Image !== 'undefined') {
@@ -360,6 +381,8 @@ export function buildRotaryEngravedTextures(
     img.onload = () => {
       if (cancelled || !colorCtx || !bumpCtx) return;
       colorCtx.clearRect(0, 0, size, size);
+      colorCtx.imageSmoothingEnabled = true;
+      colorCtx.imageSmoothingQuality = 'high';
 
       const srcW = Math.max(1, img.naturalWidth || svgWidthMm * 8 || 512);
       const srcH = Math.max(1, img.naturalHeight || svgHeightMm * 8 || 512);
@@ -370,7 +393,7 @@ export function buildRotaryEngravedTextures(
       colorCtx.drawImage(img, 0, 0, srcW, srcH);
       colorCtx.restore();
 
-      synthesizeLaserMapsFromCanvas(colorCtx, bumpCtx, size, size, markHex);
+      synthesizeLaserMapsFromCanvas(colorCtx, bumpCtx, size, size, markHex, finishKind);
       colorTexture.needsUpdate = true;
       bumpTexture.needsUpdate = true;
       onLoaded?.();

@@ -14,6 +14,7 @@ import {
   StudioPostComposer,
 } from '../core/three/threeUtils';
 import {
+  buildRollerRotaryAssembly,
   buildRotaryVesselGroup,
   buildSanouChuckModels,
   buildTailstockSupportAssembly,
@@ -384,22 +385,15 @@ export const Rotary3DViewport: React.FC<Props> = ({
     } else {
       const rollerR = Math.max(8, (config.rollerDiameterMm ?? 18) / 2);
       const rollerOffsetZ = Math.max(rollerR + 8, r0 * 0.62);
-      for (const zSign of [-1, 1]) {
-        const roller = new THREE.Mesh(
-          new THREE.CylinderGeometry(rollerR, rollerR, len + 26, 40),
-          new THREE.MeshStandardMaterial({
-            color: '#0ea5e9',
-            metalness: 0.76,
-            roughness: 0.3,
-            roughnessMap: brushedTex.clone(),
-          })
-        );
-        roller.rotation.z = -Math.PI / 2;
-        roller.position.set(0, -r0 - rollerR, zSign * rollerOffsetZ);
-        roller.castShadow = true;
-        axisFrame.add(roller);
-        rollersGroupRef.current.push(roller);
-      }
+      const { staticBaseGroup, rollersGroup } = buildRollerRotaryAssembly(
+        r0,
+        rollerR,
+        len,
+        rollerOffsetZ,
+        brushedTex
+      );
+      axisFrame.add(staticBaseGroup);
+      rollersGroupRef.current.push(...rollersGroup);
     }
 
     // Producto modelado 3D + textura física realista correspondiente (Cuero Mate, Verde Stanley, Cristal, Coat)
@@ -414,20 +408,31 @@ export const Rotary3DViewport: React.FC<Props> = ({
     });
     spindle.add(vesselGroup);
 
-    // Grabado real envuelto en bajorrelieve con contraste físico acorde al material
+    // Grabado real envuelto en 2048x2048 con contraste PBR y relieve acorde a cada material
     const arcRad = ((Math.min(360, Math.max(1, config.arcDeg || 360))) * Math.PI) / 180;
+    const isGlassFinish =
+      appearance.surface === 'glass' || appearance.surface === 'emerald_glass';
+    const finishKind = appearance.engraveIsAblatedMetal
+      ? 'ablated_metal'
+      : isGlassFinish
+        ? 'frosted_glass'
+        : appearance.surface === 'stainless'
+          ? 'anodized_dark'
+          : 'char_burn';
+
     const engravedMaps = buildRotaryEngravedTextures(
       svgRaw,
       layout.canvasWidthMm,
       layout.canvasHeightMm,
       appearance.markHex,
-      () => composerRef.current?.render()
+      () => composerRef.current?.render(),
+      finishKind
     );
     const wrapGeo = new THREE.CylinderGeometry(
-      r1 + 0.36,
-      r0 + 0.36,
+      r1 + 0.28,
+      r0 + 0.28,
       len,
-      80,
+      128,
       1,
       true,
       -Math.PI / 2,
@@ -436,19 +441,45 @@ export const Rotary3DViewport: React.FC<Props> = ({
     const wrapMat = new THREE.MeshStandardMaterial({
       map: engravedMaps.colorTexture,
       bumpMap: engravedMaps.bumpTexture,
-      bumpScale: 2.2,
+      bumpScale: finishKind === 'char_burn' ? 3.2 : appearance.engraveIsAblatedMetal ? 2.6 : 1.9,
       transparent: true,
-      alphaTest: 0.04,
-      roughness: appearance.engraveIsAblatedMetal ? 0.2 : 0.88,
-      metalness: appearance.engraveIsAblatedMetal ? 0.92 : 0.08,
+      alphaTest: 0.06,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+      roughness: appearance.engraveIsAblatedMetal ? 0.16 : isGlassFinish ? 0.88 : 0.9,
+      metalness: appearance.engraveIsAblatedMetal ? 0.96 : 0.04,
+      envMapIntensity: appearance.engraveIsAblatedMetal ? 1.45 : 0.85,
       emissive: appearance.markEmissive,
-      emissiveIntensity: appearance.surface === 'glass' ? 0.28 : 0.18,
+      emissiveIntensity: isGlassFinish ? 0.28 : appearance.engraveIsAblatedMetal ? 0.14 : 0.04,
       side: THREE.FrontSide,
     });
     const wrapMesh = new THREE.Mesh(wrapGeo, wrapMat);
     wrapMesh.rotation.z = -Math.PI / 2;
     wrapMesh.receiveShadow = true;
     spindle.add(wrapMesh);
+
+    // Marcadores discretos de encuadre axial (Frame) sobre la generatriz superior del objeto
+    const xDesignMin = -len / 2 + layout.offsetXMm;
+    const xDesignMax = xDesignMin + layout.effectiveDesignWidthMm;
+    const rFrame0 = r0 + ((r1 - r0) * (layout.offsetXMm / Math.max(1, len))) + 0.65;
+    const rFrame1 =
+      r0 +
+      ((r1 - r0) * ((layout.offsetXMm + layout.effectiveDesignWidthMm) / Math.max(1, len))) +
+      0.65;
+    const frameGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(xDesignMin, rFrame0, -2.5),
+      new THREE.Vector3(xDesignMin, rFrame0, 2.5),
+      new THREE.Vector3(xDesignMax, rFrame1, 2.5),
+      new THREE.Vector3(xDesignMax, rFrame1, -2.5),
+      new THREE.Vector3(xDesignMin, rFrame0, -2.5),
+    ]);
+    spindle.add(
+      new THREE.Line(
+        frameGeo,
+        new THREE.LineBasicMaterial({ color: '#22d3ee', transparent: true, opacity: 0.55 })
+      )
+    );
 
     const seamGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(-len / 2, r0 + 0.72, 0),
@@ -492,6 +523,8 @@ export const Rotary3DViewport: React.FC<Props> = ({
     svgRaw,
     layout.canvasWidthMm,
     layout.canvasHeightMm,
+    layout.offsetXMm,
+    layout.effectiveDesignWidthMm,
     layout.tapered,
     physicalSetup.tailstockLiftMm,
     physicalSetup.endToLift,

@@ -13,6 +13,7 @@ import { INITIAL_MATERIALS_CATALOG } from '../core/materials/materialsCatalog';
 import { createDefaultWorkbenchConfig } from '../core/workbench/workbenchTypes';
 import {
   buildPhysicalCutLabelGeometry,
+  buildRollerRotaryAssembly,
   buildRotaryVesselGroup,
   buildSanouChuckModels,
   buildTailstockSupportAssembly,
@@ -119,9 +120,14 @@ describe('Visores 3D Three.js (Rotativo y Mesa Vank 9060)', () => {
 
     const chuck = buildSanouChuckModels(45, -82, dummyTex);
     expect(chuck.staticMotorGroup.children.length).toBeGreaterThan(1);
-    expect(chuck.rotatingChuckGroup.children.length).toBeGreaterThanOrEqual(5);
+    expect(chuck.rotatingChuckGroup.children.length).toBeGreaterThanOrEqual(8);
     disposeObject3D(chuck.staticMotorGroup);
     disposeObject3D(chuck.rotatingChuckGroup);
+
+    const rollerAsm = buildRollerRotaryAssembly(38, 10, 120, 30, dummyTex);
+    expect(rollerAsm.staticBaseGroup.children.length).toBeGreaterThanOrEqual(6);
+    expect(rollerAsm.rollersGroup).toHaveLength(2);
+    disposeObject3D(rollerAsm.staticBaseGroup);
 
     const jack = buildTailstockSupportAssembly(46, -80, 12);
     expect(jack.children.length).toBeGreaterThanOrEqual(5);

@@ -372,17 +372,49 @@ export interface RotaryPhysicalSetupInfo {
   stepResolutionUm: number | null;
   /** Tiempo estimado de grabado rotativo en segundos (0 si aún no se ingresó velocidad) */
   estimatedDurationSec: number;
+  /** Desglose del tiempo de producción (en segundos) para vista de taller y lotes */
+  timeBreakdown: {
+    scanOrCutSec: number;
+    turnaroundAndIndexSec: number;
+    perPieceSec: number;
+    effectiveDpi: number;
+    recommendedMaxRollerSpeedWarning: string | null;
+  };
   /** Cantidad total de líneas de barrido axial X a lo largo del giro Y */
   estimatedScanLines: number;
 }
 
 /**
+ * Estima el tiempo por lote de N piezas agregando un tiempo breve de cambio de pieza entre objetos.
+ */
+export function estimateRotaryBatchDuration(
+  perPieceSec: number,
+  quantity: number,
+  swapTimePerPieceSec = 18
+): { totalSec: number; machiningSec: number; handlingSec: number } {
+  const safeQty = Math.max(1, Math.round(quantity || 1));
+  const safePerPiece = Math.max(0, perPieceSec || 0);
+  if (safePerPiece <= 0) {
+    return { totalSec: 0, machiningSec: 0, handlingSec: 0 };
+  }
+  const machiningSec = Math.round(safePerPiece * safeQty);
+  const handlingSec = safeQty > 1 ? (safeQty - 1) * swapTimePerPieceSec : 0;
+  return {
+    totalSec: machiningSec + handlingSec,
+    machiningSec,
+    handlingSec,
+  };
+}
+
+/**
  * Calcula los datos físicos de montaje, nivelación de foco Z en conos, resolución angular en µm/paso
- * y tiempo estimado de grabado para el Mandril Sanou o Rodillos en la Vank 9060.
+ * y tiempo estimado de grabado real para el Mandril Sanou o Rodillos en la Vank 9060.
  */
 export function computeRotaryPhysicalSetup(
   config: RotaryConfig,
-  design: Pick<LabelDesign, 'widthMm' | 'heightMm'>,
+  design: Pick<LabelDesign, 'widthMm' | 'heightMm'> & {
+    elements?: LabelDesign['elements'];
+  },
   layerParams: RotaryEngraveLayerParams = DEFAULT_ROTARY_LAYER_PARAMS
 ): RotaryPhysicalSetupInfo {
   const tapered = isTapered(config);
@@ -415,25 +447,83 @@ export function computeRotaryPhysicalSetup(
 
   const swapsAxes =
     config.designRotationDeg === 90 || config.designRotationDeg === 270;
-  const effW = swapsAxes ? design.heightMm : design.widthMm;
-  const effH = swapsAxes ? design.widthMm : design.heightMm;
+
+  // Calcular caja real ocupada por los elementos visibles dentro del diseño para no sobreestimar márgenes vacíos
+  let activeW = design.widthMm;
+  let activeH = design.heightMm;
+  let visibleCount = 0;
+  if (Array.isArray(design.elements)) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const el of design.elements) {
+      if (!el.visible) continue;
+      visibleCount++;
+      minX = Math.min(minX, el.xMm);
+      minY = Math.min(minY, el.yMm);
+      maxX = Math.max(maxX, el.xMm + el.widthMm);
+      maxY = Math.max(maxY, el.yMm + el.heightMm);
+    }
+    if (visibleCount > 0 && Number.isFinite(minX)) {
+      activeW = Math.max(1, Math.min(design.widthMm, maxX - minX));
+      activeH = Math.max(1, Math.min(design.heightMm, maxY - minY));
+    }
+  }
+
+  const effW = swapsAxes ? activeH : activeW;
+  const effH = swapsAxes ? activeW : activeH;
 
   const copies = Math.max(1, Math.min(36, Math.round(config.repeatCount ?? 1)));
   const interval = Math.max(0.02, layerParams.lineIntervalMm || 0.073);
+  const effectiveDpi = Math.round(25.4 / interval);
   const passes = Math.max(1, layerParams.passes || 1);
-  const crossFactor = layerParams.crossHatch ? 2 : 1;
+  const crossFactor = layerParams.mode !== 'line' && layerParams.crossHatch ? 2 : 1;
 
-  const linesPerCopy = Math.ceil(Math.max(1, effH) / interval);
+  const linesPerCopy =
+    layerParams.mode === 'line'
+      ? Math.max(1, visibleCount || 1)
+      : Math.ceil(Math.max(1, effH) / interval);
   const estimatedScanLines = linesPerCopy * copies * passes * crossFactor;
 
+  let scanOrCutSec = 0;
+  let turnaroundAndIndexSec = 0;
   let estimatedDurationSec = 0;
+
   if (layerParams.speedMmPerSec && layerParams.speedMmPerSec > 0) {
-    const overscanExtraMm =
-      effW * ((layerParams.overscanPercent || 2.5) / 100) * 2;
-    const strokeMm = effW + overscanExtraMm;
-    const scanSec = (estimatedScanLines * strokeMm) / layerParams.speedMmPerSec;
-    const turnaroundSec = estimatedScanLines * 0.095;
-    estimatedDurationSec = Math.ceil(scanSec + turnaroundSec);
+    const speed = layerParams.speedMmPerSec;
+    if (layerParams.mode === 'line') {
+      // Modo Línea (contorno vectorial): perímetro aproximado del diseño × factor de detalle interior
+      const approxPerimeterMm = 2 * (effW + effH) * Math.max(1.8, Math.min(4.5, (visibleCount || 1) * 1.4));
+      scanOrCutSec = (approxPerimeterMm * copies * passes) / speed;
+      turnaroundAndIndexSec = copies * passes * 1.1;
+      estimatedDurationSec = Math.max(1, Math.ceil(scanOrCutSec + turnaroundAndIndexSec));
+    } else {
+      const overscanExtraMm =
+        effW * ((layerParams.overscanPercent || 2.5) / 100) * 2;
+      const strokeMm = effW + overscanExtraMm;
+      const forwardSec = (estimatedScanLines * strokeMm) / speed;
+      // Si es unidireccional, cada línea vuelve en vacío a ~300 mm/s
+      const returnSec = layerParams.bidirectional
+        ? 0
+        : (estimatedScanLines * strokeMm) / Math.max(speed, 300);
+      scanOrCutSec = forwardSec + returnSec;
+      const indexSecPerLine = config.rotaryType === 'roller' ? 0.115 : 0.095;
+      // Giro de separación entre copias cuando copies > 1
+      const interCopyIndexSec = copies > 1 ? copies * 0.85 : 0;
+      turnaroundAndIndexSec = estimatedScanLines * indexSecPerLine + interCopyIndexSec;
+      estimatedDurationSec = Math.max(1, Math.ceil(scanOrCutSec + turnaroundAndIndexSec));
+    }
+  }
+
+  let recommendedMaxRollerSpeedWarning: string | null = null;
+  if (
+    config.rotaryType === 'roller' &&
+    layerParams.speedMmPerSec &&
+    layerParams.speedMmPerSec > 450
+  ) {
+    recommendedMaxRollerSpeedWarning =
+      `Velocidad alta (${layerParams.speedMmPerSec} mm/s) para rodillos: a >450 mm/s la pieza puede patinar. Recomendado <= 400 mm/s o usar Mandril Sanou.`;
   }
 
   return {
@@ -444,6 +534,13 @@ export function computeRotaryPhysicalSetup(
     axisLengthScaleRatio,
     stepResolutionUm,
     estimatedDurationSec,
+    timeBreakdown: {
+      scanOrCutSec: roundMm(scanOrCutSec, 1),
+      turnaroundAndIndexSec: roundMm(turnaroundAndIndexSec, 1),
+      perPieceSec: estimatedDurationSec,
+      effectiveDpi,
+      recommendedMaxRollerSpeedWarning,
+    },
     estimatedScanLines,
   };
 }

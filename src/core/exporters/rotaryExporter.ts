@@ -1,6 +1,7 @@
 import {compileLabelGeometry, rasterImageTransform, roundMm} from '../geometry/geometryEngine';
 import {
   computeRotaryLayout,
+  computeRotaryPhysicalSetup,
   DEFAULT_ROTARY_LAYER_PARAMS,
   isTapered,
   RotaryConfig,
@@ -166,7 +167,11 @@ function collectRotaryArtwork(design: LabelDesign, config: RotaryConfig, layout:
  * SVG 1:1 mm sólo de grabado (capa 00) con el arte desenrollado sobre el objeto cilíndrico.
  * Lanza error si la configuración o el diseño no son válidos.
  */
-export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): RotaryExportArtifact {
+export function exportRotarySvg(
+  design: LabelDesign,
+  config: RotaryConfig,
+  layerParams: RotaryEngraveLayerParams = DEFAULT_ROTARY_LAYER_PARAMS
+): RotaryExportArtifact {
   const layout = computeRotaryLayout(config, design);
   if (!layout.valid) throw new Error(`Rotativo inválido: ${layout.errors.join(' ')}`);
 
@@ -218,7 +223,7 @@ export function exportRotarySvg(design: LabelDesign, config: RotaryConfig): Rota
   const base = rotaryBaseName(design, config, layout);
   return {
     svgContent: lines.join('\n'),
-    instructionsText: buildRotaryInstructions(design, config, layout),
+    instructionsText: buildRotaryInstructions(design, config, layout, layerParams),
     svgFilename: `${base}.svg`,
     instructionsFilename: `${base}_INSTRUCCIONES.txt`,
     widthMm: w,
@@ -289,7 +294,22 @@ export function exportRotaryDxf(design: LabelDesign, config: RotaryConfig): Rota
   return {dxfContent: out.join('\n') + '\n', filename: `${rotaryBaseName(design, config, layout)}_RDWORKS.dxf`, polylineCount};
 }
 
-export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfig, layout = computeRotaryLayout(config, design)): string {
+export function buildRotaryInstructions(
+  design: LabelDesign,
+  config: RotaryConfig,
+  layout = computeRotaryLayout(config, design),
+  layerParams: RotaryEngraveLayerParams = DEFAULT_ROTARY_LAYER_PARAMS
+): string {
+  const physical = computeRotaryPhysicalSetup(config, design, layerParams);
+  const mins = Math.floor(physical.estimatedDurationSec / 60);
+  const secs = physical.estimatedDurationSec % 60;
+  const formattedTime =
+    physical.estimatedDurationSec > 0
+      ? mins > 0
+        ? `~${mins} min ${secs} s`
+        : `~${secs} s`
+      : 'Pendiente (definir velocidad mm/s)';
+
   const rows = [
     'ASTRA STUDIO — INSTRUCCIONES DE ROTATIVO (Vank 9060 / Ruida RDC8445S)',
     '',
@@ -305,6 +325,9 @@ export function buildRotaryInstructions(design: LabelDesign, config: RotaryConfi
     `Diseño ocupa: ${layout.designArcDeg}° de la circunferencia${layout.repeatCount > 1 ? ` x ${layout.repeatCount} copias (separación entre centros ${layout.copyPitchMm} mm)` : ''}`,
     ...(config.axisOffsetMm || config.angularOffsetDeg ? [`Desplazamiento: ${config.axisOffsetMm ?? 0} mm axial, ${config.angularOffsetDeg ?? 0}° de giro`] : []),
     `Lienzo del archivo: ${layout.canvasWidthMm} x ${layout.canvasHeightMm} mm`,
+    `Parámetros C00: Modo ${layerParams.mode.toUpperCase()} | Vel ${layerParams.speedMmPerSec ?? '—'} mm/s | Pot ${layerParams.maxPowerPercent ?? '—'}% | Int. ${layerParams.lineIntervalMm} mm (${physical.timeBreakdown.effectiveDpi} DPI) | Pasadas: ${layerParams.passes}`,
+    `Tiempo estimado de producción (1 pieza): ${formattedTime} (${physical.estimatedScanLines} líneas/trazos)`,
+    ...(physical.stepResolutionUm !== null ? [`Resolución mecánica estimada: ${physical.stepResolutionUm} µm/paso`] : []),
     '',
     ...(layout.tapered ? [
       '*******************************************************************************',

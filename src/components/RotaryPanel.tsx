@@ -32,6 +32,7 @@ import {
   correctedRotarySteps,
   DEFAULT_ROTARY_LAYER_PARAMS,
   diameterAtX,
+  estimateRotaryBatchDuration,
   isTapered,
   RotaryConfig,
   RotaryEngraveLayerParams,
@@ -301,6 +302,7 @@ export function RotaryPanel({
     'webgl' | 'schematic'
   >('webgl');
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
+  const [productionBatchQty, setProductionBatchQty] = useState<number>(1);
 
   // Ángulo de rotación interactivo para girar el vaso/termo 360° (215° muestra el logo frente a cámara e iluminado)
   const [previewRotationDeg, setPreviewRotationDeg] = useState<number>(215);
@@ -422,6 +424,15 @@ export function RotaryPanel({
   const physicalSetup = useMemo(
     () => computeRotaryPhysicalSetup(config, design, layerParams),
     [config, design, layerParams]
+  );
+
+  const batchTime = useMemo(
+    () =>
+      estimateRotaryBatchDuration(
+        physicalSetup.estimatedDurationSec,
+        productionBatchQty
+      ),
+    [physicalSetup.estimatedDurationSec, productionBatchQty]
   );
 
   const previewResult = useMemo(() => {
@@ -744,7 +755,7 @@ export function RotaryPanel({
     }
     const files: LogoOutputFile[] = [];
     try {
-      const art = exportRotarySvg(design, config);
+      const art = exportRotarySvg(design, config, layerParams);
       files.push(
         { name: art.svgFilename, content: art.svgContent },
         { name: art.instructionsFilename, content: art.instructionsText }
@@ -1705,7 +1716,7 @@ export function RotaryPanel({
               </span>
             </div>
 
-            <div className="flex items-center gap-2 font-mono">
+            <div className="flex flex-wrap items-center gap-2 font-mono">
               <span className="text-slate-300">
                 C00:{' '}
                 <strong className="text-white">
@@ -1715,9 +1726,27 @@ export function RotaryPanel({
                 </strong>
               </span>
               <span className="text-slate-600">·</span>
-              <span className="text-emerald-400 font-bold">
-                Tiempo: ~{formatDurationSec(physicalSetup.estimatedDurationSec)}
-              </span>
+              {physicalSetup.estimatedDurationSec > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setSidebarTab('laser_c00')}
+                  className="px-2 py-0.5 rounded bg-emerald-950/70 border border-emerald-600/50 text-emerald-300 font-bold hover:bg-emerald-900/70 transition"
+                  title="Ver desglose de tiempo por pieza y por lote en 2. Velocidad y Potencia"
+                >
+                  ⏱️ Tiempo: ~{formatDurationSec(physicalSetup.estimatedDurationSec)}
+                  {productionBatchQty > 1
+                    ? ` · ${productionBatchQty}u: ~${formatDurationSec(batchTime.totalSec)}`
+                    : ''}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setSidebarTab('laser_c00')}
+                  className="px-2 py-0.5 rounded bg-amber-950/60 border border-amber-600/50 text-amber-300 font-bold hover:bg-amber-900/60 transition"
+                >
+                  ⏱️ Tiempo: Definir Vel. →
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -2507,6 +2536,91 @@ export function RotaryPanel({
                 </details>
               </div>
 
+              {/* Tarjeta dedicada de Tiempo de Producción (1 pieza y lote completo) */}
+              <div className="bg-slate-900/85 p-3.5 rounded-xl border border-emerald-800/60 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-emerald-300 text-xs">
+                    ⏱️ Tiempo Estimado de Producción
+                  </span>
+                  <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-300">
+                    {physicalSetup.estimatedScanLines} {layerParams.mode === 'line' ? 'trazos' : 'líneas'} · {physicalSetup.timeBreakdown.effectiveDpi} DPI
+                  </span>
+                </div>
+
+                {physicalSetup.estimatedDurationSec > 0 ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="p-2 rounded-lg bg-slate-950 border border-slate-800">
+                        <span className="text-[10px] text-slate-400 block">
+                          1 pieza ({layout.repeatCount} copia{layout.repeatCount > 1 ? 's' : ''})
+                        </span>
+                        <span className="font-mono text-sm font-extrabold text-emerald-400">
+                          ~{formatDurationSec(physicalSetup.estimatedDurationSec)}
+                        </span>
+                        <span className="text-[9px] font-mono text-slate-500 block">
+                          Láser {Math.round(physicalSetup.timeBreakdown.scanOrCutSec)}s + Giros {Math.round(physicalSetup.timeBreakdown.turnaroundAndIndexSec)}s
+                        </span>
+                      </div>
+
+                      <div className="p-2 rounded-lg bg-slate-950 border border-slate-800">
+                        <span className="text-[10px] text-slate-400 block">
+                          Lote ({productionBatchQty} pieza{productionBatchQty > 1 ? 's' : ''})
+                        </span>
+                        <span className="font-mono text-sm font-extrabold text-cyan-300">
+                          ~{formatDurationSec(batchTime.totalSec)}
+                        </span>
+                        <span className="text-[9px] font-mono text-slate-500 block">
+                          {productionBatchQty > 1
+                            ? `Incl. ~${Math.round(batchTime.handlingSec / 60)}m recambio`
+                            : 'Cambiar cantidad abajo'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-1.5 text-[10px]">
+                      <span className="text-slate-400">Calcular lote de:</span>
+                      <div className="flex items-center gap-1">
+                        {[1, 10, 24, 50].map((qty) => (
+                          <button
+                            key={qty}
+                            type="button"
+                            onClick={() => setProductionBatchQty(qty)}
+                            className={`px-2 py-0.5 rounded font-mono font-bold border transition ${
+                              productionBatchQty === qty
+                                ? 'bg-cyan-500/20 border-cyan-500 text-cyan-200'
+                                : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {qty}u
+                          </button>
+                        ))}
+                        <input
+                          type="number"
+                          min={1}
+                          max={2000}
+                          aria-label="Cantidad de piezas del lote rotativo"
+                          value={productionBatchQty}
+                          onChange={(e) =>
+                            setProductionBatchQty(Math.max(1, Math.round(Number(e.target.value) || 1)))
+                          }
+                          className="w-12 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 font-mono text-[10px] text-white text-center"
+                        />
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-[11px] text-amber-200 bg-amber-950/30 border border-amber-700/40 rounded-lg p-2">
+                    Cargá arriba una <strong>Velocidad (mm/s)</strong> o elegí un preset de referencia para calcular el tiempo exacto por pieza y por lote.
+                  </p>
+                )}
+
+                {physicalSetup.timeBreakdown.recommendedMaxRollerSpeedWarning && (
+                  <p className="text-[10px] text-amber-300 bg-amber-950/40 border border-amber-700/50 rounded px-2 py-1">
+                    ⚠ {physicalSetup.timeBreakdown.recommendedMaxRollerSpeedWarning}
+                  </p>
+                )}
+              </div>
+
               {/* Recetas rotativas guardadas (Objeto + Parámetros C00) */}
               <div className="bg-slate-900/75 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
                 <div className="flex items-center justify-between">
@@ -3001,7 +3115,7 @@ export function RotaryPanel({
                   aria-label="IP Vank 9060"
                   value={ruidaIp}
                   onChange={(e) => setRuidaIp(e.target.value)}
-                  className="flex-1 bg-slate-900 border border-slate-700 px-2 py-1 rounded text-[11px] font-mono text-cyan-200 focus:border-cyan-500 focus:outline-none min-w-0"
+                  className="flex-1 min-w-[116px] bg-slate-900 border border-slate-700 px-2 py-1 rounded text-[11px] font-mono text-cyan-200 focus:border-cyan-500 focus:outline-none"
                 />
                 <input
                   type="text"
@@ -3010,7 +3124,7 @@ export function RotaryPanel({
                   value={rotaryJobName}
                   onChange={(e) => setRotaryJobName(e.target.value.toUpperCase())}
                   placeholder="ROTAT01"
-                  className="w-20 bg-slate-900 border border-slate-700 px-1.5 py-1 rounded text-[11px] font-mono text-amber-200 uppercase text-center focus:border-cyan-500 focus:outline-none shrink-0"
+                  className="w-16 bg-slate-900 border border-slate-700 px-1 py-1 rounded text-[10px] font-mono text-amber-200 uppercase text-center focus:border-cyan-500 focus:outline-none shrink-0"
                 />
                 <button
                   type="button"

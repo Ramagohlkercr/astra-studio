@@ -813,9 +813,23 @@ export function buildSanouChuckModels(
   jawGeo.translate(0, 0, -5);
 
   const jawClampRadius = Math.max(12, rClamped);
+  const slotMat = new THREE.MeshStandardMaterial({
+    color: '#0f172a',
+    metalness: 0.75,
+    roughness: 0.5,
+  });
+
   for (const deg of [0, 120, 240]) {
     const holder = new THREE.Group();
     holder.rotation.x = (deg * Math.PI) / 180;
+
+    // Guía radial en la cara del plato Sanou
+    const slot = new THREE.Mesh(
+      new THREE.BoxGeometry(3.2, 34, 4.8),
+      slotMat
+    );
+    slot.position.set(chuckX + 11.4, 27, 0);
+    holder.add(slot);
 
     const jaw = new THREE.Mesh(jawGeo, jawMat);
     jaw.position.set(chuckX + 11, jawClampRadius, 0);
@@ -825,7 +839,139 @@ export function buildSanouChuckModels(
     rotatingChuckGroup.add(holder);
   }
 
+  // Tomas laterales de llave cuadrada Sanou en el cuerpo del mandril
+  for (const deg of [60, 180, 300]) {
+    const rad = (deg * Math.PI) / 180;
+    const keySocket = new THREE.Mesh(
+      new THREE.CylinderGeometry(3.6, 3.6, 3, 16),
+      slotMat
+    );
+    keySocket.rotation.x = rad;
+    keySocket.position.set(chuckX - 1, Math.cos(rad) * 46.2, Math.sin(rad) * 46.2);
+    rotatingChuckGroup.add(keySocket);
+  }
+
   return { staticMotorGroup, rotatingChuckGroup };
+}
+
+/**
+ * Ensamblaje CNC realista para Rotativo de Rodillos Motrices (Roller):
+ * riel de aluminio anodizado, motor NEMA lateral, poleas, correa dentada,
+ * ejes de acero cepillado y anillos de goma antideslizante rotando en sincronía.
+ */
+export function buildRollerRotaryAssembly(
+  r0: number,
+  rollerR: number,
+  len: number,
+  rollerOffsetZ: number,
+  brushedTex: THREE.Texture
+): {
+  staticBaseGroup: THREE.Group;
+  rollersGroup: THREE.Mesh[];
+} {
+  const staticBaseGroup = new THREE.Group();
+  const rollersGroup: THREE.Mesh[] = [];
+
+  const frameMat = new THREE.MeshStandardMaterial({
+    color: '#1e293b',
+    metalness: 0.78,
+    roughness: 0.34,
+  });
+  const anodizedMat = new THREE.MeshStandardMaterial({
+    color: '#0284c7',
+    metalness: 0.84,
+    roughness: 0.24,
+  });
+  const steelMat = new THREE.MeshStandardMaterial({
+    color: '#cbd5e1',
+    metalness: 0.9,
+    roughness: 0.22,
+    roughnessMap: brushedTex.clone(),
+  });
+  const rubberMat = new THREE.MeshStandardMaterial({
+    color: '#111827',
+    metalness: 0.05,
+    roughness: 0.88,
+  });
+
+  const rollerLen = len + 26;
+  const rollerY = -r0 - rollerR;
+  const basePlateY = rollerY - rollerR - 8;
+
+  // Base longitudinal de aluminio extruido con patines de goma
+  const baseRail = new THREE.Mesh(
+    new RoundedBoxGeometry(rollerLen + 36, 8, rollerOffsetZ * 2 + 28, 2, 2),
+    frameMat
+  );
+  baseRail.position.set(0, basePlateY, 0);
+  baseRail.castShadow = true;
+  baseRail.receiveShadow = true;
+  staticBaseGroup.add(baseRail);
+
+  // Placas laterales de soporte con rodamientos
+  for (const xSide of [-rollerLen / 2 - 4, rollerLen / 2 + 4]) {
+    const endPlate = new THREE.Mesh(
+      new RoundedBoxGeometry(7, rollerR * 2 + 12, rollerOffsetZ * 2 + 24, 2, 1.5),
+      anodizedMat
+    );
+    endPlate.position.set(xSide, rollerY, 0);
+    endPlate.castShadow = true;
+    staticBaseGroup.add(endPlate);
+  }
+
+  // Motor NEMA + correa cerrada de transmisión en extremo izquierdo
+  const motorX = -rollerLen / 2 - 22;
+  const motorBody = new THREE.Mesh(
+    new RoundedBoxGeometry(28, 32, 32, 2, 2.5),
+    frameMat
+  );
+  motorBody.position.set(motorX, rollerY - 4, 0);
+  motorBody.castShadow = true;
+  staticBaseGroup.add(motorBody);
+
+  const beltWidth = rollerOffsetZ * 2 + 6;
+  const belt = new THREE.Mesh(
+    new RoundedBoxGeometry(4, 14, beltWidth, 2, 3),
+    rubberMat
+  );
+  belt.position.set(-rollerLen / 2 - 11, rollerY, 0);
+  staticBaseGroup.add(belt);
+
+  // Dos rodillos motrices de acero + bujes de goma antideslizante + polea dentada
+  for (const zSign of [-1, 1]) {
+    const roller = new THREE.Mesh(
+      new THREE.CylinderGeometry(rollerR * 0.72, rollerR * 0.72, rollerLen + 14, 32),
+      steelMat
+    );
+    roller.rotation.z = -Math.PI / 2;
+    roller.position.set(0, rollerY, zSign * rollerOffsetZ);
+    roller.castShadow = true;
+
+    // Aros de goma negra de agarre a lo largo del rodillo
+    const ringCount = 5;
+    for (let i = 0; i < ringCount; i++) {
+      const rx = -rollerLen * 0.4 + (rollerLen * 0.8 * i) / (ringCount - 1);
+      const grip = new THREE.Mesh(
+        new THREE.CylinderGeometry(rollerR, rollerR, 8, 32),
+        rubberMat
+      );
+      grip.position.y = rx; // local Y = eje X mundial tras rotación Z -90°
+      roller.add(grip);
+    }
+
+    // Polea de arrastre izquierda
+    const pulley = new THREE.Mesh(
+      new THREE.CylinderGeometry(rollerR + 2.5, rollerR + 2.5, 6, 24),
+      anodizedMat
+    );
+    pulley.position.y = -rollerLen / 2 - 11;
+    roller.add(pulley);
+
+    staticBaseGroup.add(roller);
+    rollersGroup.push(roller);
+  }
+
+  return { staticBaseGroup, rollersGroup };
 }
 
 export function buildTailstockSupportAssembly(

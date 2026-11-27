@@ -1,5 +1,15 @@
 import {describe, it, expect} from 'vitest';
-import {computeRotaryLayout, DEFAULT_ROTARY_CONFIG, rotaryCircumferenceMm, sanitizeRotaryConfig, warpPointForTaper, diameterAtX} from '../rotary/rotaryEngine';
+import {
+  computeRotaryLayout,
+  computeRotaryPhysicalSetup,
+  DEFAULT_ROTARY_CONFIG,
+  DEFAULT_ROTARY_LAYER_PARAMS,
+  diameterAtX,
+  estimateRotaryBatchDuration,
+  rotaryCircumferenceMm,
+  sanitizeRotaryConfig,
+  warpPointForTaper,
+} from '../rotary/rotaryEngine';
 import {exportRotarySvg, exportRotaryGuideSvg, exportRotaryDxf} from '../exporters/rotaryExporter';
 import {createInitialOrdersCatalog} from '../projects/projectManager';
 
@@ -153,4 +163,59 @@ describe('Rotary hardware configuration',()=>{
  expect(restored?.stepsPerRotation).toBe(12500);expect(restored?.rollerDiameterMm).toBe(32);
  expect(DEFAULT_ROTARY_CONFIG.rollerDiameterMm).toBeUndefined();
  });
+});
+
+describe('Rotary production timing & precision setup', () => {
+  it('distingue entre modo Relleno (bidireccional vs unidireccional), modo Línea vectorial y tiempo por lote', () => {
+    const des = base();
+    const cfg = { ...DEFAULT_ROTARY_CONFIG, rotaryType: 'chuck' as const, stepsPerRotation: 3200 };
+
+    const bi = computeRotaryPhysicalSetup(cfg, des, {
+      ...DEFAULT_ROTARY_LAYER_PARAMS,
+      mode: 'fill',
+      speedMmPerSec: 350,
+      maxPowerPercent: 28,
+      bidirectional: true,
+    });
+    const uni = computeRotaryPhysicalSetup(cfg, des, {
+      ...DEFAULT_ROTARY_LAYER_PARAMS,
+      mode: 'fill',
+      speedMmPerSec: 350,
+      maxPowerPercent: 28,
+      bidirectional: false,
+    });
+    const vecLine = computeRotaryPhysicalSetup(cfg, des, {
+      ...DEFAULT_ROTARY_LAYER_PARAMS,
+      mode: 'line',
+      speedMmPerSec: 120,
+      maxPowerPercent: 25,
+    });
+
+    expect(bi.estimatedDurationSec).toBeGreaterThanOrEqual(5);
+    expect(uni.estimatedDurationSec).toBeGreaterThan(bi.estimatedDurationSec);
+    expect(vecLine.estimatedDurationSec).toBeGreaterThan(0);
+    expect(vecLine.estimatedDurationSec).toBeLessThan(bi.estimatedDurationSec);
+    expect(bi.timeBreakdown.effectiveDpi).toBe(Math.round(25.4 / 0.073));
+
+    const batch10 = estimateRotaryBatchDuration(bi.estimatedDurationSec, 10);
+    expect(batch10.machiningSec).toBe(bi.estimatedDurationSec * 10);
+    expect(batch10.handlingSec).toBe(9 * 18);
+    expect(batch10.totalSec).toBe(batch10.machiningSec + batch10.handlingSec);
+
+    // Advertencia de patinamiento si rodillos exceden 450 mm/s
+    const rollerFast = computeRotaryPhysicalSetup(
+      { ...DEFAULT_ROTARY_CONFIG, rotaryType: 'roller' },
+      des,
+      { ...DEFAULT_ROTARY_LAYER_PARAMS, speedMmPerSec: 550, maxPowerPercent: 30 }
+    );
+    expect(rollerFast.timeBreakdown.recommendedMaxRollerSpeedWarning).toContain('450 mm/s');
+
+    // Instrucciones exportadas incluyen el tiempo calculado cuando hay velocidad configurada
+    const exp = exportRotarySvg(des, cfg, {
+      ...DEFAULT_ROTARY_LAYER_PARAMS,
+      speedMmPerSec: 350,
+      maxPowerPercent: 28,
+    });
+    expect(exp.instructionsText).toContain('Tiempo estimado de producción (1 pieza):');
+  });
 });
