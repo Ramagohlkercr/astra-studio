@@ -8,6 +8,7 @@ import {
   Bell,
   BookOpen,
   CheckCircle2,
+  ClipboardPaste,
   Clock,
   Copy,
   Cpu,
@@ -44,6 +45,11 @@ import {
   roundMm,
 } from '../core/geometry/geometryEngine';
 import { processImageDataUrlInBrowser } from '../core/image/browserImageLoader';
+import {
+  extractLogoFilesFromClipboardData,
+  isEditableKeyboardTarget,
+  readLogoFilesFromClipboard,
+} from '../core/image/clipboardLogoReader';
 import {
   DEFAULT_IMAGE_PROCESSING,
   parseSvgLogoString,
@@ -982,15 +988,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     await importExternalFilesToWorkbench(fileArray);
   };
 
-  // Subir múltiples archivos de logo (PNG, JPG, SVG) o archivos CAD/Láser a la tirada
-  const handleMultiLogoFilesSelected = async (
-    e: React.ChangeEvent<HTMLInputElement>
+  // Subir o pegar múltiples archivos de logo (PNG, JPG, SVG o portapapeles) a la tirada
+  const processLogoFilesIntoWorkbench = async (
+    fileArray: File[],
+    originLabel: 'upload' | 'clipboard' = 'upload'
   ) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    const fileArray = Array.from(files);
-    e.target.value = '';
-
     setIsUploadingLogos(true);
     try {
       let currentList = [...workbenchJobs];
@@ -1001,7 +1003,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       for (const file of fileArray) {
         const cleanName = file.name.replace(/\.[^.]+$/, '');
         const extFmt = detectExternalLaserFormat(file.name);
-        if (extFmt && extFmt !== 'svg') {
+        if (extFmt && extFmt !== 'svg' && !(originLabel === 'clipboard' && extFmt === 'raster')) {
           const bytes = new Uint8Array(await file.arrayBuffer());
           const imported = await importExternalLaserFile({
             fileName: file.name,
@@ -1102,7 +1104,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             gapXMm: nesting.config.gapXMm,
             gapYMm: nesting.config.gapYMm,
             existingJobs: currentList,
-            config: workbenchConfig,
+            config: nextCfg,
           });
           currentList.push(newJob);
           lastCreatedId = newJob.id;
@@ -1126,19 +1128,68 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
       );
       onUpdateJobs(arranged);
       if (lastCreatedId) setSelectedJobId(lastCreatedId);
-      onNotify(
-        `${addedCount} trabajo(s) con logos distintos cargados y acomodados aprovechando la plancha.`
-      );
+      const msg =
+        originLabel === 'clipboard'
+          ? `📋 ${addedCount} logo(s) pegado(s) del portapapeles y acomodado(s) en la tirada.`
+          : `${addedCount} trabajo(s) con logos distintos cargados y acomodados aprovechando la plancha.`;
+      setRuidaStatusMsg({ type: 'success', text: msg });
+      onNotify(msg);
     } catch (err) {
-      onNotify(
-        `Error al procesar logos para la tirada: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
+      const msg = `Error al procesar logos para la tirada: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      setRuidaStatusMsg({ type: 'error', text: msg });
+      onNotify(msg);
     } finally {
       setIsUploadingLogos(false);
     }
   };
+
+  const handleMultiLogoFilesSelected = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const fileArray = Array.from(files);
+    e.target.value = '';
+    await processLogoFilesIntoWorkbench(fileArray, 'upload');
+  };
+
+  const handlePasteLogoToWorkbenchButton = async () => {
+    const files = await readLogoFilesFromClipboard();
+    if (files.length === 0) {
+      const warn =
+        'No se detectó ningún logo o imagen copiado en el portapapeles. Copiá una imagen (⌘C / Copiar imagen) y tocá "Pegar Logo" o presioná ⌘V.';
+      setRuidaStatusMsg({ type: 'info', text: warn });
+      onNotify(warn);
+      return;
+    }
+    await processLogoFilesIntoWorkbench(files, 'clipboard');
+  };
+
+  const processLogoFilesIntoWorkbenchRef = useRef(processLogoFilesIntoWorkbench);
+  processLogoFilesIntoWorkbenchRef.current = processLogoFilesIntoWorkbench;
+
+  useEffect(() => {
+    const onWorkbenchPaste = (e: ClipboardEvent) => {
+      if (isEditableKeyboardTarget(e.target)) return;
+      const clipFiles = extractLogoFilesFromClipboardData(e.clipboardData);
+      if (clipFiles.length > 0) {
+        e.preventDefault();
+        void processLogoFilesIntoWorkbenchRef.current(clipFiles, 'clipboard');
+        return;
+      }
+      if (isTauri()) {
+        void readLogoFilesFromClipboard().then((nativeFiles) => {
+          if (nativeFiles.length > 0) {
+            void processLogoFilesIntoWorkbenchRef.current(nativeFiles, 'clipboard');
+          }
+        });
+      }
+    };
+    window.addEventListener('paste', onWorkbenchPaste);
+    return () => window.removeEventListener('paste', onWorkbenchPaste);
+  }, []);
 
   // Acciones de agregar trabajos a la plancha
   const handleAddActiveBatch = () => {
@@ -2256,6 +2307,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             <span>
               {isUploadingLogos ? 'Cargando...' : '+ Subir Logos'}
             </span>
+          </button>
+
+          <button
+            type="button"
+            disabled={isUploadingLogos}
+            onClick={() => void handlePasteLogoToWorkbenchButton()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-600/90 hover:bg-teal-500 text-white text-xs font-bold transition-colors whitespace-nowrap"
+            title="Pegar logo copiado en el portapapeles (o presioná ⌘V / Ctrl+V) sin descargar archivos"
+          >
+            <ClipboardPaste className="w-3.5 h-3.5 shrink-0" />
+            <span>Pegar Logo</span>
           </button>
 
           <button

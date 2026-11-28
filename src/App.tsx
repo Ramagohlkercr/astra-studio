@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronUp,
   CircleDot,
+  ClipboardPaste,
   Copy,
   Download,
   Eye,
@@ -64,7 +65,13 @@ import {
   importExternalLaserFile,
   mergeComplementaryImportedJobs,
   mergeImportedLayerUpdates,
+  parseSvgExternalFile,
 } from './core/workbench/externalLaserFileImporter';
+import {
+  extractLogoFilesFromClipboardData,
+  isEditableKeyboardTarget,
+  readLogoFilesFromClipboard,
+} from './core/image/clipboardLogoReader';
 import {
   createDefaultWorkbenchConfig,
   ECOCUERO_BED_PASS_HEIGHT_MM,
@@ -557,8 +564,46 @@ export function App() {
     if (ext === 'svg' || file.type === 'image/svg+xml') {
       const text = await file.text();
       let parsed: ReturnType<typeof parseSvgLogoString>;
-      try { parsed = parseSvgLogoString(text); }
-      catch (err) { notify(`Error al importar SVG: ${(err as Error).message}`); return; }
+      try {
+        parsed = parseSvgLogoString(text);
+      } catch (err) {
+        try {
+          // Respaldo tolerante para SVG copiados/exportados con <g transform="..."> o estilos
+          const extSvg = parseSvgExternalFile(text);
+          const flatPaths = extSvg.paths.map((pl) => {
+            const segs = pl.points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`);
+            if (pl.closed) segs.push('Z');
+            return segs.join(' ');
+          });
+          const xs = extSvg.paths.flatMap((pl) => pl.points.map((p) => p.x));
+          const ys = extSvg.paths.flatMap((pl) => pl.points.map((p) => p.y));
+          if (flatPaths.length === 0 || xs.length === 0) throw err;
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+          const w = Math.max(1, maxX - minX);
+          const h = Math.max(1, maxY - minY);
+          parsed = {
+            originalViewBox: { minX, minY, width: w, height: h },
+            normalizedPaths: flatPaths,
+            aspectRatio: w / h,
+            contentBoundsNormalized: {
+              minX: 0,
+              minY: 0,
+              maxX: 1,
+              maxY: 1,
+              width: 1,
+              height: 1,
+              centerNormX: 0.5,
+              centerNormY: 0.5,
+            },
+          };
+        } catch {
+          notify(`Error al importar SVG: ${(err as Error).message}`);
+          return;
+        }
+      }
 
       const rawEl: SvgLogoElement = {
         id: `logo-svg-${Date.now()}`,
@@ -626,6 +671,44 @@ export function App() {
     };
     reader.readAsDataURL(file);
   };
+
+  const handleImageUploadRef = useRef(handleImageUpload);
+  handleImageUploadRef.current = handleImageUpload;
+  const isWorkbenchOpenRef = useRef(isWorkbenchOpen);
+  isWorkbenchOpenRef.current = isWorkbenchOpen;
+
+  const handlePasteLogoFromClipboardButton = async () => {
+    const files = await readLogoFilesFromClipboard();
+    if (files.length === 0) {
+      notify(
+        'No se encontró ningún logo ni imagen en el portapapeles. Copiá una imagen o SVG y tocá "Pegar Logo" o presioná ⌘V / Ctrl+V.'
+      );
+      return;
+    }
+    await handleImageUpload(files[0]);
+  };
+
+  useEffect(() => {
+    const onGlobalPaste = (e: ClipboardEvent) => {
+      if (isWorkbenchOpenRef.current) return;
+      if (isEditableKeyboardTarget(e.target)) return;
+      const clipFiles = extractLogoFilesFromClipboardData(e.clipboardData);
+      if (clipFiles.length > 0) {
+        e.preventDefault();
+        void handleImageUploadRef.current(clipFiles[0]);
+        return;
+      }
+      if (isTauri() && (!e.clipboardData || e.clipboardData.types.length === 0)) {
+        void readLogoFilesFromClipboard().then((nativeFiles) => {
+          if (nativeFiles.length > 0) {
+            void handleImageUploadRef.current(nativeFiles[0]);
+          }
+        });
+      }
+    };
+    window.addEventListener('paste', onGlobalPaste);
+    return () => window.removeEventListener('paste', onGlobalPaste);
+  }, []);
 
   // Carga de logos de muestra reales
   const handleLoadSampleLogo = async (
@@ -1920,9 +2003,19 @@ export function App() {
                     Arrastrá el logotipo aquí o hacé clic para seleccionar
                   </p>
                   <p className="text-[11px] text-slate-400 mt-1 font-mono">
-                    Formatos admitidos: PNG, JPG y SVG vectorial
+                    Formatos: PNG, JPG, SVG · También podés pegar con ⌘V / Ctrl+V
                   </p>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() => void handlePasteLogoFromClipboardButton()}
+                  className="w-full py-2 px-3 rounded-lg bg-cyan-950/70 hover:bg-cyan-900/90 border border-cyan-700/80 text-cyan-200 text-xs font-bold flex items-center justify-center gap-2 transition-colors"
+                  title="Pegar imagen o SVG directamente desde el portapapeles sin descargar archivo"
+                >
+                  <ClipboardPaste className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span>Pegar Logo del Portapapeles (⌘V)</span>
+                </button>
 
                 {/* Logos de Prueba Rápidos */}
                 <div>

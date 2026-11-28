@@ -70,6 +70,185 @@ pub fn save_logo_files(app: tauri::AppHandle, logo_name: String, files: Vec<Logo
     save_at(&documents, &logo_name, files)
 }
 
+#[derive(Serialize)]
+pub struct ClipboardLogoPayload {
+    pub found: bool,
+    pub mime: String,
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+}
+
+fn detect_clipboard_mime_by_name(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".bmp") {
+        "image/bmp"
+    } else {
+        "image/png"
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_clipboard_logo() -> ClipboardLogoPayload {
+    use std::process::Command;
+
+    // 1. Si el portapapeles contiene código SVG copiado como texto plano
+    if let Ok(out) = Command::new("pbpaste").output() {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let trimmed = text.trim();
+            if (trimmed.starts_with("<svg") || trimmed.starts_with("<?xml"))
+                && trimmed.to_ascii_lowercase().contains("<svg")
+                && out.stdout.len() <= 16 * 1024 * 1024
+            {
+                return ClipboardLogoPayload {
+                    found: true,
+                    mime: "image/svg+xml".to_string(),
+                    file_name: "Logo_Portapapeles.svg".to_string(),
+                    bytes: trimmed.as_bytes().to_vec(),
+                };
+            }
+        }
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_png = std::env::temp_dir().join(format!("astra_clip_{stamp}.png"));
+    let tmp_tiff = std::env::temp_dir().join(format!("astra_clip_{stamp}.tiff"));
+
+    // 2. Intentar PNG directo, luego TIFF (Corel/Illustrator/Preview) o alias de archivo en Finder
+    let script = r#"
+on run argv
+  set outPng to item 1 of argv
+  set outTiff to item 2 of argv
+  try
+    set rawPng to the clipboard as «class PNGf»
+    set f to open for access POSIX file outPng with write permission
+    set eof f to 0
+    write rawPng to f
+    close access f
+    return "PNG"
+  end try
+  try
+    set rawTiff to the clipboard as «class TIFF»
+    set f to open for access POSIX file outTiff with write permission
+    set eof f to 0
+    write rawTiff to f
+    close access f
+    return "TIFF"
+  end try
+  try
+    set p to POSIX path of (the clipboard as alias)
+    return "FILE:" & p
+  end try
+  return "NONE"
+end run
+"#;
+
+    let mut result = ClipboardLogoPayload {
+        found: false,
+        mime: String::new(),
+        file_name: String::new(),
+        bytes: Vec::new(),
+    };
+
+    if let Ok(out) = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .arg(&tmp_png)
+        .arg(&tmp_tiff)
+        .output()
+    {
+        if out.status.success() {
+            let tag = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if tag == "PNG" {
+                if let Ok(bytes) = fs::read(&tmp_png) {
+                    if !bytes.is_empty() && bytes.len() <= 32 * 1024 * 1024 {
+                        result = ClipboardLogoPayload {
+                            found: true,
+                            mime: "image/png".to_string(),
+                            file_name: "Logo_Portapapeles.png".to_string(),
+                            bytes,
+                        };
+                    }
+                }
+            } else if tag == "TIFF" {
+                let converted = Command::new("/usr/bin/sips")
+                    .args(["-s", "format", "png"])
+                    .arg(&tmp_tiff)
+                    .arg("--out")
+                    .arg(&tmp_png)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if converted {
+                    if let Ok(bytes) = fs::read(&tmp_png) {
+                        if !bytes.is_empty() && bytes.len() <= 32 * 1024 * 1024 {
+                            result = ClipboardLogoPayload {
+                                found: true,
+                                mime: "image/png".to_string(),
+                                file_name: "Logo_Portapapeles.png".to_string(),
+                                bytes,
+                            };
+                        }
+                    }
+                }
+            } else if let Some(file_path) = tag.strip_prefix("FILE:") {
+                let path = PathBuf::from(file_path.trim());
+                if let Some(fname) = path.file_name().and_then(|s| s.to_str()) {
+                    let lower = fname.to_ascii_lowercase();
+                    let supported = [
+                        ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".svg", ".dxf", ".lbrn2",
+                        ".lbrn", ".ai", ".rd",
+                    ]
+                    .iter()
+                    .any(|ext| lower.ends_with(ext));
+                    if supported {
+                        if let Ok(bytes) = fs::read(&path) {
+                            if !bytes.is_empty() && bytes.len() <= 32 * 1024 * 1024 {
+                                result = ClipboardLogoPayload {
+                                    found: true,
+                                    mime: detect_clipboard_mime_by_name(fname).to_string(),
+                                    file_name: fname.to_string(),
+                                    bytes,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = fs::remove_file(&tmp_png);
+    let _ = fs::remove_file(&tmp_tiff);
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_macos_clipboard_logo() -> ClipboardLogoPayload {
+    ClipboardLogoPayload {
+        found: false,
+        mime: String::new(),
+        file_name: String::new(),
+        bytes: Vec::new(),
+    }
+}
+
+#[tauri::command]
+pub async fn read_clipboard_logo() -> Result<ClipboardLogoPayload, String> {
+    tauri::async_runtime::spawn_blocking(read_macos_clipboard_logo)
+        .await
+        .map_err(|e| format!("Error al leer el portapapeles: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

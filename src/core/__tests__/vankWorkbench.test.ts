@@ -49,6 +49,10 @@ import {
   verifyRuidaUdpPacketChecksums,
 } from '../workbench/ruidaCompiler';
 import {
+  extractLogoFilesFromClipboardData,
+  isEditableKeyboardTarget,
+} from '../image/clipboardLogoReader';
+import {
   buildSmartRelayPowerCommand,
   DEFAULT_MACHINE_POWER_RELAY_CONFIG,
   probeVankRuidaConnection,
@@ -2020,5 +2024,39 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
       'off'
     );
     expect(disabled).toBeNull();
+  });
+
+  it('27. Pegado directo de logos desde portapapeles (imágenes PNG y código SVG, respetando inputs de texto)', () => {
+    const fakePng = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'image.png', {
+      type: 'image/png',
+    });
+    const fakeDtImg = {
+      files: [fakePng],
+      items: [{ kind: 'file', type: 'image/png', getAsFile: () => fakePng }],
+      getData: () => '',
+    } as unknown as DataTransfer;
+
+    const extractedImg = extractLogoFilesFromClipboardData(fakeDtImg);
+    expect(extractedImg).toHaveLength(1);
+    expect(extractedImg[0].type).toBe('image/png');
+    expect(extractedImg[0].name).toMatch(/^Logo_Pegado_.*\.png$/);
+
+    const svgStr = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>';
+    const fakeDtSvg = {
+      files: [],
+      items: [{ kind: 'string', type: 'text/plain', getAsFile: () => null }],
+      getData: (t: string) => (t === 'text/plain' ? svgStr : ''),
+    } as unknown as DataTransfer;
+
+    const extractedSvg = extractLogoFilesFromClipboardData(fakeDtSvg);
+    expect(extractedSvg).toHaveLength(1);
+    expect(extractedSvg[0].type).toBe('image/svg+xml');
+    expect(extractedSvg[0].name.endsWith('.svg')).toBe(true);
+
+    // No secuestrar Ctrl+V/Cmd+V dentro de un <input>
+    const input = document.createElement('input');
+    const div = document.createElement('div');
+    expect(isEditableKeyboardTarget(input)).toBe(true);
+    expect(isEditableKeyboardTarget(div)).toBe(false);
   });
 });

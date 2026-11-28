@@ -5,6 +5,7 @@ pub fn run() {
   tauri::Builder::default()
     .invoke_handler(tauri::generate_handler![
       logo_storage::save_logo_files,
+      logo_storage::read_clipboard_logo,
       ruida_transport::upload_rd_to_ruida,
       ruida_transport::open_lbrn2_in_lightburn,
       ruida_transport::probe_ruida_connection,
