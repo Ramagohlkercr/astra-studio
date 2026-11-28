@@ -2024,12 +2024,50 @@ export function computeJobOriginPointMm(
 }
 
 /**
+ * Resuelve la actualización sincronizada de Potencia Máxima y Mínima al tipear dígito a dígito (ej. 1 → 10 → 100),
+ * evitando que `minPowerPercent` quede trabado en 1% al escribir "100".
+ * En capas de corte (HOLES / CUT), mantiene Pot. Mín sincronizada con Pot. Máx para evitar esquinas sin cortar.
+ */
+export function computePowerUpdateForLayer(
+  layer: Pick<WorkbenchLayerConfig, 'role' | 'maxPowerPercent' | 'minPowerPercent'>,
+  nextMaxPower: number | null
+): { maxPowerPercent: number | null; minPowerPercent: number | null } {
+  if (nextMaxPower === null) {
+    return {
+      maxPowerPercent: null,
+      minPowerPercent:
+        layer.minPowerPercent === layer.maxPowerPercent || (layer.minPowerPercent ?? 0) <= 10
+          ? null
+          : layer.minPowerPercent,
+    };
+  }
+  const clampedMax = Math.max(0, Math.min(100, nextMaxPower));
+  const isCutLayer = layer.role === 'CUT' || layer.role === 'HOLES';
+  const shouldSyncMin =
+    isCutLayer ||
+    layer.minPowerPercent === null ||
+    layer.minPowerPercent === layer.maxPowerPercent ||
+    (layer.maxPowerPercent !== null &&
+      layer.minPowerPercent <= 10 &&
+      clampedMax > 10);
+
+  return {
+    maxPowerPercent: clampedMax,
+    minPowerPercent: shouldSyncMin ? clampedMax : Math.min(clampedMax, layer.minPowerPercent!),
+  };
+}
+
+/**
  * Sincroniza las capas de la mesa con los parámetros guardados en un MaterialProfile.
+ * Siempre asegura Potencia Mínima segura en corte/orificios (nunca 1% accidental) y corte por defecto al 100%.
  */
 export function syncLayersWithMaterialProfile(
   layers: WorkbenchLayerConfig[],
   material: MaterialProfile
 ): WorkbenchLayerConfig[] {
+  const resolveCutMin = (maxP: number, minP: number | null): number =>
+    minP !== null && minP > 10 ? Math.min(maxP, minP) : maxP;
+
   return layers.map((layer) => {
     if (layer.role === 'ENGRAVE') {
       return {
@@ -2043,21 +2081,31 @@ export function syncLayersWithMaterialProfile(
       };
     }
     if (layer.role === 'HOLES') {
+      const maxP =
+        material.holesParams.maxPowerPercent !== null &&
+        material.holesParams.maxPowerPercent > 0
+          ? material.holesParams.maxPowerPercent
+          : 100;
       return {
         ...layer,
         speedMmPerSec: material.holesParams.speedMmPerSec,
-        maxPowerPercent: material.holesParams.maxPowerPercent,
-        minPowerPercent: material.holesParams.minPowerPercent,
+        maxPowerPercent: maxP,
+        minPowerPercent: resolveCutMin(maxP, material.holesParams.minPowerPercent),
         passes: material.holesParams.passes,
         operatorValidated: material.holesParams.operatorValidated,
       };
     }
     if (layer.role === 'CUT') {
+      const maxP =
+        material.cutParams.maxPowerPercent !== null &&
+        material.cutParams.maxPowerPercent > 0
+          ? material.cutParams.maxPowerPercent
+          : 100;
       return {
         ...layer,
         speedMmPerSec: material.cutParams.speedMmPerSec,
-        maxPowerPercent: material.cutParams.maxPowerPercent,
-        minPowerPercent: material.cutParams.minPowerPercent,
+        maxPowerPercent: maxP,
+        minPowerPercent: resolveCutMin(maxP, material.cutParams.minPowerPercent),
         passes: material.cutParams.passes,
         operatorValidated: material.cutParams.operatorValidated,
       };

@@ -56,6 +56,7 @@ import {
   applyWorkbenchLayersToMaterialProfile,
   autoArrangeWorkbenchJobs,
   buildOptimalSavingNestingConfig,
+  computePowerUpdateForLayer,
   createWorkbenchJobFromOrder,
   evaluateBalancedLayoutPresets,
   syncLayersWithMaterialProfile,
@@ -1618,13 +1619,10 @@ export function App() {
                   onChange={(e) => {
                     const val =
                       e.target.value === '' ? null : Number(e.target.value);
-                    handleUpdateMainLayer(layer.cutIndex, {
-                      maxPowerPercent: val,
-                      minPowerPercent:
-                        layer.minPowerPercent === null && val !== null
-                          ? val
-                          : layer.minPowerPercent,
-                    });
+                    handleUpdateMainLayer(
+                      layer.cutIndex,
+                      computePowerUpdateForLayer(layer, val)
+                    );
                   }}
                   title={`Potencia ${layer.code} (%)`}
                   className="w-full bg-slate-900 border border-slate-700/80 rounded px-1.5 py-1 font-mono text-[11px] text-amber-300 font-bold"

@@ -478,8 +478,11 @@ export function createDefaultWorkbenchLayers(material?: MaterialProfile): Workbe
       hexColor: '#0000FF',
       mode: 'line',
       speedMmPerSec: hol?.speedMmPerSec ?? null,
-      maxPowerPercent: hol?.maxPowerPercent ?? null,
-      minPowerPercent: hol?.minPowerPercent ?? null,
+      maxPowerPercent: hol?.maxPowerPercent ?? 100,
+      minPowerPercent:
+        hol?.minPowerPercent !== null && hol?.minPowerPercent !== undefined && hol.minPowerPercent > 10
+          ? hol.minPowerPercent
+          : (hol?.maxPowerPercent ?? 100),
       passes: hol?.passes ?? 1,
       lineIntervalMm: 0.1,
       scanAngleDeg: 0,
@@ -500,8 +503,11 @@ export function createDefaultWorkbenchLayers(material?: MaterialProfile): Workbe
       hexColor: '#FF0000',
       mode: 'line',
       speedMmPerSec: cut?.speedMmPerSec ?? null,
-      maxPowerPercent: cut?.maxPowerPercent ?? null,
-      minPowerPercent: cut?.minPowerPercent ?? null,
+      maxPowerPercent: cut?.maxPowerPercent ?? 100,
+      minPowerPercent:
+        cut?.minPowerPercent !== null && cut?.minPowerPercent !== undefined && cut.minPowerPercent > 10
+          ? cut.minPowerPercent
+          : (cut?.maxPowerPercent ?? 100),
       passes: cut?.passes ?? 1,
       lineIntervalMm: 0.1,
       scanAngleDeg: 0,

@@ -89,6 +89,7 @@ import {
   buildOptimalSavingNestingConfig,
   computeEcocueroRollMetrics,
   computeJobOriginPointMm,
+  computePowerUpdateForLayer,
   createWorkbenchJobFromOrder,
   createWorkbenchJobFromUploadedLogo,
   evaluateBalancedLayoutPresets,
@@ -96,6 +97,7 @@ import {
   reorderWorkbenchJob,
   simulateWorkbenchToolpath,
   sortInstancesInTravelOrder,
+  syncLayersWithMaterialProfile,
   updateWorkbenchJobDesignAndQuantity,
   updateWorkbenchJobGrid,
   validateWorkbenchState,
@@ -2058,5 +2060,70 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
     const div = document.createElement('div');
     expect(isEditableKeyboardTarget(input)).toBe(true);
     expect(isEditableKeyboardTarget(div)).toBe(false);
+  });
+
+  it('28. Seguridad de potencia de corte: tipear "100" nunca deja Pot. Mín en 1%, corte inicia en 100%/100% y Ruida/LBRN2 sanan 1% residual', () => {
+    const mat = INITIAL_MATERIALS_CATALOG.find((m) => m.id === 'ECOCUERO_SUELA')!;
+    const cfg = createDefaultWorkbenchConfig(730, 600, mat);
+    const c01 = cfg.layers.find((l) => l.role === 'HOLES')!;
+    const c02 = cfg.layers.find((l) => l.role === 'CUT')!;
+
+    // Por defecto, las capas de corte ya arrancan con 100% Máx / 100% Mín
+    expect(c01.maxPowerPercent).toBe(100);
+    expect(c01.minPowerPercent).toBe(100);
+    expect(c02.maxPowerPercent).toBe(100);
+    expect(c02.minPowerPercent).toBe(100);
+
+    // Simular tipeo dígito a dígito ("1" -> "10" -> "100") desde vacío o desde 1% corrupto
+    let layerState = { ...c02, maxPowerPercent: null as number | null, minPowerPercent: null as number | null };
+    for (const typed of [1, 10, 100]) {
+      const patch = computePowerUpdateForLayer(layerState, typed);
+      layerState = { ...layerState, ...patch };
+    }
+    expect(layerState.maxPowerPercent).toBe(100);
+    expect(layerState.minPowerPercent).toBe(100);
+
+    // Incluso si un material guardado traía minPowerPercent: 1 (del bug anterior), syncLayersWithMaterialProfile lo sanea a 100%
+    const pollutedMat = {
+      ...mat,
+      cutParams: { ...mat.cutParams, speedMmPerSec: 100, maxPowerPercent: 100, minPowerPercent: 1 },
+      holesParams: { ...mat.holesParams, speedMmPerSec: 100, maxPowerPercent: 100, minPowerPercent: 1 },
+    };
+    const synced = syncLayersWithMaterialProfile(cfg.layers, pollutedMat);
+    const syncedCut = synced.find((l) => l.role === 'CUT')!;
+    const syncedHole = synced.find((l) => l.role === 'HOLES')!;
+    expect(syncedCut.minPowerPercent).toBe(100);
+    expect(syncedHole.minPowerPercent).toBe(100);
+
+    // Compilar a Ruida (.RD) con 1% residual en capa de corte: ruidaCompiler debe emitir 100% (no 1%) en C6 31 y C6 01
+    const sampleOrder = createInitialOrdersCatalog()[0];
+    const nesting = computeNestingLayout(sampleOrder.labelDesign, sampleOrder.nestingConfig);
+    const job = createWorkbenchJobFromOrder({
+      design: sampleOrder.labelDesign,
+      nesting,
+      mode: 'single_piece',
+      projectName: 'Corte 100%',
+      clientName: 'Taller',
+      orderId: 'ord-cut100',
+      existingJobs: [],
+      config: cfg,
+    });
+    const pollutedCfg = {
+      ...cfg,
+      layers: cfg.layers.map((l) =>
+        l.role === 'ENGRAVE'
+          ? { ...l, speedMmPerSec: 600, maxPowerPercent: 30, minPowerPercent: 30 }
+          : { ...l, speedMmPerSec: 100, maxPowerPercent: 100, minPowerPercent: 1 }
+      ),
+    };
+    const rd = compileWorkbenchToRuidaRd([job], pollutedCfg);
+    const bytes = rd.rawUnscrambledBytes;
+    // Verificar que ningún C6 31 (min power bank) o C6 01 (active min power) de C01/C02 lleve 1% (<10%)
+    for (let i = 0; i + 4 < bytes.length; i++) {
+      if (bytes[i] === 0xc6 && bytes[i + 1] === 0x31 && (bytes[i + 2] === 1 || bytes[i + 2] === 2)) {
+        const decodedMinP = decodeRuidaPowerPercent([bytes[i + 3], bytes[i + 4]]);
+        expect(decodedMinP).toBeCloseTo(100, 1);
+      }
+    }
   });
 });

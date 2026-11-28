@@ -945,7 +945,16 @@ export function parseLbrn2ExternalFile(xmlText: string): ParsedExternalLaserGeom
     const preset: ImportedLayerPreset = {
       ...(Number.isFinite(speed) && speed > 0 ? { speedMmPerSec: speed } : {}),
       ...(Number.isFinite(maxP) && maxP > 0 ? { maxPowerPercent: maxP } : {}),
-      ...(Number.isFinite(minP) && minP >= 0 ? { minPowerPercent: minP } : {}),
+      ...(Number.isFinite(minP) && minP >= 0
+        ? {
+            minPowerPercent:
+              (role === 'CUT' || role === 'HOLES') && minP <= 10 && Number.isFinite(maxP) && maxP > 10
+                ? maxP
+                : minP,
+          }
+        : Number.isFinite(maxP) && maxP > 0
+          ? { minPowerPercent: maxP }
+          : {}),
       ...(Number.isFinite(interval) && interval > 0 ? { lineIntervalMm: interval } : {}),
       ...(Number.isFinite(passes) && passes >= 1 ? { passes } : {}),
       mode,
@@ -1688,6 +1697,21 @@ export function parseRdExternalFile(bytes: Uint8Array): ParsedExternalLaserGeome
     }
   }
   flushCut();
+
+  // Normalización defensiva para archivos .rd heredados: en capas de corte (HOLES/CUT),
+  // si potencia mínima vino en <= 10% (p. ej. 1% por carga vieja), igualar a potencia máxima.
+  for (const role of ['HOLES', 'CUT'] as const) {
+    const preset = layerPresets[role];
+    if (!preset) continue;
+    const maxP = preset.maxPowerPercent;
+    if (
+      typeof maxP === 'number' &&
+      maxP > 10 &&
+      (preset.minPowerPercent === undefined || preset.minPowerPercent <= 10)
+    ) {
+      preset.minPowerPercent = maxP;
+    }
+  }
 
   return {
     format: 'rd',

@@ -145,6 +145,7 @@ import {
   applyWorkbenchLayersToMaterialProfile,
   autoArrangeWorkbenchJobs,
   computeEcocueroRollMetrics,
+  computePowerUpdateForLayer,
   createWorkbenchJobFromOrder,
   createWorkbenchJobFromUploadedLogo,
   fillLastRowFreeSlotsInWorkbench,
@@ -3575,6 +3576,26 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
+                          {!isEngraveLayer &&
+                            (layer.maxPowerPercent !== 100 ||
+                              layer.minPowerPercent !== 100) && (
+                              <button
+                                type="button"
+                                title="Restablecer potencia Máx y Mín de corte a 100% / 100%"
+                                onClick={() => {
+                                  handleUpdateLayer(layer.cutIndex, {
+                                    maxPowerPercent: 100,
+                                    minPowerPercent: 100,
+                                  });
+                                  onNotify(
+                                    `${layer.code} fijado en 100% Máx / 100% Mín para corte limpio.`
+                                  );
+                                }}
+                                className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/50 text-amber-200 text-[10px] font-semibold"
+                              >
+                                ⚡ Fijar 100%
+                              </button>
+                            )}
                           {isHolesLayer &&
                             cutLayerCfg &&
                             (cutLayerCfg.speedMmPerSec !== null ||
@@ -3582,10 +3603,17 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                               <button
                                 type="button"
                                 onClick={() => {
+                                  const nextMax =
+                                    cutLayerCfg.maxPowerPercent ?? 100;
+                                  const nextMin =
+                                    cutLayerCfg.minPowerPercent !== null &&
+                                    cutLayerCfg.minPowerPercent > 10
+                                      ? cutLayerCfg.minPowerPercent
+                                      : nextMax;
                                   handleUpdateLayer(layer.cutIndex, {
                                     speedMmPerSec: cutLayerCfg.speedMmPerSec,
-                                    maxPowerPercent: cutLayerCfg.maxPowerPercent,
-                                    minPowerPercent: cutLayerCfg.minPowerPercent,
+                                    maxPowerPercent: nextMax,
+                                    minPowerPercent: nextMin,
                                     passes: cutLayerCfg.passes,
                                     airAssist: cutLayerCfg.airAssist,
                                   });
@@ -3625,26 +3653,28 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
                       {/* FILA 2: LOS 4 CAMPOS PRINCIPALES EN UNA SOLA FILA LIMPIA */}
                       <div className="grid grid-cols-4 gap-2">
-                        <label className="block">
-                          <span className="text-[10px] text-slate-400 block mb-0.5">
-                            Modo
-                          </span>
-                          <select
-                            aria-label={`Modo de capa ${layer.code}`}
-                            value={layer.mode}
-                            onChange={(e) =>
-                              handleUpdateLayer(layer.cutIndex, {
-                                mode: e.target.value as LightBurnCutMode,
-                              })
-                            }
-                            className="w-full bg-slate-950 border border-slate-700/90 rounded-lg px-2 py-1.5 text-xs text-white font-semibold"
-                          >
-                            <option value="image">Imagen</option>
-                            <option value="fill">Relleno</option>
-                            <option value="line">Línea</option>
-                            <option value="offset_fill">Offset</option>
-                          </select>
-                        </label>
+                        {layer.mode !== 'line' && (
+                          <label className="block">
+                            <span className="text-[10px] text-slate-400 block mb-0.5">
+                              Modo
+                            </span>
+                            <select
+                              aria-label={`Modo de capa ${layer.code}`}
+                              value={layer.mode}
+                              onChange={(e) =>
+                                handleUpdateLayer(layer.cutIndex, {
+                                  mode: e.target.value as LightBurnCutMode,
+                                })
+                              }
+                              className="w-full bg-slate-950 border border-slate-700/90 rounded-lg px-2 py-1.5 text-xs text-white font-semibold"
+                            >
+                              <option value="image">Imagen</option>
+                              <option value="fill">Relleno</option>
+                              <option value="line">Línea</option>
+                              <option value="offset_fill">Offset</option>
+                            </select>
+                          </label>
+                        )}
 
                         <label className="block">
                           <span className="text-[10px] text-emerald-300 font-semibold block mb-0.5">
@@ -3673,7 +3703,9 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
 
                         <label className="block">
                           <span className="text-[10px] text-amber-300 font-semibold block mb-0.5">
-                            Potencia (%)
+                            {layer.mode === 'line'
+                              ? 'Pot. Máx (%)'
+                              : 'Potencia (%)'}
                           </span>
                           <input
                             type="number"
@@ -3688,13 +3720,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                                 e.target.value === ''
                                   ? null
                                   : Number(e.target.value);
-                              handleUpdateLayer(layer.cutIndex, {
-                                maxPowerPercent: val,
-                                minPowerPercent:
-                                  layer.minPowerPercent === null && val !== null
-                                    ? val
-                                    : layer.minPowerPercent,
-                              });
+                              handleUpdateLayer(
+                                layer.cutIndex,
+                                computePowerUpdateForLayer(layer, val)
+                              );
                             }}
                             className="w-full bg-slate-950 border border-slate-700/90 focus:border-amber-500 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-white"
                           />
@@ -3725,28 +3754,59 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                             />
                           </label>
                         ) : (
-                          <label className="block">
-                            <span className="text-[10px] text-slate-300 font-semibold block mb-0.5">
-                              Pasadas
-                            </span>
-                            <input
-                              type="number"
-                              min={1}
-                              max={20}
-                              step={1}
-                              aria-label={`Pasadas ${layer.code}`}
-                              value={layer.passes}
-                              onChange={(e) =>
-                                handleUpdateLayer(layer.cutIndex, {
-                                  passes: Math.max(
-                                    1,
-                                    Number(e.target.value) || 1
-                                  ),
-                                })
-                              }
-                              className="w-full bg-slate-950 border border-slate-700/90 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-white"
-                            />
-                          </label>
+                          <>
+                            <label className="block">
+                              <span className="text-[10px] text-amber-300 font-semibold block mb-0.5">
+                                Pot. Mín (%)
+                              </span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                step={0.5}
+                                aria-label={`Potencia mínima ${layer.code}`}
+                                placeholder="100"
+                                value={layer.minPowerPercent ?? ''}
+                                onChange={(e) => {
+                                  const val =
+                                    e.target.value === ''
+                                      ? null
+                                      : Number(e.target.value);
+                                  handleUpdateLayer(layer.cutIndex, {
+                                    minPowerPercent: val,
+                                  });
+                                }}
+                                className={`w-full bg-slate-950 border rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-white ${
+                                  layer.minPowerPercent !== null &&
+                                  layer.minPowerPercent <= 10
+                                    ? 'border-red-500 ring-1 ring-red-500/40'
+                                    : 'border-slate-700/90 focus:border-amber-500'
+                                }`}
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="text-[10px] text-slate-300 font-semibold block mb-0.5">
+                                Pasadas
+                              </span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={20}
+                                step={1}
+                                aria-label={`Pasadas ${layer.code}`}
+                                value={layer.passes}
+                                onChange={(e) =>
+                                  handleUpdateLayer(layer.cutIndex, {
+                                    passes: Math.max(
+                                      1,
+                                      Number(e.target.value) || 1
+                                    ),
+                                  })
+                                }
+                                className="w-full bg-slate-950 border border-slate-700/90 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-white"
+                              />
+                            </label>
+                          </>
                         )}
                       </div>
 
@@ -3754,7 +3814,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       <details className="group pt-1 border-t border-slate-800/80">
                         <summary className="cursor-pointer text-[11px] text-slate-400 hover:text-slate-200 flex items-center justify-between select-none">
                           <span>
-                            Más ajustes ({layer.mode !== 'line' ? `${Math.round(25.4 / Math.max(0.02, layer.lineIntervalMm))} DPI · Tramado · Pot. mín` : 'Pot. mín · Kerf · Aire'}) ▾
+                            Más ajustes ({layer.mode !== 'line' ? `${Math.round(25.4 / Math.max(0.02, layer.lineIntervalMm))} DPI · Tramado · Pot. mín` : 'Modo · Kerf · Overcut · Aire'}) ▾
                           </span>
                           <span className="text-[10px] font-mono text-slate-500">
                             Orden #{idx + 1}
@@ -3855,26 +3915,23 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                             <div className="grid grid-cols-3 gap-2">
                               <label className="block">
                                 <span className="text-[10px] text-slate-400 block">
-                                  Pot. Mín (%)
+                                  Modo
                                 </span>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={100}
-                                  step={0.5}
-                                  aria-label={`Potencia mínima ${layer.code}`}
-                                  placeholder="100"
-                                  value={layer.minPowerPercent ?? ''}
+                                <select
+                                  aria-label={`Modo de capa ${layer.code}`}
+                                  value={layer.mode}
                                   onChange={(e) =>
                                     handleUpdateLayer(layer.cutIndex, {
-                                      minPowerPercent:
-                                        e.target.value === ''
-                                          ? null
-                                          : Number(e.target.value),
+                                      mode: e.target.value as LightBurnCutMode,
                                     })
                                   }
-                                  className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono text-xs text-white"
-                                />
+                                  className="w-full bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-white"
+                                >
+                                  <option value="line">Línea</option>
+                                  <option value="fill">Relleno</option>
+                                  <option value="image">Imagen</option>
+                                  <option value="offset_fill">Offset</option>
+                                </select>
                               </label>
                               <label className="block">
                                 <span className="text-[10px] text-slate-400 block">

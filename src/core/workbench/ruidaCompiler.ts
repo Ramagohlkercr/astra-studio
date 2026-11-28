@@ -484,15 +484,24 @@ export function compileWorkbenchToRuidaRd(
     return layer.bidirectional === false ? 0x01 : 0x02;
   };
 
+  const resolveSafeRuidaMinPower = (layer: WorkbenchLayerConfig, maxP: number): number => {
+    const isCutLayer = layer.role === 'CUT' || layer.role === 'HOLES';
+    if (layer.minPowerPercent === null || layer.minPowerPercent < 0) {
+      return maxP;
+    }
+    // En corte CO2 (RDC8445S), potencias menores a 10% (como el 1% accidental al tipear) apagan el tubo en esquinas/agujeros
+    if (isCutLayer && layer.minPowerPercent <= 10 && maxP > 10) {
+      return maxP;
+    }
+    return Math.min(maxP, layer.minPowerPercent);
+  };
+
   // 2. Cabeceras de parámetros por capa activa (`OutputCutBankInfo` completo RDC8445S hwType 0x13, 1 tubo)
   for (const layer of bankLayersToEmit) {
     const lIdx = layer.cutIndex & 0x7f;
     const speed = layer.speedMmPerSec!;
     const maxP = layer.maxPowerPercent!;
-    const minP =
-      layer.minPowerPercent !== null && layer.minPowerPercent >= 0
-        ? Math.min(maxP, layer.minPowerPercent)
-        : maxP;
+    const minP = resolveSafeRuidaMinPower(layer, maxP);
     const workMode = getLayerWorkModeByte(layer);
     const lBox = layerBoundsMap.get(layer.cutIndex) ?? emittedBounds;
     const minCoord = [
@@ -569,10 +578,7 @@ export function compileWorkbenchToRuidaRd(
     const lIdx = layer.cutIndex & 0x7f;
     const speed = layer.speedMmPerSec!;
     const maxP = layer.maxPowerPercent!;
-    const minP =
-      layer.minPowerPercent !== null && layer.minPowerPercent >= 0
-        ? Math.min(maxP, layer.minPowerPercent)
-        : maxP;
+    const minP = resolveSafeRuidaMinPower(layer, maxP);
     const workMode = getLayerWorkModeByte(layer);
 
     if (workMode !== 0x00) {
@@ -896,7 +902,38 @@ export function compileWorkbenchToRuidaRd(
           }
         }
       }
-    } else if (layer.role === 'HOLES') {
+    }
+    const emitClosedContourWithOptionalOvercut = (
+      points: { x: number; y: number }[],
+      jobX: number,
+      jobY: number,
+      overcutMm: number
+    ) => {
+      if (points.length < 2) return;
+      const p0 = points[0];
+      emitMoveAbs(roundMm(jobX + p0.x), roundMm(jobY + p0.y));
+      for (let i = 1; i < points.length; i++) {
+        const pt = points[i];
+        emitCutAbs(roundMm(jobX + pt.x), roundMm(jobY + pt.y));
+      }
+      emitCutAbs(roundMm(jobX + p0.x), roundMm(jobY + p0.y));
+      if (overcutMm > 0.02 && points.length >= 2) {
+        const p1 = points[1];
+        const dx = p1.x - p0.x;
+        const dy = p1.y - p0.y;
+        const segLen = Math.hypot(dx, dy);
+        if (segLen > 0.05) {
+          const step = Math.min(overcutMm, segLen * 0.5);
+          emitCutAbs(
+            roundMm(jobX + p0.x + (dx / segLen) * step),
+            roundMm(jobY + p0.y + (dy / segLen) * step)
+          );
+        }
+      }
+    };
+
+    if (layer.role === 'HOLES') {
+      const overcut = Math.max(0, layer.overcutMm ?? 0);
       for (const job of jobsScope) {
         const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
         for (const inst of orderedInstances) {
@@ -904,18 +941,13 @@ export function compileWorkbenchToRuidaRd(
             if (hole.points.length < 2) continue;
             ensurePreamble();
             for (let pass = 0; pass < passes; pass++) {
-              const p0 = hole.points[0];
-              emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-              for (let i = 1; i < hole.points.length; i++) {
-                const pt = hole.points[i];
-                emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
-              }
-              emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
+              emitClosedContourWithOptionalOvercut(hole.points, job.xMm, job.yMm, overcut);
             }
           }
         }
       }
     } else if (layer.role === 'CUT') {
+      const overcut = Math.max(0, layer.overcutMm ?? 0);
       for (const job of jobsScope) {
         const orderedInstances = sortInstancesInTravelOrder(job.instances, travelOrder);
         for (const inst of orderedInstances) {
@@ -923,13 +955,7 @@ export function compileWorkbenchToRuidaRd(
           if (!contour || contour.points.length < 2) continue;
           ensurePreamble();
           for (let pass = 0; pass < passes; pass++) {
-            const p0 = contour.points[0];
-            emitMoveAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
-            for (let i = 1; i < contour.points.length; i++) {
-              const pt = contour.points[i];
-              emitCutAbs(roundMm(job.xMm + pt.x), roundMm(job.yMm + pt.y));
-            }
-            emitCutAbs(roundMm(job.xMm + p0.x), roundMm(job.yMm + p0.y));
+            emitClosedContourWithOptionalOvercut(contour.points, job.xMm, job.yMm, overcut);
           }
         }
       }
