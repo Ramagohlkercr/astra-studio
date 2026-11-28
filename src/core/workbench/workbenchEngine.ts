@@ -41,6 +41,7 @@ import {
   RasterScanlineMask,
 } from './rasterScanlines';
 import {
+  ECOCUERO_BED_PASS_HEIGHT_MM,
   ECOCUERO_ROLL_TOTAL_LENGTH_MM,
   ECOCUERO_ROLL_WIDTH_MM,
   EcocueroRollMetrics,
@@ -1412,6 +1413,60 @@ export function fillLastRowFreeSlotsInWorkbench(
 }
 
 /**
+ * Actualiza el ancho y alto útiles de la plancha o retazo colocado sobre la mesa Vank 9060
+ * (10..machineBedWidthMm × 10..machineBedHeightMm) y, opcionalmente, reacomoda los trabajos
+ * activos dentro del nuevo retazo sin superposiciones.
+ */
+export function updateWorkbenchSheetDimensions(
+  jobs: WorkbenchJobItem[],
+  config: WorkbenchConfig,
+  nextWidthMm: number,
+  nextHeightMm: number,
+  options?: {
+    isRollMaterial?: boolean;
+    autoArrange?: boolean;
+  }
+): { config: WorkbenchConfig; jobs: WorkbenchJobItem[] } {
+  const maxBedW = Math.max(100, config.machineBedWidthMm || 900);
+  const maxBedH = Math.max(100, config.machineBedHeightMm || 600);
+  const clampedW = roundMm(
+    Math.max(10, Math.min(maxBedW, Number.isFinite(nextWidthMm) ? nextWidthMm : config.sheetWidthMm)),
+    1
+  );
+  const clampedH = roundMm(
+    Math.max(10, Math.min(maxBedH, Number.isFinite(nextHeightMm) ? nextHeightMm : config.sheetHeightMm)),
+    1
+  );
+
+  const isStandard730Roll =
+    clampedW === ECOCUERO_ROLL_WIDTH_MM && clampedH >= ECOCUERO_BED_PASS_HEIGHT_MM;
+  const resolvedRoll =
+    options?.isRollMaterial !== undefined ? options.isRollMaterial : isStandard730Roll;
+
+  const nextConfig: WorkbenchConfig = {
+    ...config,
+    sheetWidthMm: clampedW,
+    sheetHeightMm: clampedH,
+    isRollMaterial: resolvedRoll,
+  };
+
+  if (options?.autoArrange === false || jobs.length === 0) {
+    return { config: nextConfig, jobs };
+  }
+
+  const useZeroWaste =
+    nextConfig.packingMode === 'continuous_zero_waste' || nextConfig.isRollMaterial;
+  const nextJobs = autoArrangeWorkbenchJobs(
+    jobs,
+    nextConfig,
+    nextConfig.savingPreset === 'extreme_zero_waste' ? 1.5 : 2,
+    useZeroWaste
+  );
+
+  return { config: nextConfig, jobs: nextJobs };
+}
+
+/**
  * Calcula las métricas reales de consumo y ahorro del rollo de Ecocuero (73 cm de ancho x 5 m de largo).
  */
 export function computeEcocueroRollMetrics(
@@ -2231,7 +2286,7 @@ export function validateWorkbenchState(
       issues.push({
         severity: 'error',
         code: 'JOB_OUTSIDE_MACHINE_BED',
-        message: `El trabajo "${job.name}" supera el límite de tirada de la mesa Vank 9060 (${config.machineBedWidthMm}×${config.machineBedHeightMm} mm). Reducí la cantidad de esta tirada o presioná "Ahorro Extremo 73 cm".`,
+        message: `El trabajo "${job.name}" supera el límite de tirada de la mesa Vank 9060 (${config.machineBedWidthMm}×${config.machineBedHeightMm} mm). Reducí la cantidad de esta tirada o presioná "Optimizar ${Math.round(config.sheetWidthMm / 10)} cm".`,
       });
     } else if (
       job.xMm < sheetMinX - 0.01 ||
@@ -2243,7 +2298,7 @@ export function validateWorkbenchState(
       issues.push({
         severity: 'error',
         code: 'JOB_OUTSIDE_MATERIAL_SHEET',
-        message: `El trabajo "${job.name}" sobresale del ancho de la plancha/rollo (${config.sheetWidthMm}×${config.sheetHeightMm} mm). Presioná "Ahorro Extremo 73 cm".`,
+        message: `El trabajo "${job.name}" sobresale de la plancha/retazo (${config.sheetWidthMm}×${config.sheetHeightMm} mm). Presioná "Optimizar ${Math.round(config.sheetWidthMm / 10)} cm" o ajustá las medidas del retazo.`,
       });
     }
   }

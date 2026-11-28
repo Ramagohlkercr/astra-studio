@@ -60,6 +60,7 @@ import {
   createWorkbenchJobFromOrder,
   evaluateBalancedLayoutPresets,
   syncLayersWithMaterialProfile,
+  updateWorkbenchSheetDimensions,
 } from './core/workbench/workbenchEngine';
 import {
   detectExternalLaserFormat,
@@ -286,11 +287,15 @@ export function App() {
   const [workbenchConfig, setWorkbenchConfig] = useState<WorkbenchConfig>(() => {
     const mat = initialOrder.materialProfileSnapshot ?? INITIAL_MATERIALS_CATALOG[0];
     const isEco = isEcocueroMaterial(mat);
-    return createDefaultWorkbenchConfig(
-      isEco ? ECOCUERO_ROLL_WIDTH_MM : initialOrder.nestingConfig.sheetWidthMm,
-      isEco ? ECOCUERO_BED_PASS_HEIGHT_MM : initialOrder.nestingConfig.sheetHeightMm,
-      mat
-    );
+    const initW =
+      isEco && initialOrder.nestingConfig.sheetWidthMm === 900
+        ? ECOCUERO_ROLL_WIDTH_MM
+        : initialOrder.nestingConfig.sheetWidthMm;
+    const initH =
+      isEco && initialOrder.nestingConfig.sheetWidthMm === 900
+        ? ECOCUERO_BED_PASS_HEIGHT_MM
+        : initialOrder.nestingConfig.sheetHeightMm;
+    return createDefaultWorkbenchConfig(initW, initH, mat);
   });
   const [workbenchJobs, setWorkbenchJobs] = useState<WorkbenchJobItem[]>([]);
   const ordersDialog = useRef<HTMLDialogElement>(null);
@@ -318,6 +323,17 @@ export function App() {
   const [inputHeightStr, setInputHeightStr] = useState<string>(() =>
     formatDimensionValue(initialOrder.labelDesign.heightMm, 'mm')
   );
+  const [sheetWidthDraft, setSheetWidthDraft] = useState<string>(() =>
+    String(initialOrder.nestingConfig.sheetWidthMm)
+  );
+  const [sheetHeightDraft, setSheetHeightDraft] = useState<string>(() =>
+    String(initialOrder.nestingConfig.sheetHeightMm)
+  );
+
+  useEffect(() => {
+    setSheetWidthDraft(String(nestingConfig.sheetWidthMm));
+    setSheetHeightDraft(String(nestingConfig.sheetHeightMm));
+  }, [nestingConfig.sheetWidthMm, nestingConfig.sheetHeightMm]);
 
   // Sincronizar inputs locales con el estado del diseño respetando la edición del usuario
   useEffect(() => {
@@ -398,13 +414,16 @@ export function App() {
 
   const handleApplyMaxStepSaving = (useSharedCuts = false) => {
     const isEco = isEcocueroMaterial(activeMaterial);
-    const baseCfg = isEco
-      ? {
-          ...nestingConfig,
-          sheetWidthMm: ECOCUERO_ROLL_WIDTH_MM,
-          sheetHeightMm: ECOCUERO_BED_PASS_HEIGHT_MM,
-        }
-      : nestingConfig;
+    const baseCfg =
+      isEco &&
+      nestingConfig.sheetWidthMm === 900 &&
+      nestingConfig.sheetHeightMm === 600
+        ? {
+            ...nestingConfig,
+            sheetWidthMm: ECOCUERO_ROLL_WIDTH_MM,
+            sheetHeightMm: ECOCUERO_BED_PASS_HEIGHT_MM,
+          }
+        : nestingConfig;
     const optimalCfg = buildOptimalSavingNestingConfig(
       labelDesign,
       baseCfg,
@@ -1290,13 +1309,40 @@ export function App() {
     notify(`Cantidad de producción actualizada: ${safeQty} etiquetas.`);
   };
 
-  const handleSelectMaterialSheet = (presetWidth: number, presetHeight: number) => {
+  const handleSelectMaterialSheet = (
+    presetWidth: number,
+    presetHeight: number,
+    silent = false
+  ) => {
+    const safeW = roundMm(Math.max(10, Math.min(900, presetWidth)), 1);
+    const safeH = roundMm(Math.max(10, Math.min(600, presetHeight)), 1);
     pushStateWithHistory(labelDesign, {
       ...nestingConfig,
-      sheetWidthMm: presetWidth,
-      sheetHeightMm: presetHeight,
+      sheetWidthMm: safeW,
+      sheetHeightMm: safeH,
     });
-    notify(`Recorte de material definido en ${presetWidth} × ${presetHeight} mm.`);
+    const isEco = isEcocueroMaterial(activeMaterial);
+    const { config: syncedCfg, jobs: syncedJobs } = updateWorkbenchSheetDimensions(
+      workbenchJobs,
+      workbenchConfig,
+      safeW,
+      safeH,
+      {
+        isRollMaterial:
+          isEco &&
+          safeW === ECOCUERO_ROLL_WIDTH_MM &&
+          safeH >= ECOCUERO_BED_PASS_HEIGHT_MM,
+      }
+    );
+    setWorkbenchConfig(syncedCfg);
+    if (workbenchJobs.length > 0) {
+      setWorkbenchJobs(syncedJobs);
+    }
+    if (!silent) {
+      notify(
+        `Recorte/plancha definido en ${safeW} × ${safeH} mm (${roundMm(safeW / 10, 1)} × ${roundMm(safeH / 10, 1)} cm).`
+      );
+    }
   };
 
   // ==========================================
@@ -1393,6 +1439,16 @@ export function App() {
     setSelectedElementId(ord.labelDesign.elements[0]?.id ?? null);
     setRotaryConfig(ord.rotaryConfig ?? DEFAULT_ROTARY_CONFIG);
     setLabelDesign(structuredClone(ord.labelDesign)); setNestingConfig({...structuredClone(ord.nestingConfig), layoutMode: ord.nestingConfig.layoutMode ?? 'blocks'});
+    setWorkbenchConfig((prev) => ({
+      ...prev,
+      sheetWidthMm: ord.nestingConfig.sheetWidthMm,
+      sheetHeightMm: ord.nestingConfig.sheetHeightMm,
+      isRollMaterial:
+        isEcocueroMaterial(ord.materialProfileSnapshot) &&
+        ord.nestingConfig.sheetWidthMm === ECOCUERO_ROLL_WIDTH_MM &&
+        ord.nestingConfig.sheetHeightMm >= ECOCUERO_BED_PASS_HEIGHT_MM,
+      layers: syncLayersWithMaterialProfile(prev.layers, ord.materialProfileSnapshot),
+    }));
     setActiveBatchIndex(0);
     setHistory([{labelDesign: structuredClone(ord.labelDesign), nestingConfig: {...structuredClone(ord.nestingConfig), layoutMode: ord.nestingConfig.layoutMode ?? 'blocks'}, materialId: ord.materialId}]);
     setHistoryIndex(0); setIsOrdersModalOpen(false); setCurrentStep('logo');
@@ -1495,8 +1551,22 @@ export function App() {
   ) => {
     setWorkbenchInitialView(initialView);
     const isEco = isEcocueroMaterial(activeMaterial);
-    const targetSheetW = isEco ? ECOCUERO_ROLL_WIDTH_MM : nestingConfig.sheetWidthMm;
-    const targetSheetH = isEco ? ECOCUERO_BED_PASS_HEIGHT_MM : nestingConfig.sheetHeightMm;
+    const preserveWorkbenchSize =
+      mode === 'open_only' && workbenchJobs.length > 0;
+    const isDefaultFullBedEco =
+      isEco &&
+      nestingConfig.sheetWidthMm === 900 &&
+      nestingConfig.sheetHeightMm === 600;
+    const targetSheetW = preserveWorkbenchSize
+      ? workbenchConfig.sheetWidthMm
+      : isDefaultFullBedEco
+        ? ECOCUERO_ROLL_WIDTH_MM
+        : nestingConfig.sheetWidthMm;
+    const targetSheetH = preserveWorkbenchSize
+      ? workbenchConfig.sheetHeightMm
+      : isDefaultFullBedEco
+        ? ECOCUERO_BED_PASS_HEIGHT_MM
+        : nestingConfig.sheetHeightMm;
 
     const updatedCfg: WorkbenchConfig = {
       ...workbenchConfig,
@@ -1508,7 +1578,10 @@ export function App() {
       sheetHeightMm: targetSheetH,
       sheetSafetyMarginMm:
         workbenchConfig.savingPreset === 'extreme_zero_waste' ? 2 : workbenchConfig.sheetSafetyMarginMm,
-      isRollMaterial: isEco || targetSheetW === ECOCUERO_ROLL_WIDTH_MM,
+      isRollMaterial:
+        isEco &&
+        targetSheetW === ECOCUERO_ROLL_WIDTH_MM &&
+        targetSheetH >= ECOCUERO_BED_PASS_HEIGHT_MM,
       rollTotalLengthMm: ECOCUERO_ROLL_TOTAL_LENGTH_MM,
       layers: syncLayersWithMaterialProfile(workbenchConfig.layers, activeMaterial),
     };
@@ -2948,7 +3021,10 @@ export function App() {
                     <span>Espesor {activeMaterial.thicknessMm} mm</span>
                     {isEcocueroMaterial(activeMaterial) && (
                       <span className="text-[10px] font-mono bg-amber-950/80 text-amber-300 border border-amber-700/70 px-1.5 py-0.5 rounded">
-                        Rollo 73 cm × 5 m
+                        {nestingConfig.sheetWidthMm === ECOCUERO_ROLL_WIDTH_MM &&
+                        nestingConfig.sheetHeightMm >= ECOCUERO_BED_PASS_HEIGHT_MM
+                          ? 'Rollo 73 cm × 5 m'
+                          : `Retazo ${nestingConfig.sheetWidthMm} × ${nestingConfig.sheetHeightMm} mm`}
                       </span>
                     )}
                   </div>
@@ -3007,11 +3083,29 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Tamaño del recorte de material */}
-                <div>
-                  <span className="text-slate-400 font-semibold block mb-1.5">
-                    Tamaño de plancha
-                  </span>
+                {/* Tamaño del recorte o retazo de material */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-400 font-semibold">
+                      Tamaño de plancha / retazo
+                    </span>
+                    {isEcocueroMaterial(activeMaterial) &&
+                      (nestingConfig.sheetWidthMm !== ECOCUERO_ROLL_WIDTH_MM ||
+                        nestingConfig.sheetHeightMm !== ECOCUERO_BED_PASS_HEIGHT_MM) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleSelectMaterialSheet(
+                              ECOCUERO_ROLL_WIDTH_MM,
+                              ECOCUERO_BED_PASS_HEIGHT_MM
+                            )
+                          }
+                          className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 font-semibold"
+                        >
+                          ↻ Rollo 73 cm
+                        </button>
+                      )}
+                  </div>
                   <div className="grid grid-cols-2 gap-1.5">
                     {MATERIAL_SHEET_PRESETS.map((s) => (
                       <button
@@ -3028,6 +3122,79 @@ export function App() {
                         <div className="text-[10px] text-slate-400">{s.description}</div>
                       </button>
                     ))}
+                  </div>
+
+                  {/* Medidas libres para cualquier retazo (10..900 × 10..600 mm) */}
+                  <div className="p-2 rounded-lg bg-slate-900/80 border border-slate-800 space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] text-slate-400">
+                      <span className="font-semibold text-slate-300">
+                        Retazo a medida (mm)
+                      </span>
+                      <span className="font-mono text-cyan-300">
+                        {roundMm(nestingConfig.sheetWidthMm / 10, 1)} ×{' '}
+                        {roundMm(nestingConfig.sheetHeightMm / 10, 1)} cm
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="text-[10px] text-slate-400 block mb-0.5">
+                          Ancho máx. 900 (mm)
+                        </span>
+                        <input
+                          type="number"
+                          min={10}
+                          max={900}
+                          step={5}
+                          aria-label="Ancho de plancha personalizado (mm)"
+                          value={sheetWidthDraft}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setSheetWidthDraft(raw);
+                            const num = Number(raw);
+                            if (raw !== '' && Number.isFinite(num) && num >= 10) {
+                              handleSelectMaterialSheet(
+                                num,
+                                nestingConfig.sheetHeightMm,
+                                true
+                              );
+                            }
+                          }}
+                          onBlur={() =>
+                            setSheetWidthDraft(String(nestingConfig.sheetWidthMm))
+                          }
+                          className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded px-2 py-1 font-mono text-xs text-white"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-[10px] text-slate-400 block mb-0.5">
+                          Alto máx. 600 (mm)
+                        </span>
+                        <input
+                          type="number"
+                          min={10}
+                          max={600}
+                          step={5}
+                          aria-label="Alto de plancha personalizado (mm)"
+                          value={sheetHeightDraft}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setSheetHeightDraft(raw);
+                            const num = Number(raw);
+                            if (raw !== '' && Number.isFinite(num) && num >= 10) {
+                              handleSelectMaterialSheet(
+                                nestingConfig.sheetWidthMm,
+                                num,
+                                true
+                              );
+                            }
+                          }}
+                          onBlur={() =>
+                            setSheetHeightDraft(String(nestingConfig.sheetHeightMm))
+                          }
+                          className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded px-2 py-1 font-mono text-xs text-white"
+                        />
+                      </label>
+                    </div>
                   </div>
                 </div>
 
@@ -3711,7 +3878,19 @@ export function App() {
           workbenchConfig={workbenchConfig}
           workbenchJobs={workbenchJobs}
           initialSidebarView={workbenchInitialView}
-          onUpdateConfig={setWorkbenchConfig}
+          onUpdateConfig={(nextCfg) => {
+            setWorkbenchConfig(nextCfg);
+            if (
+              nextCfg.sheetWidthMm !== nestingConfig.sheetWidthMm ||
+              nextCfg.sheetHeightMm !== nestingConfig.sheetHeightMm
+            ) {
+              setNestingConfig((prev) => ({
+                ...prev,
+                sheetWidthMm: nextCfg.sheetWidthMm,
+                sheetHeightMm: nextCfg.sheetHeightMm,
+              }));
+            }
+          }}
           onUpdateJobs={setWorkbenchJobs}
           onSaveMaterialParameters={(updatedMat) => {
             setMaterials((prev) =>

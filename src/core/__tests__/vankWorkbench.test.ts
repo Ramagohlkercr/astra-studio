@@ -100,6 +100,7 @@ import {
   syncLayersWithMaterialProfile,
   updateWorkbenchJobDesignAndQuantity,
   updateWorkbenchJobGrid,
+  updateWorkbenchSheetDimensions,
   validateWorkbenchState,
 } from '../workbench/workbenchEngine';
 import {
@@ -2125,5 +2126,70 @@ describe('Módulo Mesa de Trabajo y Plancha Vank 9060 (Estilo LightBurn / Ruida 
         expect(decodedMinP).toBeCloseTo(100, 1);
       }
     }
+  });
+
+  it('29. Plancha de Ecocuero configurable para retazos: redimensiona libremente, reacomoda trabajos dentro del retazo y permite volver a Rollo 73 cm', () => {
+    const ecocuero = INITIAL_MATERIALS_CATALOG.find((m) => m.id === 'ECOCUERO_SUELA')!;
+    const baseCfg = createDefaultWorkbenchConfig(730, 600, ecocuero);
+    const configuredCfg = {
+      ...baseCfg,
+      layers: baseCfg.layers.map((l) =>
+        l.role === 'ENGRAVE'
+          ? { ...l, speedMmPerSec: 600, maxPowerPercent: 30, minPowerPercent: 30 }
+          : { ...l, speedMmPerSec: 100, maxPowerPercent: 100, minPowerPercent: 100 }
+      ),
+    };
+
+    const job = createWorkbenchJobFromOrder({
+      design: sampleOrder.labelDesign,
+      nesting,
+      mode: 'active_batch',
+      customQuantity: 24,
+      projectName: 'Retazo Ecocuero 35x25',
+      clientName: 'Taller',
+      orderId: 'ord-retazo',
+      existingJobs: [],
+      config: configuredCfg,
+    });
+
+    // Cambiar a un retazo personalizado de 350 x 250 mm (35 x 25 cm)
+    const { config: remnantCfg, jobs: remnantJobs } = updateWorkbenchSheetDimensions(
+      [job],
+      configuredCfg,
+      350,
+      250
+    );
+    expect(remnantCfg.sheetWidthMm).toBe(350);
+    expect(remnantCfg.sheetHeightMm).toBe(250);
+    expect(remnantCfg.isRollMaterial).toBe(false);
+
+    // Las 24 etiquetas deben reacomodarse automáticamente dentro del ancho/alto del retazo de 350 x 250 mm
+    const remnantReport = validateWorkbenchState(remnantJobs, remnantCfg);
+    expect(remnantReport.occupiedBoundsMm).not.toBeNull();
+    expect(remnantReport.occupiedBoundsMm!.maxX).toBeLessThanOrEqual(350);
+    expect(remnantReport.occupiedBoundsMm!.maxY).toBeLessThanOrEqual(250);
+    expect(remnantReport.outOfSheetJobsCount).toBe(0);
+    expect(remnantReport.isValidForMachineSend).toBe(true);
+
+    // Limitar medidas fuera de rango a la mesa Vank 9060 (máx 900 x 600 mm, mín 10 mm)
+    const { config: clampedMax } = updateWorkbenchSheetDimensions(
+      remnantJobs,
+      remnantCfg,
+      1500,
+      900
+    );
+    expect(clampedMax.sheetWidthMm).toBe(900);
+    expect(clampedMax.sheetHeightMm).toBe(600);
+
+    // Restaurar al Rollo estándar 73 cm (730 x 600 mm)
+    const { config: rollCfg } = updateWorkbenchSheetDimensions(
+      remnantJobs,
+      remnantCfg,
+      ECOCUERO_ROLL_WIDTH_MM,
+      ECOCUERO_BED_PASS_HEIGHT_MM
+    );
+    expect(rollCfg.sheetWidthMm).toBe(730);
+    expect(rollCfg.sheetHeightMm).toBe(600);
+    expect(rollCfg.isRollMaterial).toBe(true);
   });
 });

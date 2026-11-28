@@ -126,11 +126,32 @@ export const MATERIAL_SHEET_PRESETS: SheetSizePreset[] = [
     description: 'Plancha mediana estándar',
   },
   {
+    id: '500x400',
+    label: '500 × 400 mm',
+    widthMm: 500,
+    heightMm: 400,
+    description: 'Retazo grande (50 × 40 cm)',
+  },
+  {
     id: '400x300',
     label: '400 × 300 mm',
     widthMm: 400,
     heightMm: 300,
     description: 'Recorte cuarto de plancha',
+  },
+  {
+    id: '300x300',
+    label: '300 × 300 mm',
+    widthMm: 300,
+    heightMm: 300,
+    description: 'Retazo cuadrado (30 × 30 cm)',
+  },
+  {
+    id: '210x297_a4',
+    label: '210 × 297 mm (A4)',
+    widthMm: 210,
+    heightMm: 297,
+    description: 'Retazo tamaño A4 estándar',
   },
   {
     id: '200x200',

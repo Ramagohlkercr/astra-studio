@@ -154,6 +154,7 @@ import {
   sortWorkbenchJobsBySpatialOrder,
   syncLayersWithMaterialProfile,
   updateWorkbenchJobDesignAndQuantity,
+  updateWorkbenchSheetDimensions,
   validateWorkbenchState,
 } from '../core/workbench/workbenchEngine';
 import {
@@ -260,6 +261,16 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     'technical_lightburn' | 'realistic_material'
   >('technical_lightburn');
   const [canvasZoom, setCanvasZoom] = useState<number>(1.0);
+  const [sheetWidthDraft, setSheetWidthDraft] = useState<string>(() =>
+    String(workbenchConfig.sheetWidthMm)
+  );
+  const [sheetHeightDraft, setSheetHeightDraft] = useState<string>(() =>
+    String(workbenchConfig.sheetHeightMm)
+  );
+  useEffect(() => {
+    setSheetWidthDraft(String(workbenchConfig.sheetWidthMm));
+    setSheetHeightDraft(String(workbenchConfig.sheetHeightMm));
+  }, [workbenchConfig.sheetWidthMm, workbenchConfig.sheetHeightMm]);
   const [showSingleLabelLoupe, setShowSingleLabelLoupe] =
     useState<boolean>(true);
   const [isProbingRuida, setIsProbingRuida] = useState<boolean>(false);
@@ -902,20 +913,38 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
     return activeSeg.points[ptIdx];
   }, [activeSimulatedSegment, simulation.totalDurationSec, simProgress, validation.jobOriginPointMm]);
 
+  // Aplicar medidas personalizadas de plancha o retazo (y reacomodar trabajos al nuevo ancho)
+  const handleUpdateSheetDimensions = (
+    nextWidthMm: number,
+    nextHeightMm: number,
+    options?: { isRollMaterial?: boolean; notifyText?: string }
+  ) => {
+    const { config: nextCfg, jobs: arrangedJobs } = updateWorkbenchSheetDimensions(
+      workbenchJobs,
+      workbenchConfig,
+      nextWidthMm,
+      nextHeightMm,
+      { isRollMaterial: options?.isRollMaterial }
+    );
+    onUpdateConfig(nextCfg);
+    if (workbenchJobs.length > 0) {
+      onUpdateJobs(arrangedJobs);
+    }
+    if (options?.notifyText) {
+      onNotify(options.notifyText);
+    }
+  };
+
   // Activar medida real del Rollo Ecocuero 73 cm x 5 m y optimizar tirada
   const handleApplyEcocueroRoll73cm = () => {
-    const nextCfg: WorkbenchConfig = {
-      ...workbenchConfig,
-      sheetWidthMm: ECOCUERO_ROLL_WIDTH_MM,
-      sheetHeightMm: ECOCUERO_BED_PASS_HEIGHT_MM,
-      isRollMaterial: true,
-      rollTotalLengthMm: ECOCUERO_ROLL_TOTAL_LENGTH_MM,
-    };
-    onUpdateConfig(nextCfg);
-    const arranged = autoArrangeWorkbenchJobs(workbenchJobs, nextCfg, 4, true);
-    onUpdateJobs(arranged);
-    onNotify(
-      'Rollo de Ecocuero 73 cm × 5 m (730 × 600 mm en mesa) aplicado y trabajos optimizados a todo el ancho.'
+    handleUpdateSheetDimensions(
+      ECOCUERO_ROLL_WIDTH_MM,
+      ECOCUERO_BED_PASS_HEIGHT_MM,
+      {
+        isRollMaterial: true,
+        notifyText:
+          'Rollo de Ecocuero 73 cm × 5 m (730 × 600 mm en mesa) aplicado y trabajos optimizados a todo el ancho.',
+      }
     );
   };
 
@@ -2278,9 +2307,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
             Mesa de Trabajo — Vank 9060 CO₂
           </h2>
           <span className="px-2 py-0.5 text-[10px] font-mono font-semibold rounded-md bg-slate-800/90 text-amber-300 border border-slate-700 shrink-0">
-            {workbenchConfig.sheetWidthMm === 730
+            {workbenchConfig.sheetWidthMm === 730 &&
+            workbenchConfig.sheetHeightMm === 600
               ? 'Rollo Ecocuero 73 cm × 5 m'
-              : `Plancha ${workbenchConfig.sheetWidthMm}×${workbenchConfig.sheetHeightMm} mm`}
+              : `${isEcocueroMaterial(material) ? 'Retazo Ecocuero' : 'Plancha'} ${workbenchConfig.sheetWidthMm}×${workbenchConfig.sheetHeightMm} mm`}
           </span>
         </div>
 
@@ -2445,7 +2475,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                🔍 Rollo 73 cm
+                🔍{' '}
+                {workbenchConfig.sheetWidthMm === 730 &&
+                workbenchConfig.sheetHeightMm === 600
+                  ? 'Rollo 73 cm'
+                  : `Retazo ${roundMm(workbenchConfig.sheetWidthMm / 10, 1)} cm`}
               </button>
               <button
                 type="button"
@@ -2473,7 +2507,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                 }`}
               >
-                Plancha 730×600
+                Plancha {workbenchConfig.sheetWidthMm}×{workbenchConfig.sheetHeightMm}
               </button>
               <button
                 type="button"
@@ -3418,7 +3452,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 </div>
               )}
               <div className="bg-emerald-950/50 border border-emerald-700/60 px-2 py-1 rounded text-emerald-300 font-mono font-bold">
-                Rollo: {rollMetrics.usedLengthCm} cm de 500 cm
+                {workbenchConfig.sheetWidthMm === 730 &&
+                workbenchConfig.sheetHeightMm === 600
+                  ? `Rollo: ${rollMetrics.usedLengthCm} cm de ${rollMetrics.totalRollLengthCm} cm`
+                  : `Retazo: ${rollMetrics.usedLengthCm} cm de ${roundMm(workbenchConfig.sheetHeightMm / 10, 1)} cm`}
               </div>
             </div>
           </div>
@@ -3449,7 +3486,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     : 'text-slate-400 hover:text-white'
                 }`}
               >
-                2. Rollo 73 cm y Logos
+                {workbenchConfig.sheetWidthMm === 730 &&
+                workbenchConfig.sheetHeightMm === 600
+                  ? '2. Rollo 73 cm y Logos'
+                  : `2. Retazo ${roundMm(workbenchConfig.sheetWidthMm / 10, 1)}×${roundMm(workbenchConfig.sheetHeightMm / 10, 1)} cm`}
               </button>
               <button
                 type="button"
@@ -4062,7 +4102,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
           )}
 
           {/* =====================================================================
-              SECCIÓN 2: ROLLO ECOCUERO 73 CM × 5 M Y TIRADA MULTI-TRABAJO
+              SECCIÓN 2: MEDIDA DE PLANCHA/RETAZO + TIRADA MULTI-TRABAJO
              ===================================================================== */}
           {sidebarView === 'jobs' && (
           <div className="p-3.5 space-y-3">
@@ -4070,7 +4110,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
                 <Ruler className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>
-                  Rollo Ecocuero 73 cm × 5 m · Trabajos ({workbenchJobs.length})
+                  {workbenchConfig.sheetWidthMm === 730 &&
+                  workbenchConfig.sheetHeightMm === 600
+                    ? `Rollo Ecocuero 73 cm × 5 m · Trabajos (${workbenchJobs.length})`
+                    : `Retazo ${workbenchConfig.sheetWidthMm}×${workbenchConfig.sheetHeightMm} mm · Trabajos (${workbenchJobs.length})`}
                 </span>
               </h3>
               <button
@@ -4080,6 +4123,103 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               >
                 + Sumar Diseño Actual
               </button>
+            </div>
+
+            {/* Selector rápido de tamaño de plancha / retazo de Ecocuero */}
+            <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold text-amber-300">
+                  Tamaño de Plancha / Retazo
+                </span>
+                <div className="flex items-center gap-1.5">
+                  {(workbenchConfig.sheetWidthMm !== 730 ||
+                    workbenchConfig.sheetHeightMm !== 600) && (
+                    <button
+                      type="button"
+                      onClick={handleApplyEcocueroRoll73cm}
+                      className="px-2 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-200 text-[10px] font-semibold whitespace-nowrap"
+                    >
+                      ↻ Rollo 73 cm
+                    </button>
+                  )}
+                  <select
+                    aria-label="Presets de retazo en tirada"
+                    value=""
+                    onChange={(e) => {
+                      const preset = MATERIAL_SHEET_PRESETS.find(
+                        (p) => p.label === e.target.value
+                      );
+                      if (preset) {
+                        handleUpdateSheetDimensions(preset.widthMm, preset.heightMm, {
+                          isRollMaterial: preset.widthMm === 730 && preset.heightMm >= 600,
+                          notifyText: `Retazo/plancha cambiado a ${preset.widthMm} × ${preset.heightMm} mm y piezas reacomodadas.`,
+                        });
+                      }
+                    }}
+                    className="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-cyan-300"
+                  >
+                    <option value="">Elegir formato...</option>
+                    {MATERIAL_SHEET_PRESETS.map((p) => (
+                      <option key={p.label} value={p.label}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="text-[10px] text-slate-400 block mb-0.5">
+                    Ancho útil ({roundMm(workbenchConfig.sheetWidthMm / 10, 1)} cm)
+                  </span>
+                  <input
+                    type="number"
+                    min={10}
+                    max={workbenchConfig.machineBedWidthMm}
+                    step={5}
+                    aria-label="Ancho de plancha en tirada (mm)"
+                    value={sheetWidthDraft}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setSheetWidthDraft(raw);
+                      const num = Number(raw);
+                      if (raw !== '' && Number.isFinite(num) && num >= 10) {
+                        handleUpdateSheetDimensions(num, workbenchConfig.sheetHeightMm);
+                      }
+                    }}
+                    onBlur={() =>
+                      setSheetWidthDraft(String(workbenchConfig.sheetWidthMm))
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded px-2 py-1 font-mono text-xs text-white font-bold"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] text-slate-400 block mb-0.5">
+                    Alto / Largo retazo ({roundMm(workbenchConfig.sheetHeightMm / 10, 1)} cm)
+                  </span>
+                  <input
+                    type="number"
+                    min={10}
+                    max={workbenchConfig.machineBedHeightMm}
+                    step={5}
+                    aria-label="Alto de plancha en tirada (mm)"
+                    value={sheetHeightDraft}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setSheetHeightDraft(raw);
+                      const num = Number(raw);
+                      if (raw !== '' && Number.isFinite(num) && num >= 10) {
+                        handleUpdateSheetDimensions(workbenchConfig.sheetWidthMm, num);
+                      }
+                    }}
+                    onBlur={() =>
+                      setSheetHeightDraft(String(workbenchConfig.sheetHeightMm))
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-500 rounded px-2 py-1 font-mono text-xs text-white font-bold"
+                  />
+                </label>
+              </div>
             </div>
 
             {/* Tarjeta de Aprovechamiento Real de la Plancha / Rollo (Cero Desperdicio) */}
@@ -4125,7 +4265,11 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                     {rollMetrics.usedLengthCm} cm
                   </span>
                   <span className="text-[9px] text-slate-500 font-mono block">
-                    de {rollMetrics.totalRollLengthCm} cm
+                    de{' '}
+                    {workbenchConfig.sheetWidthMm === 730 &&
+                    workbenchConfig.sheetHeightMm === 600
+                      ? `${rollMetrics.totalRollLengthCm} cm`
+                      : `${roundMm(workbenchConfig.sheetHeightMm / 10, 1)} cm`}
                   </span>
                 </div>
                 <div>
@@ -4141,12 +4285,29 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                 </div>
                 <div>
                   <span className="text-[10px] text-slate-400 block">
-                    Rinde Rollo 5m
+                    {workbenchConfig.sheetWidthMm === 730 &&
+                    workbenchConfig.sheetHeightMm === 600
+                      ? 'Rinde Rollo 5m'
+                      : 'Calce en Retazo'}
                   </span>
-                  <span className="font-mono font-bold text-cyan-300 text-xs">
-                    {rollMetrics.estimatedRunsPerRoll > 0
-                      ? `~${rollMetrics.estimatedRunsPerRoll} tiradas`
-                      : '—'}
+                  <span
+                    className={`font-mono font-bold text-xs ${
+                      workbenchConfig.sheetWidthMm === 730 &&
+                      workbenchConfig.sheetHeightMm === 600
+                        ? 'text-cyan-300'
+                        : rollMetrics.usedLengthMm <= workbenchConfig.sheetHeightMm
+                          ? 'text-emerald-300'
+                          : 'text-red-400'
+                    }`}
+                  >
+                    {workbenchConfig.sheetWidthMm === 730 &&
+                    workbenchConfig.sheetHeightMm === 600
+                      ? rollMetrics.estimatedRunsPerRoll > 0
+                        ? `~${rollMetrics.estimatedRunsPerRoll} tiradas`
+                        : '—'
+                      : rollMetrics.usedLengthMm <= workbenchConfig.sheetHeightMm
+                        ? 'Entra OK'
+                        : 'Excede alto'}
                   </span>
                   <span className="text-[9px] text-slate-500 font-mono block">
                     ({rollMetrics.widthUtilizationPercent}% ancho)
@@ -4921,7 +5082,7 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
               </div>
             )}
 
-            {/* Dimensiones de la Plancha o Rollo en Mesa */}
+            {/* Dimensiones de la Plancha o Retazo en Mesa */}
             <div className="p-2.5 rounded-lg bg-slate-900/70 border border-slate-800 space-y-2">
               <div className="flex items-center justify-between text-[11px]">
                 <span className="font-semibold text-slate-300">
@@ -4935,13 +5096,10 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                       (p) => p.label === e.target.value
                     );
                     if (preset) {
-                      const nextCfg: WorkbenchConfig = {
-                        ...workbenchConfig,
-                        sheetWidthMm: preset.widthMm,
-                        sheetHeightMm: preset.heightMm,
-                        isRollMaterial: preset.widthMm === 730,
-                      };
-                      onUpdateConfig(nextCfg);
+                      handleUpdateSheetDimensions(preset.widthMm, preset.heightMm, {
+                        isRollMaterial: preset.widthMm === 730 && preset.heightMm >= 600,
+                        notifyText: `Formato cambiado a ${preset.widthMm} × ${preset.heightMm} mm.`,
+                      });
                     }
                   }}
                   className="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-cyan-300"
@@ -4963,37 +5121,43 @@ export const VankWorkbenchModal: React.FC<VankWorkbenchModalProps> = ({
                   <input
                     type="number"
                     min={10}
-                    max={900}
-                    value={workbenchConfig.sheetWidthMm}
-                    onChange={(e) =>
-                      onUpdateConfig({
-                        ...workbenchConfig,
-                        sheetWidthMm: Math.max(
-                          10,
-                          Math.min(900, Number(e.target.value) || 100)
-                        ),
-                      })
+                    max={workbenchConfig.machineBedWidthMm}
+                    aria-label="Ancho de plancha en conexión (mm)"
+                    value={sheetWidthDraft}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setSheetWidthDraft(raw);
+                      const num = Number(raw);
+                      if (raw !== '' && Number.isFinite(num) && num >= 10) {
+                        handleUpdateSheetDimensions(num, workbenchConfig.sheetHeightMm);
+                      }
+                    }}
+                    onBlur={() =>
+                      setSheetWidthDraft(String(workbenchConfig.sheetWidthMm))
                     }
                     className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
                   />
                 </label>
                 <label>
                   <span className="text-[10px] text-slate-400 block">
-                    Tirada Mesa (mm)
+                    Tirada / Alto (mm)
                   </span>
                   <input
                     type="number"
                     min={10}
-                    max={600}
-                    value={workbenchConfig.sheetHeightMm}
-                    onChange={(e) =>
-                      onUpdateConfig({
-                        ...workbenchConfig,
-                        sheetHeightMm: Math.max(
-                          10,
-                          Math.min(600, Number(e.target.value) || 100)
-                        ),
-                      })
+                    max={workbenchConfig.machineBedHeightMm}
+                    aria-label="Alto de plancha en conexión (mm)"
+                    value={sheetHeightDraft}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setSheetHeightDraft(raw);
+                      const num = Number(raw);
+                      if (raw !== '' && Number.isFinite(num) && num >= 10) {
+                        handleUpdateSheetDimensions(workbenchConfig.sheetWidthMm, num);
+                      }
+                    }}
+                    onBlur={() =>
+                      setSheetHeightDraft(String(workbenchConfig.sheetHeightMm))
                     }
                     className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 font-mono"
                   />
